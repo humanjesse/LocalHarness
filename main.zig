@@ -54,6 +54,7 @@ fn wrapRawText(allocator: mem.Allocator, text: []const u8, max_width: usize) !st
             var visible_chars: usize = 0;
             var byte_idx: usize = current_byte_pos;
             var last_space_byte_pos: ?usize = null;
+            var in_zwj_sequence = false;
 
             while (byte_idx < line.len) {
                 if (line[byte_idx] == 0x1b) {
@@ -65,12 +66,43 @@ fn wrapRawText(allocator: mem.Allocator, text: []const u8, max_width: usize) !st
 
                 const char_len = std.unicode.utf8ByteSequenceLength(line[byte_idx]) catch 1;
 
-                if (max_width > 0 and visible_chars + 1 > max_width) {
+                // Decode the character and get its width
+                const char_width = if (byte_idx + char_len <= line.len) blk: {
+                    const codepoint = std.unicode.utf8Decode(line[byte_idx..][0..char_len]) catch break :blk 1;
+                    break :blk ui.getCharWidth(codepoint);
+                } else 1;
+
+                // Handle ZWJ sequences (family emoji, couple emoji, etc.)
+                const codepoint = if (byte_idx + char_len <= line.len)
+                    std.unicode.utf8Decode(line[byte_idx..][0..char_len]) catch 0
+                else
+                    0;
+
+                var width_to_add: usize = char_width;
+                if (codepoint == 0x200D) { // Zero-Width Joiner
+                    in_zwj_sequence = true;
+                    width_to_add = 0; // ZWJ itself adds no width
+                } else if (in_zwj_sequence) {
+                    if (char_width == 0) {
+                        // Zero-width modifier in sequence (skin tone, variation selector)
+                        width_to_add = 0;
+                    } else if (char_width == 2) {
+                        // Another emoji in the sequence - don't add width
+                        width_to_add = 0;
+                    } else {
+                        // Non-emoji, end the sequence
+                        in_zwj_sequence = false;
+                        width_to_add = char_width;
+                    }
+                }
+
+                if (max_width > 0 and visible_chars + width_to_add > max_width) {
                     break;
                 }
-                visible_chars += 1;
+                visible_chars += width_to_add;
                 if (line[byte_idx] == ' ') {
                     last_space_byte_pos = byte_idx;
+                    in_zwj_sequence = false; // Space ends ZWJ sequence
                 }
 
                 byte_idx += char_len;

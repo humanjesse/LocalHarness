@@ -90,6 +90,89 @@ pub const BufferedStdoutWriter = struct {
 };
 
 // --- START: Merged from ansi.zig ---
+
+/// Returns the display width of a Unicode codepoint
+/// Emojis and wide characters return 2, regular characters return 1, zero-width returns 0
+pub fn getCharWidth(codepoint: u21) usize {
+    // Zero-width characters (these combine with previous characters)
+    // =====================================================
+
+    // Zero-Width Joiner (used in family emojis, professions, etc.)
+    if (codepoint == 0x200D) return 0; // ZWJ
+
+    // Zero-Width Non-Joiner
+    if (codepoint == 0x200C) return 0; // ZWNJ
+
+    // Variation Selectors (control emoji vs text presentation)
+    if (codepoint >= 0xFE00 and codepoint <= 0xFE0F) return 0; // VS1-VS16
+    if (codepoint >= 0xE0100 and codepoint <= 0xE01EF) return 0; // VS17-VS256
+
+    // Skin Tone Modifiers (Fitzpatrick scale)
+    if (codepoint >= 0x1F3FB and codepoint <= 0x1F3FF) return 0; // 🏻🏼🏽🏾🏿
+
+    // Combining Diacritical Marks (accents, etc.)
+    if (codepoint >= 0x0300 and codepoint <= 0x036F) return 0; // Combining marks
+    if (codepoint >= 0x1AB0 and codepoint <= 0x1AFF) return 0; // Extended combining marks
+    if (codepoint >= 0x1DC0 and codepoint <= 0x1DFF) return 0; // Combining marks supplement
+    if (codepoint >= 0x20D0 and codepoint <= 0x20FF) return 0; // Combining marks for symbols
+    if (codepoint >= 0xFE20 and codepoint <= 0xFE2F) return 0; // Combining half marks
+
+    // Format characters
+    if (codepoint >= 0x200B and codepoint <= 0x200F) return 0; // Zero-width space, LRM, RLM, etc.
+    if (codepoint >= 0x2060 and codepoint <= 0x206F) return 0; // Word joiner, invisible operators
+
+    // Control characters
+    if (codepoint < 0x20) return 0; // C0 controls
+    if (codepoint >= 0x7F and codepoint < 0xA0) return 0; // DEL and C1 controls
+
+    // Emoji ranges (most common emojis occupy 2 columns in terminals)
+    // =====================================================
+    // Main emoji blocks
+    if (codepoint >= 0x1F000 and codepoint <= 0x1F02F) return 2; // Mahjong Tiles
+    if (codepoint >= 0x1F0A0 and codepoint <= 0x1F0FF) return 2; // Playing Cards
+    if (codepoint >= 0x1F100 and codepoint <= 0x1F1FF) return 2; // Enclosed Alphanumeric Supplement
+    if (codepoint >= 0x1F200 and codepoint <= 0x1F2FF) return 2; // Enclosed Ideographic Supplement
+    if (codepoint >= 0x1F300 and codepoint <= 0x1F5FF) return 2; // Miscellaneous Symbols and Pictographs
+    if (codepoint >= 0x1F600 and codepoint <= 0x1F64F) return 2; // Emoticons
+    if (codepoint >= 0x1F680 and codepoint <= 0x1F6FF) return 2; // Transport and Map Symbols
+    if (codepoint >= 0x1F700 and codepoint <= 0x1F77F) return 2; // Alchemical Symbols
+    if (codepoint >= 0x1F780 and codepoint <= 0x1F7FF) return 2; // Geometric Shapes Extended
+    if (codepoint >= 0x1F800 and codepoint <= 0x1F8FF) return 2; // Supplemental Arrows-C
+    if (codepoint >= 0x1F900 and codepoint <= 0x1F9FF) return 2; // Supplemental Symbols and Pictographs
+    if (codepoint >= 0x1FA00 and codepoint <= 0x1FA6F) return 2; // Chess Symbols
+    if (codepoint >= 0x1FA70 and codepoint <= 0x1FAFF) return 2; // Symbols and Pictographs Extended-A
+
+    // Miscellaneous Symbols (includes common emoji-style symbols)
+    if (codepoint >= 0x2600 and codepoint <= 0x26FF) return 2;   // Miscellaneous Symbols (☀, ☂, ⛄, etc.)
+    if (codepoint >= 0x2700 and codepoint <= 0x27BF) return 2;   // Dingbats (✂, ✈, ✉, ❤, etc.)
+
+    // Additional symbol ranges that display as wide (emoji-style symbols only!)
+    // Note: Most symbols in 0x2300-0x23FF are NARROW (APL, technical symbols)
+    // Only specific emoji-presentation symbols from that range should be wide:
+    if (codepoint >= 0x231A and codepoint <= 0x231B) return 2;   // ⌚⌛ Watch, Hourglass
+    if (codepoint >= 0x23E9 and codepoint <= 0x23F3) return 2;   // ⏩⏪⏫⏬⏭⏮⏯⏰⏱⏲⏳ Media controls
+    if (codepoint >= 0x25FD and codepoint <= 0x25FE) return 2;   // ◽◾ Small squares
+    if (codepoint >= 0x2614 and codepoint <= 0x2615) return 2;   // ☔☕ Umbrella, Coffee
+    if (codepoint >= 0x2648 and codepoint <= 0x2653) return 2;   // ♈-♓ Zodiac signs
+    if (codepoint >= 0x2934 and codepoint <= 0x2935) return 2;   // ⤴⤵ Arrow symbols
+    if (codepoint >= 0x2B05 and codepoint <= 0x2B07) return 2;   // ⬅⬆⬇ Heavy arrows
+    if (codepoint >= 0x2B1B and codepoint <= 0x2B1C) return 2;   // ⬛⬜ Black/white squares
+    if (codepoint >= 0x2B50 and codepoint <= 0x2B55) return 2;   // ⭐⭕ Star and circle symbols
+    if (codepoint >= 0x3030 and codepoint <= 0x303D) return 2;   // 〰 Wavy dash, part alternation mark
+    if (codepoint >= 0x3297 and codepoint <= 0x3299) return 2;   // ㊗㊙ Circled ideographs
+
+    // East Asian Wide characters (CJK ideographs)
+    // =====================================================
+    if (codepoint >= 0x4E00 and codepoint <= 0x9FFF) return 2;   // CJK Unified Ideographs
+    if (codepoint >= 0x3400 and codepoint <= 0x4DBF) return 2;   // CJK Extension A
+    if (codepoint >= 0xAC00 and codepoint <= 0xD7AF) return 2;   // Hangul Syllables
+    if (codepoint >= 0x3040 and codepoint <= 0x309F) return 2;   // Hiragana
+    if (codepoint >= 0x30A0 and codepoint <= 0x30FF) return 2;   // Katakana
+
+    // Most other Unicode characters are single width
+    return 1;
+}
+
 pub const AnsiParser = struct {
     const State = enum {
         normal,
@@ -101,6 +184,8 @@ pub const AnsiParser = struct {
         var i: usize = 0;
         var count: usize = 0;
         var state = State.normal;
+        var in_zwj_sequence = false;
+        var zwj_sequence_width: usize = 0;
 
         while (i < s.len) {
             const byte = s[i];
@@ -110,18 +195,47 @@ pub const AnsiParser = struct {
                         state = .got_escape;
                         i += 1;
                     } else {
-                        if (byte & 0x80 == 0) {
-                            i += 1;
-                        } else if (byte & 0xE0 == 0xC0) {
-                            i += 2;
-                        } else if (byte & 0xF0 == 0xE0) {
-                            i += 3;
-                        } else if (byte & 0xF8 == 0xF0) {
-                            i += 4;
+                        // Decode UTF-8 character and get its width
+                        const char_len = std.unicode.utf8ByteSequenceLength(byte) catch 1;
+                        if (i + char_len <= s.len) {
+                            const codepoint = std.unicode.utf8Decode(s[i..][0..char_len]) catch {
+                                i += 1;
+                                count += 1;
+                                continue;
+                            };
+
+                            const char_width = getCharWidth(codepoint);
+
+                            // ZWJ sequence handling
+                            if (codepoint == 0x200D) { // Zero-Width Joiner
+                                in_zwj_sequence = true;
+                                // Don't add width for ZWJ itself
+                            } else if (in_zwj_sequence) {
+                                // We're in a ZWJ sequence
+                                if (char_width == 0) {
+                                    // Zero-width modifier (skin tone, variation selector), continue sequence
+                                } else if (char_width == 2) {
+                                    // Another emoji in the sequence, but don't add its width
+                                    // The entire ZWJ sequence should only count as width 2
+                                } else {
+                                    // Non-emoji character, end the sequence
+                                    in_zwj_sequence = false;
+                                    zwj_sequence_width = 0;
+                                    count += char_width;
+                                }
+                            } else {
+                                // Normal character or start of potential ZWJ sequence
+                                if (char_width == 2) {
+                                    zwj_sequence_width = 2;
+                                }
+                                count += char_width;
+                            }
+
+                            i += char_len;
                         } else {
                             i += 1;
+                            count += 1;
                         }
-                        count += 1;
                     }
                 },
                 .got_escape => {
