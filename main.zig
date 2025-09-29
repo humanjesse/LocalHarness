@@ -13,7 +13,7 @@ pub const Config = struct {
 
 pub const Note = struct {
     path: []const u8,
-    processed_content: std.ArrayList(markdown.RenderableItem),
+    processed_content: std.ArrayListUnmanaged(markdown.RenderableItem),
     is_expanded: bool = false,
 };
 
@@ -26,10 +26,10 @@ pub const ClickableArea = struct {
 };
 
 fn openEditorAndWait(allocator: mem.Allocator, editor_cmd: []const []const u8, note_path: []const u8) !void {
-    var argv = std.ArrayList([]const u8).init(allocator);
-    defer argv.deinit();
-    try argv.appendSlice(editor_cmd);
-    try argv.append(note_path);
+    var argv = std.ArrayListUnmanaged([]const u8){};
+    defer argv.deinit(allocator);
+    try argv.appendSlice(allocator, editor_cmd);
+    try argv.append(allocator, note_path);
 
     var child = std.process.Child.init(argv.items, allocator);
     child.stdin_behavior = .Inherit;
@@ -39,13 +39,13 @@ fn openEditorAndWait(allocator: mem.Allocator, editor_cmd: []const []const u8, n
     _ = term;
 }
 
-fn wrapRawText(allocator: mem.Allocator, text: []const u8, max_width: usize) !std.ArrayList([]const u8) {
-    var result = std.ArrayList([]const u8).init(allocator);
+fn wrapRawText(allocator: mem.Allocator, text: []const u8, max_width: usize) !std.ArrayListUnmanaged([]const u8) {
+    var result = std.ArrayListUnmanaged([]const u8){};
     var line_iterator = mem.splitScalar(u8, text, '\n');
 
     while (line_iterator.next()) |line| {
         if (line.len == 0) {
-            try result.append(try allocator.dupe(u8, ""));
+            try result.append(allocator, try allocator.dupe(u8, ""));
             continue;
         }
 
@@ -85,7 +85,7 @@ fn wrapRawText(allocator: mem.Allocator, text: []const u8, max_width: usize) !st
                 }
             }
 
-            try result.append(try allocator.dupe(u8, line[current_byte_pos..break_pos]));
+            try result.append(allocator, try allocator.dupe(u8, line[current_byte_pos..break_pos]));
             current_byte_pos = break_pos;
             if (current_byte_pos < line.len and line[current_byte_pos] == ' ') {
                 current_byte_pos += 1;
@@ -99,8 +99,8 @@ fn wrapRawText(allocator: mem.Allocator, text: []const u8, max_width: usize) !st
 
 fn renderItemsToLines(
     app: *App,
-    items: *const std.ArrayList(markdown.RenderableItem),
-    output_lines: *std.ArrayList([]const u8),
+    items: *const std.ArrayListUnmanaged(markdown.RenderableItem),
+    output_lines: *std.ArrayListUnmanaged([]const u8),
     indent_level: usize,
     max_content_width: usize,
 ) !void {
@@ -109,24 +109,24 @@ fn renderItemsToLines(
     for (items.items) |*item| {
         switch (item.tag) {
             .styled_text => {
-                const wrapped_lines = try wrapRawText(app.allocator, item.payload.styled_text, max_content_width - (indent_level * indent_str.len));
+                var wrapped_lines = try wrapRawText(app.allocator, item.payload.styled_text, max_content_width - (indent_level * indent_str.len));
                 defer {
                     for (wrapped_lines.items) |l| app.allocator.free(l);
-                    wrapped_lines.deinit();
+                    wrapped_lines.deinit(app.allocator);
                 }
 
                 for (wrapped_lines.items) |line| {
-                    var full_line = std.ArrayList(u8).init(app.allocator);
-                    for (0..indent_level) |_| try full_line.appendSlice(indent_str);
-                    try full_line.appendSlice(line);
-                    try output_lines.append(try full_line.toOwnedSlice());
+                    var full_line = std.ArrayListUnmanaged(u8){};
+                    for (0..indent_level) |_| try full_line.appendSlice(app.allocator, indent_str);
+                    try full_line.appendSlice(app.allocator, line);
+                    try output_lines.append(app.allocator, try full_line.toOwnedSlice(app.allocator));
                 }
             },
             .blockquote => {
-                var sub_lines = std.ArrayList([]const u8).init(app.allocator);
+                var sub_lines = std.ArrayListUnmanaged([]const u8){};
                 defer {
                     for (sub_lines.items) |l| app.allocator.free(l);
-                    sub_lines.deinit();
+                    sub_lines.deinit(app.allocator);
                 }
 
                 // Pre-calculate the total width of the prefix the parent will add.
@@ -135,12 +135,12 @@ fn renderItemsToLines(
                 const sub_max_width = max_content_width -| prefix_width;
                 try renderItemsToLines(app, &item.payload.blockquote, &sub_lines, 0, sub_max_width); 
                 for (sub_lines.items) |line| {
-                    var full_line = std.ArrayList(u8).init(app.allocator);
+                    var full_line = std.ArrayListUnmanaged(u8){};
                     // The parent adds the full prefix to the un-indented child line.
-                    for (0..indent_level) |_| try full_line.appendSlice(indent_str);
-                    try full_line.appendSlice("┃ ");
-                    try full_line.appendSlice(line);
-                    try output_lines.append(try full_line.toOwnedSlice());
+                    for (0..indent_level) |_| try full_line.appendSlice(app.allocator, indent_str);
+                    try full_line.appendSlice(app.allocator, "┃ ");
+                    try full_line.appendSlice(app.allocator, line);
+                    try output_lines.append(app.allocator, try full_line.toOwnedSlice(app.allocator));
                     }
                 },
 
@@ -155,10 +155,10 @@ fn renderItemsToLines(
             marker_text = "• ";
         }
         
-        var alignment_padding_buf = std.ArrayList(u8).init(app.allocator);
-        defer alignment_padding_buf.deinit();
+        var alignment_padding_buf = std.ArrayListUnmanaged(u8){};
+        defer alignment_padding_buf.deinit(app.allocator);
         for (0..ui.AnsiParser.getVisibleLength(marker_text)) |_| {
-            try alignment_padding_buf.append(' ');
+            try alignment_padding_buf.append(app.allocator, ' ');
         }
         const alignment_padding = alignment_padding_buf.items;
         // --- END: New logic ---
@@ -166,45 +166,45 @@ fn renderItemsToLines(
         const prefix_width = (indent_level * indent_str.len) + alignment_padding.len;
         const sub_max_width = max_content_width -| prefix_width;
 
-        var sub_lines = std.ArrayList([]const u8).init(app.allocator);
+        var sub_lines = std.ArrayListUnmanaged([]const u8){};
         defer {
             for (sub_lines.items) |l| app.allocator.free(l);
-            sub_lines.deinit();
+            sub_lines.deinit(app.allocator);
         }
 
         try renderItemsToLines(app, &list_item_blocks, &sub_lines, 0, sub_max_width);
 
         for (sub_lines.items, 0..) |line, line_idx| {
-            var full_line = std.ArrayList(u8).init(app.allocator);
-            for (0..indent_level) |_| try full_line.appendSlice(indent_str);
+            var full_line = std.ArrayListUnmanaged(u8){};
+            for (0..indent_level) |_| try full_line.appendSlice(app.allocator, indent_str);
 
             if (line_idx == 0) {
-                try full_line.appendSlice(marker_text);
+                try full_line.appendSlice(app.allocator, marker_text);
             } else {
                 // Use the new dynamic padding for alignment
-                try full_line.appendSlice(alignment_padding);
+                try full_line.appendSlice(app.allocator, alignment_padding);
             }
-            try full_line.appendSlice(line);
-            try output_lines.append(try full_line.toOwnedSlice());
+            try full_line.appendSlice(app.allocator, line);
+            try output_lines.append(app.allocator, try full_line.toOwnedSlice(app.allocator));
         }
     }
 }, 
 
                         .horizontal_rule => {
-                var hr_line = std.ArrayList(u8).init(app.allocator);
-                for (0..indent_level) |_| try hr_line.appendSlice(indent_str);
-                for (0..(max_content_width / 2)) |_| try hr_line.appendSlice("─");
-                try output_lines.append(try hr_line.toOwnedSlice());
+                var hr_line = std.ArrayListUnmanaged(u8){};
+                for (0..indent_level) |_| try hr_line.appendSlice(app.allocator, indent_str);
+                for (0..(max_content_width / 2)) |_| try hr_line.appendSlice(app.allocator, "─");
+                try output_lines.append(app.allocator, try hr_line.toOwnedSlice(app.allocator));
             },
             .code_block => {
-                 var box_lines = std.ArrayList([]const u8).init(app.allocator);
+                 var box_lines = std.ArrayListUnmanaged([]const u8){};
                  defer {
-                    box_lines.deinit();
+                    box_lines.deinit(app.allocator);
                  }
-                 const content_lines = try wrapRawText(app.allocator, item.payload.code_block.content, max_content_width - (indent_level * indent_str.len) - 4);
+                 var content_lines = try wrapRawText(app.allocator, item.payload.code_block.content, max_content_width - (indent_level * indent_str.len) - 4);
                  defer {
                     for(content_lines.items) |l| app.allocator.free(l);
-                    content_lines.deinit();
+                    content_lines.deinit(app.allocator);
                  }
                  var max_line_len : usize = 0;
                  for(content_lines.items) |l| {
@@ -213,66 +213,66 @@ fn renderItemsToLines(
                  }
 
                  // Top border
-                 var top_border = std.ArrayList(u8).init(app.allocator);
-                 for (0..indent_level) |_| try top_border.appendSlice(indent_str);
-                 try top_border.appendSlice("┌");
-                 for(0..max_line_len+2) |_| try top_border.appendSlice("─");
-                 try top_border.appendSlice("┐");
-                 try box_lines.append(try top_border.toOwnedSlice());
+                 var top_border = std.ArrayListUnmanaged(u8){};
+                 for (0..indent_level) |_| try top_border.appendSlice(app.allocator,indent_str);
+                 try top_border.appendSlice(app.allocator,"┌");
+                 for(0..max_line_len+2) |_| try top_border.appendSlice(app.allocator,"─");
+                 try top_border.appendSlice(app.allocator,"┐");
+                 try box_lines.append(app.allocator, try top_border.toOwnedSlice(app.allocator));
 
                  // Content
                  for(content_lines.items) |l| {
-                    var content_line = std.ArrayList(u8).init(app.allocator);
-                    for (0..indent_level) |_| try content_line.appendSlice(indent_str);
-                    try content_line.appendSlice("│ ");
-                    try content_line.appendSlice(l);
+                    var content_line = std.ArrayListUnmanaged(u8){};
+                    for (0..indent_level) |_| try content_line.appendSlice(app.allocator,indent_str);
+                    try content_line.appendSlice(app.allocator,"│ ");
+                    try content_line.appendSlice(app.allocator,l);
                     const padding = max_line_len - ui.AnsiParser.getVisibleLength(l);
-                    for(0..padding) |_| try content_line.appendSlice(" ");
-                    try content_line.appendSlice(" │");
-                    try box_lines.append(try content_line.toOwnedSlice());
+                    for(0..padding) |_| try content_line.appendSlice(app.allocator," ");
+                    try content_line.appendSlice(app.allocator," │");
+                    try box_lines.append(app.allocator, try content_line.toOwnedSlice(app.allocator));
                  }
 
                  // Bottom border
-                 var bot_border = std.ArrayList(u8).init(app.allocator);
-                 for (0..indent_level) |_| try bot_border.appendSlice(indent_str);
-                 try bot_border.appendSlice("└");
-                 for(0..max_line_len+2) |_| try bot_border.appendSlice("─");
-                 try bot_border.appendSlice("┘");
-                 try box_lines.append(try bot_border.toOwnedSlice());
+                 var bot_border = std.ArrayListUnmanaged(u8){};
+                 for (0..indent_level) |_| try bot_border.appendSlice(app.allocator,indent_str);
+                 try bot_border.appendSlice(app.allocator,"└");
+                 for(0..max_line_len+2) |_| try bot_border.appendSlice(app.allocator,"─");
+                 try bot_border.appendSlice(app.allocator,"┘");
+                 try box_lines.append(app.allocator, try bot_border.toOwnedSlice(app.allocator));
 
-                 try output_lines.appendSlice(box_lines.items);
+                 try output_lines.appendSlice(app.allocator,box_lines.items);
             },
             .link => {
                 const link_text = item.payload.link.text;
                 const link_url = item.payload.link.url;
 
                 // Format: "Link Text" (URL) with underline styling
-                var formatted_text = std.ArrayList(u8).init(app.allocator);
-                defer formatted_text.deinit();
+                var formatted_text = std.ArrayListUnmanaged(u8){};
+                defer formatted_text.deinit(app.allocator);
 
-                try formatted_text.appendSlice("\x1b[4m"); // Start underline
-                try formatted_text.appendSlice("\x1b[36m"); // Cyan color
-                try formatted_text.appendSlice(link_text);
-                try formatted_text.appendSlice("\x1b[0m");  // Reset
-                try formatted_text.appendSlice(" (");
-                try formatted_text.appendSlice(link_url);
-                try formatted_text.appendSlice(")");
+                try formatted_text.appendSlice(app.allocator,"\x1b[4m"); // Start underline
+                try formatted_text.appendSlice(app.allocator,"\x1b[36m"); // Cyan color
+                try formatted_text.appendSlice(app.allocator,link_text);
+                try formatted_text.appendSlice(app.allocator,"\x1b[0m");  // Reset
+                try formatted_text.appendSlice(app.allocator," (");
+                try formatted_text.appendSlice(app.allocator,link_url);
+                try formatted_text.appendSlice(app.allocator,")");
 
-                const wrapped_lines = try wrapRawText(app.allocator, formatted_text.items, max_content_width - (indent_level * indent_str.len));
+                var wrapped_lines = try wrapRawText(app.allocator, formatted_text.items, max_content_width - (indent_level * indent_str.len));
                 defer {
                     for (wrapped_lines.items) |l| app.allocator.free(l);
-                    wrapped_lines.deinit();
+                    wrapped_lines.deinit(app.allocator);
                 }
 
                 for (wrapped_lines.items) |line| {
-                    var full_line = std.ArrayList(u8).init(app.allocator);
-                    for (0..indent_level) |_| try full_line.appendSlice(indent_str);
-                    try full_line.appendSlice(line);
-                    try output_lines.append(try full_line.toOwnedSlice());
+                    var full_line = std.ArrayListUnmanaged(u8){};
+                    for (0..indent_level) |_| try full_line.appendSlice(app.allocator, indent_str);
+                    try full_line.appendSlice(app.allocator, line);
+                    try output_lines.append(app.allocator, try full_line.toOwnedSlice(app.allocator));
                 }
             },
              .blank_line => {
-                try output_lines.append(try app.allocator.dupe(u8, ""));
+                try output_lines.append(app.allocator, try app.allocator.dupe(u8, ""));
             },
         }
     }
@@ -292,10 +292,10 @@ fn drawExpandedNote(
     const max_content_width = if (app.terminal_size.width > left_padding + 4) app.terminal_size.width - left_padding - 4 else 0;
 
     // Step 1: Recursively render all content into a simple list of lines.
-    var content_lines = std.ArrayList([]const u8).init(app.allocator);
+    var content_lines = std.ArrayListUnmanaged([]const u8){};
     defer {
         for (content_lines.items) |line| app.allocator.free(line);
-        content_lines.deinit();
+        content_lines.deinit(app.allocator);
     }
     try renderItemsToLines(app, &note.processed_content, &content_lines, 0, max_content_width);
 
@@ -304,7 +304,7 @@ fn drawExpandedNote(
 
     for (0..box_height) |line_idx| {
         const current_absolute_y = absolute_y.* + line_idx;
-        try app.valid_cursor_positions.append(current_absolute_y);
+        try app.valid_cursor_positions.append(app.allocator, current_absolute_y);
 
         if (current_absolute_y >= app.scroll_y and current_absolute_y - app.scroll_y < app.terminal_size.height - 1) {
             const screen_y = (current_absolute_y - app.scroll_y) + 1;
@@ -336,7 +336,7 @@ fn drawExpandedNote(
     }
     absolute_y.* += box_height + 1;
 
-    try app.clickable_areas.append(.{
+    try app.clickable_areas.append(app.allocator, .{
         .y_start = y_start,
         .y_end = absolute_y.* - 2,
         .x_start = 1,
@@ -354,7 +354,7 @@ fn drawCollapsedNote(
 ) !void {
     const left_padding = 2;
     const current_absolute_y = absolute_y.*;
-    try app.valid_cursor_positions.append(current_absolute_y);
+    try app.valid_cursor_positions.append(app.allocator, current_absolute_y);
 
     if (current_absolute_y >= app.scroll_y and current_absolute_y - app.scroll_y < app.terminal_size.height - 1) {
         const screen_y = (current_absolute_y - app.scroll_y) + 1;
@@ -367,7 +367,7 @@ fn drawCollapsedNote(
         const filename = fs.path.basename(note.path);
         try writer.print("[ {s} ]", .{filename});
     }
-    try app.clickable_areas.append(.{
+    try app.clickable_areas.append(app.allocator, .{
         .y_start = absolute_y.*,
         .y_end = absolute_y.*,
         .x_start = left_padding + 1,
@@ -380,21 +380,21 @@ fn drawCollapsedNote(
 pub const App = struct {
     allocator: mem.Allocator,
     config: Config,
-    notes: std.ArrayList(Note),
-    clickable_areas: std.ArrayList(ClickableArea),
+    notes: std.ArrayListUnmanaged(Note),
+    clickable_areas: std.ArrayListUnmanaged(ClickableArea),
     scroll_y: usize = 0,
     cursor_y: usize = 1,
     terminal_size: ui.TerminalSize,
-    valid_cursor_positions: std.ArrayList(usize),
+    valid_cursor_positions: std.ArrayListUnmanaged(usize),
 
     pub fn init(allocator: mem.Allocator, config: Config) !App {
         var app = App{
             .allocator = allocator,
             .config = config,
-            .notes = std.ArrayList(Note).init(allocator),
-            .clickable_areas = std.ArrayList(ClickableArea).init(allocator),
+            .notes = .{},
+            .clickable_areas = .{},
             .terminal_size = try ui.Tui.getTerminalSize(),
-            .valid_cursor_positions = std.ArrayList(usize).init(allocator),
+            .valid_cursor_positions = .{},
         };
         const dir_path = app.config.notes_dir;
         std.fs.cwd().makeDir(dir_path) catch |err| {
@@ -414,7 +414,7 @@ pub const App = struct {
                 };
                 defer file.close();
 
-                const content_raw = file.reader().readAllAlloc(allocator, 1024 * 1024) catch |err| {
+                const content_raw = file.readToEndAlloc(allocator, 1024 * 1024) catch |err| {
                     std.debug.print("Failed to read file {s}: {any}\n", .{ file_path, err });
                     continue;
                 };
@@ -428,7 +428,7 @@ pub const App = struct {
                 const content_processed = try markdown.processMarkdown(allocator, content_r_fixed);
                 const owned_path = try allocator.dupe(u8, file_path);
 
-                try app.notes.append(.{ .path = owned_path, .processed_content = content_processed });
+                try app.notes.append(app.allocator, .{ .path = owned_path, .processed_content = content_processed });
             }
         }
         return app;
@@ -440,17 +440,18 @@ pub const App = struct {
             for (note.processed_content.items) |*item| {
                 item.deinit(self.allocator);
             }
-            note.processed_content.deinit();
+            note.processed_content.deinit(self.allocator);
         }
-        self.notes.deinit();
-        self.clickable_areas.deinit();
-        self.valid_cursor_positions.deinit();
+        self.notes.deinit(self.allocator);
+        self.clickable_areas.deinit(self.allocator);
+        self.valid_cursor_positions.deinit(self.allocator);
     }
 
     pub fn run(self: *App, app_tui: *ui.Tui) !void {
         while (true) {
             self.terminal_size = try ui.Tui.getTerminalSize();
-            var buffered_writer = std.io.bufferedWriter(std.io.getStdOut().writer());
+            var stdout_buffer: [8192]u8 = undefined;
+            var buffered_writer = ui.BufferedStdoutWriter.init(&stdout_buffer);
             const writer = buffered_writer.writer();
             try writer.writeAll("\x1b[2J");
             self.clickable_areas.clearRetainingCapacity();
@@ -504,19 +505,19 @@ pub const App = struct {
                         for (note.processed_content.items) |*item| {
                             item.deinit(self.allocator);
                         }
-                        note.processed_content.deinit();
+                        note.processed_content.deinit(self.allocator);
                         
                         var dir = try fs.cwd().openDir(fs.path.dirname(note.path).?, .{});
                         var file = dir.openFile(fs.path.basename(note.path), .{}) catch |err| {
                             std.debug.print("Failed to reopen file {s} for reloading: {any}\n", .{note.path, err});
-                            note.processed_content = std.ArrayList(markdown.RenderableItem).init(self.allocator);
+                            note.processed_content = std.ArrayListUnmanaged(markdown.RenderableItem){};
                             continue;
                         };
                         defer file.close();
 
-                        const content_raw = file.reader().readAllAlloc(self.allocator, 1024 * 1024) catch |err| {
+                        const content_raw = file.readToEndAlloc(self.allocator, 1024 * 1024) catch |err| {
                             std.debug.print("Failed to re-read file {s}: {any}\n", .{note.path, err});
-                            note.processed_content = std.ArrayList(markdown.RenderableItem).init(self.allocator);
+                            note.processed_content = std.ArrayListUnmanaged(markdown.RenderableItem){};
                             continue;
                         };
                         defer self.allocator.free(content_raw);

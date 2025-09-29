@@ -49,8 +49,8 @@ fn utf8DecodeWithLen(slice: []const u8) !Utf8DecodeResult {
 
 // In lexer.zig
 // REPLACE the existing tokenize function with this one.
-pub fn tokenize(allocator: mem.Allocator, input: []const u8) !std.ArrayList(Token) {
-    var tokens = std.ArrayList(Token).init(allocator);
+pub fn tokenize(allocator: mem.Allocator, input: []const u8) !std.ArrayListUnmanaged(Token) {
+    var tokens = std.ArrayListUnmanaged(Token){};
     var i: usize = 0;
 
     while (i < input.len) {
@@ -72,7 +72,7 @@ pub fn tokenize(allocator: mem.Allocator, input: []const u8) !std.ArrayList(Toke
                 current_pos += 1;
             }
             if (current_pos > i) {
-                try tokens.append(.{
+                try tokens.append(allocator, .{
                     .tag = .indent,
                     .text = input[i..current_pos],
                     .indent_width = width,
@@ -88,7 +88,7 @@ pub fn tokenize(allocator: mem.Allocator, input: []const u8) !std.ArrayList(Toke
                 var j = i;
                 while (j < input.len and input[j] == char) : (j += 1) {}
                 if (j - i >= 3) {
-                    try tokens.append(.{ .tag = .code_fence, .text = input[i..j] });
+                    try tokens.append(allocator, .{ .tag = .code_fence, .text = input[i..j] });
                     i = j;
                     continue;
                 }
@@ -99,7 +99,7 @@ pub fn tokenize(allocator: mem.Allocator, input: []const u8) !std.ArrayList(Toke
                 var j = i;
                 while (j < input.len and input[j] == '#') : (j += 1) {}
                 if (j < input.len and (input[j] == ' ' or input[j] == '\n')) {
-                    try tokens.append(.{ .tag = .atx_heading, .text = input[i..j] });
+                    try tokens.append(allocator, .{ .tag = .atx_heading, .text = input[i..j] });
                     i = j;
                     continue;
                 }
@@ -108,7 +108,7 @@ pub fn tokenize(allocator: mem.Allocator, input: []const u8) !std.ArrayList(Toke
             // Unordered List Marker
             if (char == '*' or char == '-' or char == '+') {
                 if (i + 1 < input.len and input[i + 1] == ' ') {
-                    try tokens.append(.{ .tag = .unordered_list_marker, .text = input[i .. i + 1] });
+                    try tokens.append(allocator, .{ .tag = .unordered_list_marker, .text = input[i .. i + 1] });
                     i += 1; // Consume only the '*', not the space after it.
                     continue;
                 }
@@ -120,7 +120,7 @@ pub fn tokenize(allocator: mem.Allocator, input: []const u8) !std.ArrayList(Toke
                 while (j < input.len and ascii.isDigit(input[j])) : (j += 1) {}
                 if (j < input.len and (input[j] == '.' or input[j] == ')')) {
                     if (j + 1 < input.len and input[j + 1] == ' ') {
-                        try tokens.append(.{ .tag = .ordered_list_marker, .text = input[i .. j + 1] });
+                        try tokens.append(allocator, .{ .tag = .ordered_list_marker, .text = input[i .. j + 1] });
                         i = j + 1; // Consume the marker (e.g., "1."), not the space.
                         continue;
                     }
@@ -129,7 +129,7 @@ pub fn tokenize(allocator: mem.Allocator, input: []const u8) !std.ArrayList(Toke
 
            // Blockquote
 if (char == '>') {
-    try tokens.append(.{ .tag = .blockquote, .text = input[i .. i + 1] });
+    try tokens.append(allocator, .{ .tag = .blockquote, .text = input[i .. i + 1] });
     i += 1; // Consume the '>'
     continue;
 
@@ -144,31 +144,31 @@ if (char == '>') {
         switch (decode_result.codepoint) {
             '*' => {
                 i += decode_result.len;
-                try tokens.append(.{ .tag = .asterisk, .text = input[start..i] });
+                try tokens.append(allocator, .{ .tag = .asterisk, .text = input[start..i] });
             },
             '_' => {
                 i += decode_result.len;
-                try tokens.append(.{ .tag = .underscore, .text = input[start..i] });
+                try tokens.append(allocator, .{ .tag = .underscore, .text = input[start..i] });
             },
             '`' => {
                 i += decode_result.len;
-                try tokens.append(.{ .tag = .backtick, .text = input[start..i] });
+                try tokens.append(allocator, .{ .tag = .backtick, .text = input[start..i] });
             },
             '~' => {
                 i += decode_result.len;
-                try tokens.append(.{ .tag = .tilde, .text = input[start..i] });
+                try tokens.append(allocator, .{ .tag = .tilde, .text = input[start..i] });
             },
             '[' => {
                 i += decode_result.len;
-                try tokens.append(.{ .tag = .left_bracket, .text = input[start..i] });
+                try tokens.append(allocator, .{ .tag = .left_bracket, .text = input[start..i] });
             },
             ']' => {
                 i += decode_result.len;
-                try tokens.append(.{ .tag = .right_bracket, .text = input[start..i] });
+                try tokens.append(allocator, .{ .tag = .right_bracket, .text = input[start..i] });
             },
             '\n' => {
                 i += decode_result.len;
-                try tokens.append(.{ .tag = .newline, .text = input[start..i] });
+                try tokens.append(allocator, .{ .tag = .newline, .text = input[start..i] });
             },
             else => {
                 const text_start = i;
@@ -181,7 +181,7 @@ if (char == '>') {
                     current_pos += dr.len;
                 }
                 i = current_pos;
-                try tokens.append(.{ .tag = .text, .text = input[text_start..i] });
+                try tokens.append(allocator, .{ .tag = .text, .text = input[text_start..i] });
             },
         }
     }

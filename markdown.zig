@@ -7,7 +7,7 @@ const ascii = std.ascii;
 // --- AST Node Definition ---
 pub const AstNode = struct {
     tag: Tag,
-    children: ?std.ArrayList(*AstNode),
+    children: ?std.ArrayListUnmanaged(*AstNode),
     text: ?[]const u8,
     start_number: usize = 1,
     lang: ?[]const u8,
@@ -34,7 +34,7 @@ pub const AstNode = struct {
         const node = try allocator.create(AstNode);
         node.* = .{
             .tag = tag,
-            .children = std.ArrayList(*AstNode).init(allocator),
+            .children = std.ArrayListUnmanaged(*AstNode){},
             .text = null,
             .lang = null,
         };
@@ -57,7 +57,7 @@ pub const AstNode = struct {
             for (children.items) |child| {
                 child.deinit(allocator);
             }
-            children.deinit();
+            children.deinit(allocator);
         }
         // --- THIS IS THE CORRECTED LOGIC ---
         // We first check if the tag is .text, and *then* we check if the
@@ -95,7 +95,7 @@ pub const RenderableItem = struct {
 
     pub const Payload = union {
         styled_text: []const u8,
-        blockquote: std.ArrayList(RenderableItem),
+        blockquote: std.ArrayListUnmanaged(RenderableItem),
         code_block: struct {
             content: []const u8,
             lang: ?[]const u8,
@@ -104,7 +104,7 @@ pub const RenderableItem = struct {
         list: struct {
             is_ordered: bool,
             start_number: usize,
-            items: std.ArrayList(std.ArrayList(RenderableItem)),
+            items: std.ArrayListUnmanaged(std.ArrayListUnmanaged(RenderableItem)),
         },
         link: struct {
             text: []const u8,
@@ -126,16 +126,16 @@ pub const RenderableItem = struct {
                 for (self.payload.blockquote.items) |*item| {
                     item.deinit(allocator);
                 }
-                self.payload.blockquote.deinit();
+                self.payload.blockquote.deinit(allocator);
             },
             .list => {
-                for (self.payload.list.items.items) |item_blocks| {
+                for (self.payload.list.items.items) |*item_blocks| {
                     for (item_blocks.items) |*block| {
                         block.deinit(allocator);
                     }
-                    item_blocks.deinit();
+                    item_blocks.deinit(allocator);
                 }
-                self.payload.list.items.deinit();
+                self.payload.list.items.deinit(allocator);
             },
             .link => {
                 allocator.free(self.payload.link.text);
@@ -248,7 +248,7 @@ const Parser = struct {
         };
     }
 
-    fn parseLink(self: *Parser, parent_list: *std.ArrayList(?*AstNode)) !void {
+    fn parseLink(self: *Parser, parent_list: *std.ArrayListUnmanaged(?*AstNode)) !void {
         var scan_pos = self.pos + 1;
         var found_close_bracket = false;
         while (scan_pos < self.tokens.len) {
@@ -264,7 +264,7 @@ const Parser = struct {
         }
 
         if (!found_close_bracket or scan_pos >= self.tokens.len) {
-            try parent_list.append(try AstNode.initText(self.allocator, self.peek().?.text));
+            try parent_list.append(self.allocator, try AstNode.initText(self.allocator, self.peek().?.text));
             self.advance();
             return;
         }
@@ -272,7 +272,7 @@ const Parser = struct {
         const next_tok = self.tokens[scan_pos];
         const is_link = (next_tok.tag == .text and next_tok.text.len > 1 and next_tok.text[0] == '(' and next_tok.text[next_tok.text.len - 1] == ')');
         if (!is_link) {
-            try parent_list.append(try AstNode.initText(self.allocator, self.peek().?.text));
+            try parent_list.append(self.allocator, try AstNode.initText(self.allocator, self.peek().?.text));
             self.advance();
             return;
         }
@@ -281,7 +281,7 @@ const Parser = struct {
 
         const link_node = try AstNode.init(self.allocator, .link);
         while (self.peek().?.tag != .right_bracket) {
-            try link_node.children.?.append(try AstNode.initText(self.allocator, self.peek().?.text));
+            try link_node.children.?.append(self.allocator, try AstNode.initText(self.allocator, self.peek().?.text));
             self.advance();
         }
 
@@ -292,44 +292,44 @@ const Parser = struct {
         link_node.text = try self.allocator.dupe(u8, url);
         self.advance();
 
-        try parent_list.append(link_node);
+        try parent_list.append(self.allocator, link_node);
     }
 
-    fn parseInline(self: *Parser, parent_list: *std.ArrayList(*AstNode)) !void {
-        var delimiters = std.ArrayList(Delimiter).init(self.allocator);
-        defer delimiters.deinit();
+    fn parseInline(self: *Parser, parent_list: *std.ArrayListUnmanaged(*AstNode)) !void {
+        var delimiters = std.ArrayListUnmanaged(Delimiter){};
+        defer delimiters.deinit(self.allocator);
 
-        var nodes = std.ArrayList(?*AstNode).init(self.allocator);
+        var nodes = std.ArrayListUnmanaged(?*AstNode){};
         defer {
             for (nodes.items) |node| {
                 if (node) |non_null_node| {
                     non_null_node.deinit(self.allocator);
                 }
             }
-            nodes.deinit();
+            nodes.deinit(self.allocator);
         }
 
         while (self.peek()) |token| {
             if (token.tag == .newline) break;
             switch (token.tag) {
                 .text => {
-                    try nodes.append(try AstNode.initText(self.allocator, token.text));
+                    try nodes.append(self.allocator, try AstNode.initText(self.allocator, token.text));
                     self.advance();
                 },
                 .backtick => {
                     self.advance();
-                    var content_buffer = std.ArrayList(u8).init(self.allocator);
-                    defer content_buffer.deinit();
+                    var content_buffer = std.ArrayListUnmanaged(u8){};
+                    defer content_buffer.deinit(self.allocator);
 
                     while (self.peek()) |inner_tok| {
                         if (inner_tok.tag == .backtick) break;
-                        try content_buffer.appendSlice(inner_tok.text);
+                        try content_buffer.appendSlice(self.allocator, inner_tok.text);
                         self.advance();
                     }
                     _ = self.consume(.backtick);
                     const code_node = try AstNode.init(self.allocator, .inline_code);
-                    code_node.text = try content_buffer.toOwnedSlice();
-                    try nodes.append(code_node);
+                    code_node.text = try content_buffer.toOwnedSlice(self.allocator);
+                    try nodes.append(self.allocator, code_node);
                 },
                 .left_bracket => {
                     try self.parseLink(&nodes);
@@ -343,7 +343,7 @@ const Parser = struct {
                     const num_delims = current_pos - start_pos;
                     const classification = classifyDelimiter(self.tokens, start_pos, num_delims);
 
-                    try delimiters.append(.{
+                    try delimiters.append(self.allocator, .{
                         .token_index = nodes.items.len,
                         .delim_char = token.text[0],
                         .num_delims = num_delims,
@@ -353,7 +353,7 @@ const Parser = struct {
                     self.pos = current_pos;
                 },
                 else => {
-                    try nodes.append(try AstNode.initText(self.allocator, token.text));
+                    try nodes.append(self.allocator, try AstNode.initText(self.allocator, token.text));
                     self.advance();
                 },
             }
@@ -363,7 +363,7 @@ const Parser = struct {
 
         for (nodes.items) |node| {
             if (node) |non_null_node| {
-                try parent_list.append(non_null_node);
+                try parent_list.append(self.allocator, non_null_node);
             }
         }
 
@@ -372,7 +372,7 @@ const Parser = struct {
         }
     }
 
-    fn findMatchingOpener(delimiters: *const std.ArrayList(Delimiter), closer_idx: usize) ?usize {
+    fn findMatchingOpener(delimiters: *const std.ArrayListUnmanaged(Delimiter), closer_idx: usize) ?usize {
         const closer = delimiters.items[closer_idx];
         var i: i64 = @as(i64, @intCast(closer_idx)) - 1;
         while (i >= 0) : (i -= 1) {
@@ -388,8 +388,8 @@ const Parser = struct {
 
     fn processDelimiters(
         allocator: mem.Allocator,
-        nodes: *std.ArrayList(?*AstNode),
-        delimiters: *std.ArrayList(Delimiter),
+        nodes: *std.ArrayListUnmanaged(?*AstNode),
+        delimiters: *std.ArrayListUnmanaged(Delimiter),
     ) !void {
         var i: i64 = if (delimiters.items.len == 0) -1 else @as(i64, @intCast(delimiters.items.len - 1));
         while (i >= 0) : (i -= 1) {
@@ -417,7 +417,7 @@ const Parser = struct {
                 if (start_node_idx < end_node_idx) {
                     for (nodes.items[start_node_idx..end_node_idx]) |node| {
                         if (node) |non_null_node| {
-                            try styled_node.children.?.append(non_null_node);
+                            try styled_node.children.?.append(allocator, non_null_node);
                         }
                     }
                 }
@@ -434,8 +434,8 @@ const Parser = struct {
             }
         }
 
-        var final_nodes = std.ArrayList(*AstNode).init(allocator);
-        defer final_nodes.deinit();
+        var final_nodes = std.ArrayListUnmanaged(*AstNode){};
+        defer final_nodes.deinit(allocator);
 
         var node_cursor: usize = 0;
         var delim_cursor: usize = 0;
@@ -447,16 +447,16 @@ const Parser = struct {
 
             if (node_cursor < next_delim_idx) {
                 if (nodes.items[node_cursor]) |node| {
-                    try final_nodes.append(node);
+                    try final_nodes.append(allocator, node);
                 }
                 node_cursor += 1;
             } else if (delim_cursor < delimiters.items.len) {
                 const delim = delimiters.items[delim_cursor];
                 if (delim.num_delims > 0) {
-                    var text_buf = std.ArrayList(u8).init(allocator);
-                    defer text_buf.deinit();
-                    for (0..delim.num_delims) |_| try text_buf.append(delim.delim_char);
-                    try final_nodes.append(try AstNode.initText(allocator, try text_buf.toOwnedSlice()));
+                    var text_buf = std.ArrayListUnmanaged(u8){};
+                    defer text_buf.deinit(allocator);
+                    for (0..delim.num_delims) |_| try text_buf.append(allocator, delim.delim_char);
+                    try final_nodes.append(allocator, try AstNode.initText(allocator, try text_buf.toOwnedSlice(allocator)));
                 }
                 delim_cursor += 1;
             } else {
@@ -466,7 +466,7 @@ const Parser = struct {
 
         nodes.clearRetainingCapacity();
         for (final_nodes.items) |node| {
-            try nodes.append(node);
+            try nodes.append(allocator, node);
         }
     }
 
@@ -563,8 +563,8 @@ const Parser = struct {
     fn parseParagraph(self: *Parser) anyerror!*AstNode {
         const para = try AstNode.init(self.allocator, .paragraph);
 
-        var buffer = std.ArrayList(u8).init(self.allocator);
-        defer buffer.deinit();
+        var buffer = std.ArrayListUnmanaged(u8){};
+        defer buffer.deinit(self.allocator);
 
         while (self.peek()) |tok| {
             if (self.isBlockStarter(tok)) break;
@@ -573,12 +573,12 @@ const Parser = struct {
                     self.advance();
                     break;
                 }
-                try buffer.append(' ');
+                try buffer.append(self.allocator, ' ');
                 self.advance();
                 continue;
             }
 
-            try buffer.appendSlice(tok.text);
+            try buffer.appendSlice(self.allocator, tok.text);
             self.advance();
         }
 
@@ -587,8 +587,8 @@ const Parser = struct {
             defer temp_arena.deinit();
             const temp_allocator = temp_arena.allocator();
 
-            const paragraph_tokens = try lexer.tokenize(temp_allocator, buffer.items);
-            defer paragraph_tokens.deinit();
+            var paragraph_tokens = try lexer.tokenize(temp_allocator, buffer.items);
+            defer paragraph_tokens.deinit(temp_allocator);
 
             if (paragraph_tokens.items.len > 0) {
                 var inline_parser = Parser.init(self.allocator, paragraph_tokens.items);
@@ -610,25 +610,25 @@ const Parser = struct {
         }
         _ = self.consume(.newline);
 
-        var content = std.ArrayList(u8).init(self.allocator);
-        defer content.deinit();
+        var content = std.ArrayListUnmanaged(u8){};
+        defer content.deinit(self.allocator);
         while (!self.eof()) {
             const tok = self.peek().?;
             if (tok.tag == .code_fence and mem.eql(u8, tok.text, open_fence)) {
                 self.advance();
                 break;
             }
-            try content.appendSlice(tok.text);
+            try content.appendSlice(self.allocator, tok.text);
             self.advance();
         }
-        node.text = try content.toOwnedSlice();
+        node.text = try content.toOwnedSlice(self.allocator);
         return node;
     }
 
     fn parseBlockquote(self: *Parser, _: usize) anyerror!*AstNode {
         const quote = try AstNode.init(self.allocator, .blockquote);
-        var buffer = std.ArrayList(u8).init(self.allocator);
-        defer buffer.deinit();
+        var buffer = std.ArrayListUnmanaged(u8){};
+        defer buffer.deinit(self.allocator);
 
         while (!self.eof()) {
             const backup_pos = self.pos;
@@ -648,11 +648,11 @@ const Parser = struct {
             while (!self.eof()) {
                 const tok = self.peek().?;
                 if (tok.tag == .newline) {
-                    try buffer.append('\n');
+                    try buffer.append(self.allocator, '\n');
                     self.advance();
                     break;
                 }
-                try buffer.appendSlice(tok.text);
+                try buffer.appendSlice(self.allocator, tok.text);
                 self.advance();
             }
 
@@ -663,14 +663,14 @@ const Parser = struct {
             }
         }
 
-        const sub_tokens = try lexer.tokenize(self.allocator, buffer.items);
-        defer sub_tokens.deinit();
+        var sub_tokens = try lexer.tokenize(self.allocator, buffer.items);
+        defer sub_tokens.deinit(self.allocator);
 
         if (sub_tokens.items.len > 0) {
             var sub_parser = Parser.init(self.allocator, sub_tokens.items);
             const sub_ast = try sub_parser.parse();
             defer sub_ast.deinit(self.allocator);
-            try quote.children.?.appendSlice(sub_ast.children.?.items);
+            try quote.children.?.appendSlice(self.allocator, sub_ast.children.?.items);
             sub_ast.children = null;
         }
         return quote;
@@ -722,7 +722,7 @@ const Parser = struct {
                 break;
             }
 
-            try list.children.?.append(try self.parseListItem(indent_width));
+            try list.children.?.append(self.allocator, try self.parseListItem(indent_width));
 
             if (self.eof()) break;
         }
@@ -733,7 +733,7 @@ const Parser = struct {
     fn parseListItem(self: *Parser, list_indent: usize) anyerror!*AstNode {
         const item = try AstNode.init(self.allocator, .list_item);
         const para = try AstNode.init(self.allocator, .paragraph);
-        try item.children.?.append(para);
+        try item.children.?.append(self.allocator, para);
 
         self.advance();
 
@@ -772,11 +772,11 @@ const Parser = struct {
             self.advance();
 
             if (try self.parseBlock(next_indent)) |block| {
-                try item.children.?.append(block);
+                try item.children.?.append(self.allocator, block);
             } else {
                 const para = try AstNode.init(self.allocator, .paragraph);
                 try self.parseInline(&para.children.?);
-                try item.children.?.append(para);
+                try item.children.?.append(self.allocator, para);
             }
         }
     }
@@ -788,11 +788,11 @@ const Parser = struct {
             if (self.eof()) break;
 
             if (try self.parseBlock(0)) |block| {
-                try doc.children.?.append(block);
+                try doc.children.?.append(self.allocator, block);
             } else {
                 const para = try self.parseParagraph();
                 if (para.children.?.items.len > 0) {
-                    try doc.children.?.append(para);
+                    try doc.children.?.append(self.allocator, para);
                 } else {
                     para.deinit(self.allocator);
                 }
@@ -811,73 +811,74 @@ const ANSI_BG_GREY_START = "\x1b[48;5;250m";
 
 fn renderNodeToStringRecursive(
     node: *AstNode,
-    buffer: *std.ArrayList(u8),
+    buffer: *std.ArrayListUnmanaged(u8),
+    allocator: mem.Allocator,
 ) error{OutOfMemory}!void {
     switch (node.tag) {
         .document, .paragraph, .list_item => {
             for (node.children.?.items) |child| {
-                try renderNodeToStringRecursive(child, buffer);
+                try renderNodeToStringRecursive(child, buffer, allocator);
             }
         },
         .blockquote => {
             for (node.children.?.items) |child| {
-                try renderNodeToStringRecursive(child, buffer);
+                try renderNodeToStringRecursive(child, buffer, allocator);
             }
         },
         .heading => {
-            try buffer.appendSlice(ANSI_BOLD_START);
-            try buffer.appendSlice(ANSI_UNDERLINE_START);
+            try buffer.appendSlice(allocator, ANSI_BOLD_START);
+            try buffer.appendSlice(allocator, ANSI_UNDERLINE_START);
             for (node.children.?.items) |child| {
-                try renderNodeToStringRecursive(child, buffer);
+                try renderNodeToStringRecursive(child, buffer, allocator);
             }
-            try buffer.appendSlice(ANSI_RESET);
+            try buffer.appendSlice(allocator, ANSI_RESET);
         },
         .bold => {
-            try buffer.appendSlice(ANSI_BOLD_START);
+            try buffer.appendSlice(allocator, ANSI_BOLD_START);
             for (node.children.?.items) |child| {
-                try renderNodeToStringRecursive(child, buffer);
+                try renderNodeToStringRecursive(child, buffer, allocator);
             }
-            try buffer.appendSlice(ANSI_RESET);
+            try buffer.appendSlice(allocator, ANSI_RESET);
         },
         .italic => {
-            try buffer.appendSlice(ANSI_ITALIC_START);
+            try buffer.appendSlice(allocator, ANSI_ITALIC_START);
             for (node.children.?.items) |child| {
-                try renderNodeToStringRecursive(child, buffer);
+                try renderNodeToStringRecursive(child, buffer, allocator);
             }
-            try buffer.appendSlice(ANSI_RESET);
+            try buffer.appendSlice(allocator, ANSI_RESET);
         },
         .strikethrough => {
-            try buffer.appendSlice(ANSI_STRIKETHROUGH_START);
+            try buffer.appendSlice(allocator, ANSI_STRIKETHROUGH_START);
             for (node.children.?.items) |child| {
-                try renderNodeToStringRecursive(child, buffer);
+                try renderNodeToStringRecursive(child, buffer, allocator);
             }
-            try buffer.appendSlice(ANSI_RESET);
+            try buffer.appendSlice(allocator, ANSI_RESET);
         },
         .inline_code => {
-            try buffer.appendSlice(ANSI_BG_GREY_START);
-            if (node.text) |text| try buffer.appendSlice(text);
-            try buffer.appendSlice(ANSI_RESET);
+            try buffer.appendSlice(allocator, ANSI_BG_GREY_START);
+            if (node.text) |text| try buffer.appendSlice(allocator, text);
+            try buffer.appendSlice(allocator, ANSI_RESET);
         },
         .link => {
-            try buffer.appendSlice(ANSI_UNDERLINE_START);
+            try buffer.appendSlice(allocator, ANSI_UNDERLINE_START);
             for (node.children.?.items) |child| {
-                try renderNodeToStringRecursive(child, buffer);
+                try renderNodeToStringRecursive(child, buffer, allocator);
             }
-            try buffer.appendSlice(ANSI_RESET);
+            try buffer.appendSlice(allocator, ANSI_RESET);
         },
-        .text => if (node.text) |text| try buffer.appendSlice(text),
+        .text => if (node.text) |text| try buffer.appendSlice(allocator, text),
         .code_block, .horizontal_rule, .unordered_list, .ordered_list => {},
     }
 }
 
 fn renderNodeToString(allocator: mem.Allocator, node: *AstNode) ![]const u8 {
-    var buffer = std.ArrayList(u8).init(allocator);
-    try renderNodeToStringRecursive(node, &buffer);
-    return buffer.toOwnedSlice();
+    var buffer = std.ArrayListUnmanaged(u8){};
+    try renderNodeToStringRecursive(node, &buffer, allocator);
+    return buffer.toOwnedSlice(allocator);
 }
 
-fn astToRenderableItems(allocator: mem.Allocator, root: *AstNode) !std.ArrayList(RenderableItem) {
-    var items = std.ArrayList(RenderableItem).init(allocator);
+fn astToRenderableItems(allocator: mem.Allocator, root: *AstNode) !std.ArrayListUnmanaged(RenderableItem) {
+    var items = std.ArrayListUnmanaged(RenderableItem){};
 
     if (root.children) |children| {
         for (children.items) |child| {
@@ -892,11 +893,11 @@ fn astToRenderableItems(allocator: mem.Allocator, root: *AstNode) !std.ArrayList
                     } else false;
 
                     if (is_blank_line) {
-                        try items.append(.{ .tag = .blank_line, .payload = .{ .blank_line = {} } });
+                        try items.append(allocator, .{ .tag = .blank_line, .payload = .{ .blank_line = {} } });
                     } else {
                         const text = try renderNodeToString(allocator, child);
                         if (text.len > 0) {
-                            try items.append(.{ .tag = .styled_text, .payload = .{ .styled_text = text } });
+                            try items.append(allocator, .{ .tag = .styled_text, .payload = .{ .styled_text = text } });
                         } else {
                             allocator.free(text);
                         }
@@ -905,33 +906,33 @@ fn astToRenderableItems(allocator: mem.Allocator, root: *AstNode) !std.ArrayList
                 .heading => {
                     const text = try renderNodeToString(allocator, child);
                     if (text.len > 0) {
-                        try items.append(.{ .tag = .styled_text, .payload = .{ .styled_text = text } });
+                        try items.append(allocator, .{ .tag = .styled_text, .payload = .{ .styled_text = text } });
                     } else {
                         allocator.free(text);
                     }
                 },
                 .blockquote => {
                     const sub_items = try astToRenderableItems(allocator, child);
-                    try items.append(.{ .tag = .blockquote, .payload = .{ .blockquote = sub_items } });
+                    try items.append(allocator, .{ .tag = .blockquote, .payload = .{ .blockquote = sub_items } });
                 },
                 .code_block => {
-                    try items.append(.{
+                    try items.append(allocator, .{
                         .tag = .code_block,
                         .payload = .{ .code_block = .{ .content = child.text.?, .lang = child.lang } },
                     });
                 },
                 .horizontal_rule => {
-                    try items.append(.{ .tag = .horizontal_rule, .payload = .{ .horizontal_rule = {} } });
+                    try items.append(allocator, .{ .tag = .horizontal_rule, .payload = .{ .horizontal_rule = {} } });
                 },
                 .unordered_list, .ordered_list => {
-                    var list_items = std.ArrayList(std.ArrayList(RenderableItem)).init(allocator);
+                    var list_items = std.ArrayListUnmanaged(std.ArrayListUnmanaged(RenderableItem)){};
                     if (child.children) |li_nodes| {
                         for (li_nodes.items) |li_node| {
                             const item_blocks = try astToRenderableItems(allocator, li_node);
-                            try list_items.append(item_blocks);
+                            try list_items.append(allocator, item_blocks);
                         }
                     }
-                    try items.append(.{
+                    try items.append(allocator, .{
                         .tag = .list,
                         .payload = .{ .list = .{
                             .is_ordered = (child.tag == .ordered_list),
@@ -943,7 +944,7 @@ fn astToRenderableItems(allocator: mem.Allocator, root: *AstNode) !std.ArrayList
                 .link => {
                     const text = try renderNodeToString(allocator, child);
                     const url = if (child.text) |url| try allocator.dupe(u8, url) else try allocator.dupe(u8, "");
-                    try items.append(.{
+                    try items.append(allocator, .{
                         .tag = .link,
                         .payload = .{ .link = .{ .text = text, .url = url } },
                     });
@@ -980,9 +981,9 @@ fn cloneRenderableItem(
             }},
         },
         .blockquote => {
-            var cloned_sub_items = std.ArrayList(RenderableItem).init(gpa);
+            var cloned_sub_items = std.ArrayListUnmanaged(RenderableItem){};
             for (item.payload.blockquote.items) |*sub_item| {
-                try cloned_sub_items.append(try cloneRenderableItem(gpa, sub_item));
+                try cloned_sub_items.append(gpa, try cloneRenderableItem(gpa, sub_item));
             }
             return .{
                 .tag = .blockquote,
@@ -990,13 +991,13 @@ fn cloneRenderableItem(
             };
         },
         .list => {
-            var cloned_list_items = std.ArrayList(std.ArrayList(RenderableItem)).init(gpa);
+            var cloned_list_items = std.ArrayListUnmanaged(std.ArrayListUnmanaged(RenderableItem)){};
             for (item.payload.list.items.items) |li_blocks| {
-                var cloned_blocks = std.ArrayList(RenderableItem).init(gpa);
+                var cloned_blocks = std.ArrayListUnmanaged(RenderableItem){};
                 for (li_blocks.items) |*block| {
-                    try cloned_blocks.append(try cloneRenderableItem(gpa, block));
+                    try cloned_blocks.append(gpa, try cloneRenderableItem(gpa, block));
                 }
-                try cloned_list_items.append(cloned_blocks);
+                try cloned_list_items.append(gpa, cloned_blocks);
             }
             return .{
                 .tag = .list,
@@ -1017,30 +1018,30 @@ fn cloneRenderableItem(
     };
 }
 
-pub fn processMarkdown(gpa: std.mem.Allocator, markdown_text: []const u8) !std.ArrayList(RenderableItem) {
+pub fn processMarkdown(gpa: std.mem.Allocator, markdown_text: []const u8) !std.ArrayListUnmanaged(RenderableItem) {
     var arena = std.heap.ArenaAllocator.init(gpa);
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const tokens = try lexer.tokenize(allocator, markdown_text);
-    defer tokens.deinit();
+    var tokens = try lexer.tokenize(allocator, markdown_text);
+    defer tokens.deinit(allocator);
 
     var p = Parser.init(allocator, tokens.items);
     const ast_root = try p.parse();
     defer ast_root.deinit(allocator);
 
-    const arena_items = try astToRenderableItems(allocator, ast_root);
+    var arena_items = try astToRenderableItems(allocator, ast_root);
     defer {
         for (arena_items.items) |*item| {
             item.deinit(allocator);
         }
-        arena_items.deinit();
+        arena_items.deinit(allocator);
     }
 
-    var gpa_items = std.ArrayList(RenderableItem).init(gpa);
-    errdefer gpa_items.deinit();
+    var gpa_items = std.ArrayListUnmanaged(RenderableItem){};
+    errdefer gpa_items.deinit(gpa);
     for (arena_items.items) |*item| {
-        try gpa_items.append(try cloneRenderableItem(gpa, item));
+        try gpa_items.append(gpa, try cloneRenderableItem(gpa, item));
     }
 
     return gpa_items;

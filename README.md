@@ -14,7 +14,7 @@ A fast, lightweight terminal-based markdown viewer written in Zig. ZigMark provi
 
 ## Prerequisites
 
-- **Zig compiler** (version 0.14.1 or later)
+- **Zig compiler** (version 0.15.1 or later)
 - Ghostty & Nvim
 
 ## Installation & Setup

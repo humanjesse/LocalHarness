@@ -31,12 +31,12 @@ pub const Tui = struct {
         raw.c_cc[c.VMIN] = 0;
         raw.c_cc[c.VTIME] = 1;
         if (c.tcsetattr(c.STDIN_FILENO, c.TCSAFLUSH, &raw) != 0) return error.SetAttrFailed;
-        try std.io.getStdOut().writer().print("\x1b[?25l\x1b[?1000h", .{});
+        _ = try std.posix.write(std.posix.STDOUT_FILENO, "\x1b[?25l\x1b[?1000h");
     }
 
     pub fn disableRawMode(self: *const Tui) void {
         _ = c.tcsetattr(c.STDIN_FILENO, c.TCSAFLUSH, &self.orig_termios);
-        std.io.getStdOut().writer().print("\x1b[?25h\x1b[?1000l", .{}) catch {};
+        _ = std.posix.write(std.posix.STDOUT_FILENO, "\x1b[?25h\x1b[?1000l") catch {};
     }
 
     pub fn getTerminalSize() !TerminalSize {
@@ -48,6 +48,46 @@ pub const Tui = struct {
     }
 };
 // --- END: Merged from tui.zig ---
+
+// Buffered stdout writer for Zig 0.15.1
+pub const BufferedStdoutWriter = struct {
+    buffer: []u8,
+    pos: usize,
+
+    pub fn init(buffer: []u8) BufferedStdoutWriter {
+        return .{ .buffer = buffer, .pos = 0 };
+    }
+
+    pub const WriteError = error{};
+
+    pub fn write(self: *BufferedStdoutWriter, bytes: []const u8) WriteError!usize {
+        if (self.pos + bytes.len > self.buffer.len) {
+            // Flush and continue
+            self.flush() catch {};
+            if (bytes.len > self.buffer.len) {
+                // Write directly if too large for buffer
+                _ = std.posix.write(std.posix.STDOUT_FILENO, bytes) catch return 0;
+                return bytes.len;
+            }
+        }
+        @memcpy(self.buffer[self.pos..][0..bytes.len], bytes);
+        self.pos += bytes.len;
+        return bytes.len;
+    }
+
+    pub const Writer = std.io.GenericWriter(*BufferedStdoutWriter, WriteError, write);
+
+    pub fn writer(self: *BufferedStdoutWriter) Writer {
+        return Writer{ .context = self };
+    }
+
+    pub fn flush(self: *BufferedStdoutWriter) !void {
+        if (self.pos > 0) {
+            _ = try std.posix.write(std.posix.STDOUT_FILENO, self.buffer[0..self.pos]);
+            self.pos = 0;
+        }
+    }
+};
 
 // --- START: Merged from ansi.zig ---
 pub const AnsiParser = struct {

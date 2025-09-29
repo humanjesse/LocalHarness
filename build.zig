@@ -7,9 +7,11 @@ pub fn build(b: *std.Build) void {
 
     const exe = b.addExecutable(.{
         .name = "my_tui_app",
-        .root_source_file = b.path("main.zig"),
-        .target = target,
-        .optimize = optimize,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("main.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
     });
 
     // REFLECTS REFACTORING: Define the three core modules.
