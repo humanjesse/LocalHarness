@@ -31,12 +31,13 @@ pub const Tui = struct {
         raw.c_cc[c.VMIN] = 0;
         raw.c_cc[c.VTIME] = 1;
         if (c.tcsetattr(c.STDIN_FILENO, c.TCSAFLUSH, &raw) != 0) return error.SetAttrFailed;
-        _ = try std.posix.write(std.posix.STDOUT_FILENO, "\x1b[?25l\x1b[?1000h");
+        // Enable: hide cursor, SGR mouse mode (1006), normal mouse tracking (1000)
+        _ = try std.posix.write(std.posix.STDOUT_FILENO, "\x1b[?25l\x1b[?1006h\x1b[?1000h");
     }
 
     pub fn disableRawMode(self: *const Tui) void {
         _ = c.tcsetattr(c.STDIN_FILENO, c.TCSAFLUSH, &self.orig_termios);
-        _ = std.posix.write(std.posix.STDOUT_FILENO, "\x1b[?25h\x1b[?1000l") catch {};
+        _ = std.posix.write(std.posix.STDOUT_FILENO, "\x1b[?25h\x1b[?1006l\x1b[?1000l") catch {};
     }
 
     pub fn getTerminalSize() !TerminalSize {
@@ -329,6 +330,85 @@ pub fn handleInput(
         }
     }
 
+    // SGR mouse parser - handles modern terminals with unlimited coordinates
+    // Format: \x1b[<button;col;row;M (press) or m (release)
+    if (input.len >= 6 and mem.eql(u8, input[0..3], "\x1b[<")) {
+        var idx: usize = 3;
+
+        // Parse button
+        var button: u32 = 0;
+        while (idx < input.len and input[idx] >= '0' and input[idx] <= '9') : (idx += 1) {
+            button = button * 10 + (input[idx] - '0');
+        }
+        if (idx >= input.len or input[idx] != ';') return false;
+        idx += 1;
+
+        // Parse column
+        var col: u32 = 0;
+        while (idx < input.len and input[idx] >= '0' and input[idx] <= '9') : (idx += 1) {
+            col = col * 10 + (input[idx] - '0');
+        }
+        if (idx >= input.len or input[idx] != ';') return false;
+        idx += 1;
+
+        // Parse row
+        var row: u32 = 0;
+        while (idx < input.len and input[idx] >= '0' and input[idx] <= '9') : (idx += 1) {
+            row = row * 10 + (input[idx] - '0');
+        }
+        if (idx >= input.len or (input[idx] != 'M' and input[idx] != 'm')) return false;
+
+        const is_press = input[idx] == 'M';
+
+        // Only handle button press events
+        if (is_press) {
+            // Handle scroll wheel - move cursor like j/k navigation
+            if (button == 64) { // Scroll up
+                if (findCursorIndex(app)) |cursor_idx| {
+                    // Move cursor up by 1 position
+                    if (cursor_idx > 0) {
+                        app.cursor_y = app.valid_cursor_positions.items[cursor_idx - 1];
+                        should_redraw.* = true;
+                    }
+                }
+                return false;
+            } else if (button == 65) { // Scroll down
+                if (findCursorIndex(app)) |cursor_idx| {
+                    // Move cursor down by 1 position
+                    if (cursor_idx + 1 < app.valid_cursor_positions.items.len) {
+                        app.cursor_y = app.valid_cursor_positions.items[cursor_idx + 1];
+                        should_redraw.* = true;
+                    }
+                }
+                return false;
+            }
+
+            // Handle click events on clickable areas
+            for (app.clickable_areas.items) |area| {
+                const clicked_y = @as(usize, row - 1) + app.scroll_y;
+                if (clicked_y >= area.y_start and clicked_y <= area.y_end and
+                    col >= area.x_start + 1 and col <= area.x_end + 1) {
+                    switch (button) {
+                        0 => { // Left-click
+                            note_to_open.* = area.note.path;
+                        },
+                        2 => { // Right-click
+                            area.note.is_expanded = !area.note.is_expanded;
+                            if (!area.note.is_expanded) {
+                                app.cursor_y = area.y_start;
+                            }
+                            should_redraw.* = true;
+                        },
+                        else => {},
+                    }
+                    break;
+                }
+            }
+        }
+    }
+
+    // Legacy X10 fallback - supports older terminals (223 col/row limit)
+    // Format: \x1b[M + 3 bytes (button, col-32, row-32)
     if (input.len >= 6 and mem.eql(u8, input[0..3], "\x1b[M")) {
         const button = input[3];
         const col = input[4] - 32;

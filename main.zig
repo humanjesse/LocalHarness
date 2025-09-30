@@ -338,9 +338,10 @@ fn drawExpandedNote(
         const current_absolute_y = absolute_y.* + line_idx;
         try app.valid_cursor_positions.append(app.allocator, current_absolute_y);
 
-        if (current_absolute_y >= app.scroll_y and current_absolute_y - app.scroll_y < app.terminal_size.height - 1) {
+        // Render only rows 1 to height-2 (leaves space for status bar at height)
+        if (current_absolute_y >= app.scroll_y and current_absolute_y - app.scroll_y <= app.terminal_size.height - 2) {
             const screen_y = (current_absolute_y - app.scroll_y) + 1;
-            
+
             // Draw cursor
             if (current_absolute_y == app.cursor_y) try writer.print("\x1b[{d};1H>", .{screen_y}) else try writer.print("\x1b[{d};1H ", .{screen_y});
             
@@ -388,8 +389,11 @@ fn drawCollapsedNote(
     const current_absolute_y = absolute_y.*;
     try app.valid_cursor_positions.append(app.allocator, current_absolute_y);
 
-    if (current_absolute_y >= app.scroll_y and current_absolute_y - app.scroll_y < app.terminal_size.height - 1) {
+    // Render only rows 1 to height-2 (leaves space for status bar at height)
+    if (current_absolute_y >= app.scroll_y and current_absolute_y - app.scroll_y <= app.terminal_size.height - 2) {
         const screen_y = (current_absolute_y - app.scroll_y) + 1;
+
+        // Draw cursor
         if (current_absolute_y == app.cursor_y) {
             try writer.print("\x1b[{d};1H>", .{screen_y});
         } else {
@@ -515,7 +519,8 @@ pub const App = struct {
                 if (note_to_open != null) break;
             }
 
-            const view_height = self.terminal_size.height - 1;
+            // View height accounts for status bar: total height - status line - padding
+            const view_height = self.terminal_size.height - 2;
             if (self.cursor_y < self.scroll_y + 1) {
                 self.scroll_y = self.cursor_y - 1;
             }

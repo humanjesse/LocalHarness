@@ -53,6 +53,7 @@ zig build run -- --notes-dir /path/to/your/notes
 | `Enter` | Open current document in editor (nvim) |
 | `q` | Quit application |
 | **Mouse** | |
+| Mouse wheel up/down | Scroll through documents |
 | Left click | Open document in editor |
 | Right click | Toggle expand/collapse |
 
