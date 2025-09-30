@@ -317,16 +317,44 @@ const Parser = struct {
                     self.advance();
                 },
                 .backtick => {
-                    self.advance();
+                    // Count opening backticks (CommonMark: delimiter length must match)
+                    var open_count: usize = 0;
+                    while (self.pos < self.tokens.len and self.tokens[self.pos].tag == .backtick) {
+                        open_count += 1;
+                        self.advance();
+                    }
+
                     var content_buffer = std.ArrayListUnmanaged(u8){};
                     defer content_buffer.deinit(self.allocator);
 
-                    while (self.peek()) |inner_tok| {
-                        if (inner_tok.tag == .backtick) break;
-                        try content_buffer.appendSlice(self.allocator, inner_tok.text);
-                        self.advance();
+                    // Collect content until finding matching closing delimiter
+                    while (self.peek()) |tok| {
+                        if (tok.tag == .newline) break; // Don't cross line boundaries
+
+                        if (tok.tag == .backtick) {
+                            // Count consecutive closing backticks
+                            var close_count: usize = 0;
+                            while (self.pos < self.tokens.len and self.tokens[self.pos].tag == .backtick) {
+                                close_count += 1;
+                                self.advance();
+                            }
+
+                            if (close_count == open_count) {
+                                // Found matching closer!
+                                break;
+                            } else {
+                                // Not a match, add these backticks to content
+                                for (0..close_count) |_| {
+                                    try content_buffer.append(self.allocator, '`');
+                                }
+                            }
+                        } else {
+                            // Normal content
+                            try content_buffer.appendSlice(self.allocator, tok.text);
+                            self.advance();
+                        }
                     }
-                    _ = self.consume(.backtick);
+
                     const code_node = try AstNode.init(self.allocator, .inline_code);
                     code_node.text = try content_buffer.toOwnedSlice(self.allocator);
                     try nodes.append(self.allocator, code_node);
@@ -808,6 +836,7 @@ const ANSI_UNDERLINE_START = "\x1b[4m";
 const ANSI_STRIKETHROUGH_START = "\x1b[9m";
 const ANSI_RESET = "\x1b[0m";
 const ANSI_BG_GREY_START = "\x1b[48;5;250m";
+const ANSI_BG_RESET = "\x1b[49m"; // Reset background only, preserves foreground and other styles
 
 fn renderNodeToStringRecursive(
     node: *AstNode,
@@ -857,7 +886,7 @@ fn renderNodeToStringRecursive(
         .inline_code => {
             try buffer.appendSlice(allocator, ANSI_BG_GREY_START);
             if (node.text) |text| try buffer.appendSlice(allocator, text);
-            try buffer.appendSlice(allocator, ANSI_RESET);
+            try buffer.appendSlice(allocator, ANSI_BG_RESET); // Use BG reset instead of full reset to preserve outer styles
         },
         .link => {
             try buffer.appendSlice(allocator, ANSI_UNDERLINE_START);
