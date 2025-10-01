@@ -10,8 +10,18 @@ pub const c = @cImport({
     @cInclude("unistd.h");
     @cInclude("stdio.h");
     @cInclude("sys/ioctl.h");
+    @cInclude("signal.h");
 });
 // --- END: Merged from c_api.zig ---
+
+// Global flag for resize detection (volatile for signal safety)
+pub var resize_pending: bool = false;
+
+// Signal handler for SIGWINCH (window resize)
+fn handleSigwinch(sig: c_int) callconv(.c) void {
+    _ = sig;
+    resize_pending = true;
+}
 
 // --- START: Merged from tui.zig ---
 pub const TerminalSize = struct {
@@ -31,6 +41,15 @@ pub const Tui = struct {
         raw.c_cc[c.VMIN] = 0;
         raw.c_cc[c.VTIME] = 1;
         if (c.tcsetattr(c.STDIN_FILENO, c.TCSAFLUSH, &raw) != 0) return error.SetAttrFailed;
+
+        // Install SIGWINCH handler for window resize detection
+        var sa: c.struct_sigaction = std.mem.zeroes(c.struct_sigaction);
+        // Linux glibc uses anonymous union - access via __sigaction_handler
+        sa.__sigaction_handler = .{ .sa_handler = handleSigwinch };
+        _ = c.sigemptyset(&sa.sa_mask);
+        sa.sa_flags = 0;
+        _ = c.sigaction(c.SIGWINCH, &sa, null);
+
         // Enable: hide cursor, SGR mouse mode (1006), normal mouse tracking (1000)
         _ = try std.posix.write(std.posix.STDOUT_FILENO, "\x1b[?25l\x1b[?1006h\x1b[?1000h");
     }

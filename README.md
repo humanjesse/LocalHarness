@@ -8,6 +8,7 @@ A fast, lightweight terminal-based markdown viewer written in Zig. ZigMark provi
 - **Interactive navigation** using vi-style keys and mouse support
 - **Expandable document view** - collapse/expand files for quick browsing
 - **Live editing integration** - seamlessly open documents in your preferred editor
+- **Smooth window resizing** - intelligent content re-wrapping with state preservation
 - **Rich markdown support** - headers, lists, blockquotes, code blocks, links, and emphasis
 - **Advanced emoji support** - proper width calculation for emoji, skin tone modifiers, and ZWJ sequences (family/couple emoji)
 - **Unicode-aware** text processing with proper line wrapping
@@ -63,6 +64,14 @@ zig build run -- --notes-dir /path/to/your/notes
 - Use `j`/`k` or mouse to navigate between documents
 - Press `Space` to expand and view rendered markdown content
 - Press `Enter` or left-click to edit documents in your editor
+
+### Terminal Resize Handling
+
+ZigMark intelligently handles terminal window resizing:
+- Expanded notes automatically collapse during resize for smooth rendering
+- After resize completes (~200ms), notes re-expand with content properly wrapped to the new width
+- No glitchy artifacts during active window dragging
+- Preserves your expansion state across resize operations
 
 ## Supported Markdown Features
 

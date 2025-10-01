@@ -422,6 +422,10 @@ pub const App = struct {
     cursor_y: usize = 1,
     terminal_size: ui.TerminalSize,
     valid_cursor_positions: std.ArrayListUnmanaged(usize),
+    // Resize handling state
+    resize_in_progress: bool = false,
+    saved_expansion_states: std.ArrayListUnmanaged(bool),
+    last_resize_time: i64 = 0,
 
     pub fn init(allocator: mem.Allocator, config: Config) !App {
         var app = App{
@@ -431,6 +435,7 @@ pub const App = struct {
             .clickable_areas = .{},
             .terminal_size = try ui.Tui.getTerminalSize(),
             .valid_cursor_positions = .{},
+            .saved_expansion_states = .{},
         };
         const dir_path = app.config.notes_dir;
         std.fs.cwd().makeDir(dir_path) catch |err| {
@@ -481,10 +486,48 @@ pub const App = struct {
         self.notes.deinit(self.allocator);
         self.clickable_areas.deinit(self.allocator);
         self.valid_cursor_positions.deinit(self.allocator);
+        self.saved_expansion_states.deinit(self.allocator);
     }
 
     pub fn run(self: *App, app_tui: *ui.Tui) !void {
         while (true) {
+            const current_time = std.time.milliTimestamp();
+
+            // Handle resize signals
+            if (ui.resize_pending) {
+                ui.resize_pending = false;
+                self.last_resize_time = current_time;
+
+                // First resize signal - save states and collapse all
+                if (!self.resize_in_progress) {
+                    self.resize_in_progress = true;
+
+                    // Save current expansion states
+                    self.saved_expansion_states.clearRetainingCapacity();
+                    for (self.notes.items) |note| {
+                        try self.saved_expansion_states.append(self.allocator, note.is_expanded);
+                    }
+
+                    // Collapse all notes for smooth resizing
+                    for (self.notes.items) |*note| {
+                        note.is_expanded = false;
+                    }
+                }
+            }
+
+            // Check if resize has completed (no signals for 200ms)
+            if (self.resize_in_progress and (current_time - self.last_resize_time) > 200) {
+                self.resize_in_progress = false;
+
+                // Restore expansion states
+                for (self.notes.items, 0..) |*note, i| {
+                    if (i < self.saved_expansion_states.items.len) {
+                        note.is_expanded = self.saved_expansion_states.items[i];
+                    }
+                }
+                self.saved_expansion_states.clearRetainingCapacity();
+            }
+
             self.terminal_size = try ui.Tui.getTerminalSize();
             var stdout_buffer: [8192]u8 = undefined;
             var buffered_writer = ui.BufferedStdoutWriter.init(&stdout_buffer);
@@ -508,9 +551,39 @@ pub const App = struct {
             var note_to_open: ?[]const u8 = null;
             var should_redraw = false;
             while (!should_redraw) {
+                // Check for resize signal before blocking on input
+                if (ui.resize_pending) {
+                    should_redraw = true;
+                    break;
+                }
+
+                // Check for resize completion timeout
+                if (self.resize_in_progress) {
+                    const now = std.time.milliTimestamp();
+                    if (now - self.last_resize_time > 200) {
+                        should_redraw = true;
+                        break;
+                    }
+                }
+
                 var read_buffer: [128]u8 = undefined;
                 const bytes_read = ui.c.read(ui.c.STDIN_FILENO, &read_buffer, read_buffer.len);
-                if (bytes_read <= 0) continue;
+                if (bytes_read <= 0) {
+                    // Check again after read timeout/interrupt
+                    if (ui.resize_pending) {
+                        should_redraw = true;
+                        break;
+                    }
+                    // Also check resize timeout after read returns
+                    if (self.resize_in_progress) {
+                        const now = std.time.milliTimestamp();
+                        if (now - self.last_resize_time > 200) {
+                            should_redraw = true;
+                            break;
+                        }
+                    }
+                    continue;
+                }
                 const input = read_buffer[0..@intCast(bytes_read)];
                 if (try ui.handleInput(self, input, &note_to_open, &should_redraw)) {
                     return;
