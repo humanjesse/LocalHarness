@@ -5,6 +5,10 @@ zig-out/
 # Personal notes
 my_notes/
 
+# Development documentation
+EMOJI_SUPPORT.md
+UPGRADE_NOTES.md
+
 # Editor/IDE files
 .vscode/
 .idea/
