@@ -7,6 +7,7 @@ A fast, lightweight terminal-based markdown viewer written in Zig. ZigMark provi
 - **Beautiful rendering** with ANSI styling, box drawing, and proper text wrapping
 - **Interactive navigation** using vi-style keys and mouse support
 - **Expandable document view** - collapse/expand files for quick browsing
+- **Configurable editor** - works with nvim, nano, helix, VS Code, or any editor of your choice
 - **Live editing integration** - seamlessly open documents in your preferred editor
 - **Smooth window resizing** - intelligent content re-wrapping with state preservation
 - **Rich markdown support** - headers, lists, blockquotes, code blocks, links, and emphasis
@@ -17,7 +18,7 @@ A fast, lightweight terminal-based markdown viewer written in Zig. ZigMark provi
 ## Prerequisites
 
 - **Zig compiler** (version 0.15.1 or later)
-- Ghostty & Nvim
+- Any ANSI-compatible terminal (Ghostty, kitty, alacritty, xterm, iTerm2, etc.)
 
 ## Installation & Setup
 
@@ -32,6 +33,23 @@ A fast, lightweight terminal-based markdown viewer written in Zig. ZigMark provi
    ```bash
    zig build run
    ```
+
+## Configuration
+
+ZigMark creates a config file at `~/.config/zigmark/config.json` on first run. Edit it to customize your setup:
+
+```json
+{
+  "editor": ["nvim"],
+  "notes_dir": "my_notes"
+}
+```
+
+**Supported Editors:**
+- Terminal editors: `["nvim"]`, `["nano"]`, `["hx"]`, `["emacs"]`
+- GUI editors (need `--wait` flag): `["code", "--wait"]`, `["subl", "--wait"]`
+
+**Priority:** CLI flags > config file > defaults
 
 ## Usage
 
@@ -51,7 +69,7 @@ zig build run -- --notes-dir /path/to/your/notes
 |------------|----------|
 | `j` / `k` | Navigate up/down through documents |
 | `Space` | Toggle expand/collapse current document |
-| `Enter` | Open current document in editor (nvim) |
+| `Enter` | Open current document in your configured editor |
 | `q` | Quit application |
 | **Mouse** | |
 | Mouse wheel up/down | Scroll through documents |

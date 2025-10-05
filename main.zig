@@ -8,7 +8,15 @@ const markdown = @import("markdown.zig");
 
 pub const Config = struct {
     notes_dir: []const u8 = "my_notes",
-    editor_cmd: []const []const u8 = &.{ "nvim" },
+    editor: []const []const u8 = &.{"nvim"},
+
+    pub fn deinit(self: *Config, allocator: mem.Allocator) void {
+        allocator.free(self.notes_dir);
+        for (self.editor) |arg| {
+            allocator.free(arg);
+        }
+        allocator.free(self.editor);
+    }
 };
 
 pub const Note = struct {
@@ -25,10 +33,10 @@ pub const ClickableArea = struct {
     note: *Note,
 };
 
-fn openEditorAndWait(allocator: mem.Allocator, editor_cmd: []const []const u8, note_path: []const u8) !void {
+fn openEditorAndWait(allocator: mem.Allocator, editor: []const []const u8, note_path: []const u8) !void {
     var argv = std.ArrayListUnmanaged([]const u8){};
     defer argv.deinit(allocator);
-    try argv.appendSlice(allocator, editor_cmd);
+    try argv.appendSlice(allocator, editor);
     try argv.append(allocator, note_path);
 
     var child = std.process.Child.init(argv.items, allocator);
@@ -603,7 +611,7 @@ pub const App = struct {
 
             if (note_to_open) |note_path| {
                 app_tui.disableRawMode();
-                openEditorAndWait(self.allocator, self.config.editor_cmd, note_path) catch |err| {
+                openEditorAndWait(self.allocator, self.config.editor, note_path) catch |err| {
                     try app_tui.enableRawMode();
                     std.debug.print("Failed to open editor: {any}\n", .{err});
                 };
@@ -646,19 +654,102 @@ pub const App = struct {
     }
 };
 
+const ConfigFile = struct {
+    editor: ?[]const []const u8 = null,
+    notes_dir: ?[]const u8 = null,
+};
+
+fn loadConfigFromFile(allocator: mem.Allocator) !Config {
+    // Default config - properly allocate all strings
+    const default_editor = try allocator.alloc([]const u8, 1);
+    default_editor[0] = try allocator.dupe(u8, "nvim");
+
+    var config = Config{
+        .notes_dir = try allocator.dupe(u8, "my_notes"),
+        .editor = default_editor,
+    };
+
+    // Try to get home directory
+    const home = std.posix.getenv("HOME") orelse return config;
+
+    // Build config file path: ~/.config/zigmark/config.json
+    const config_dir = try fs.path.join(allocator, &.{home, ".config", "zigmark"});
+    defer allocator.free(config_dir);
+    const config_path = try fs.path.join(allocator, &.{config_dir, "config.json"});
+    defer allocator.free(config_path);
+
+    // Try to open and read config file
+    const file = fs.cwd().openFile(config_path, .{}) catch |err| {
+        // File doesn't exist - create it with defaults
+        if (err == error.FileNotFound) {
+            // Create config directory if it doesn't exist
+            fs.cwd().makePath(config_dir) catch |dir_err| {
+                if (dir_err != error.PathAlreadyExists) return config;
+            };
+
+            // Create default config file
+            const new_file = fs.cwd().createFile(config_path, .{}) catch return config;
+            defer new_file.close();
+
+            const default_config =
+                \\{
+                \\  "editor": ["nvim"],
+                \\  "notes_dir": "my_notes"
+                \\}
+                \\
+            ;
+            new_file.writeAll(default_config) catch return config;
+
+            return config;
+        }
+        return config;
+    };
+    defer file.close();
+
+    const content = file.readToEndAlloc(allocator, 1024 * 16) catch return config;
+    defer allocator.free(content);
+
+    // Parse JSON
+    const parsed = std.json.parseFromSlice(ConfigFile, allocator, content, .{}) catch return config;
+    defer parsed.deinit();
+
+    // Apply loaded values
+    if (parsed.value.notes_dir) |notes_dir| {
+        allocator.free(config.notes_dir);
+        config.notes_dir = try allocator.dupe(u8, notes_dir);
+    }
+
+    if (parsed.value.editor) |editor| {
+        for (config.editor) |arg| allocator.free(arg);
+        allocator.free(config.editor);
+
+        var new_editor = try allocator.alloc([]const u8, editor.len);
+        for (editor, 0..) |arg, i| {
+            new_editor[i] = try allocator.dupe(u8, arg);
+        }
+        config.editor = new_editor;
+    }
+
+    return config;
+}
+
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
-    var config = Config{};
+    var config = try loadConfigFromFile(allocator);
+    defer config.deinit(allocator);
+
     var args = try std.process.argsWithAllocator(allocator);
     defer args.deinit();
     _ = args.next();
 
+    // CLI flags override config file
     while (args.next()) |arg| {
         if (std.mem.eql(u8, arg, "--notes-dir")) {
             if (args.next()) |path| {
-                config.notes_dir = path;
+                allocator.free(config.notes_dir);
+                config.notes_dir = try allocator.dupe(u8, path);
             } else {
                 std.debug.print("Error: --notes-dir flag requires a path argument.\n", .{});
                 return;
