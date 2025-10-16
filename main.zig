@@ -1,17 +1,20 @@
-// --- main.zig (with Reverted Box Drawing Logic) ---
+// --- main.zig (Chat Interface with Ollama) ---
 const std = @import("std");
 const fs = std.fs;
 const mem = std.mem;
 const process = std.process;
 const ui = @import("ui.zig");
 const markdown = @import("markdown.zig");
+const ollama = @import("ollama.zig");
 
 pub const Config = struct {
-    notes_dir: []const u8 = "my_notes",
+    ollama_host: []const u8 = "http://localhost:11434",
+    model: []const u8 = "gpt-oss:120b",
     editor: []const []const u8 = &.{"nvim"},
 
     pub fn deinit(self: *Config, allocator: mem.Allocator) void {
-        allocator.free(self.notes_dir);
+        allocator.free(self.ollama_host);
+        allocator.free(self.model);
         for (self.editor) |arg| {
             allocator.free(arg);
         }
@@ -19,10 +22,12 @@ pub const Config = struct {
     }
 };
 
-pub const Note = struct {
-    path: []const u8,
+pub const Message = struct {
+    role: enum { user, assistant, system },
+    content: []const u8, // Raw markdown text
     processed_content: std.ArrayListUnmanaged(markdown.RenderableItem),
-    is_expanded: bool = false,
+    is_expanded: bool = true, // Default expanded for chat messages
+    timestamp: i64,
 };
 
 pub const ClickableArea = struct {
@@ -30,7 +35,7 @@ pub const ClickableArea = struct {
     y_end: usize,
     x_start: usize,
     x_end: usize,
-    note: *Note,
+    message: *Message,
 };
 
 fn openEditorAndWait(allocator: mem.Allocator, editor: []const []const u8, note_path: []const u8) !void {
@@ -311,6 +316,154 @@ fn renderItemsToLines(
                     try output_lines.append(app.allocator, try full_line.toOwnedSlice(app.allocator));
                 }
             },
+            .table => {
+                const table = item.payload.table;
+                const column_count = table.column_count;
+
+                // Calculate column widths (minimum 8, based on content)
+                var col_widths = try app.allocator.alloc(usize, column_count);
+                defer app.allocator.free(col_widths);
+
+                // Initialize with minimum widths
+                for (col_widths) |*w| w.* = 8;
+
+                // Check header widths
+                for (table.headers, 0..) |header, i| {
+                    const len = ui.AnsiParser.getVisibleLength(header);
+                    if (len > col_widths[i]) col_widths[i] = len;
+                }
+
+                // Check body cell widths
+                for (table.rows, 0..) |cell_text, idx| {
+                    const col_idx = idx % column_count;
+                    const len = ui.AnsiParser.getVisibleLength(cell_text);
+                    if (len > col_widths[col_idx]) col_widths[col_idx] = len;
+                }
+
+                // Adjust if total width exceeds available
+                const indent_width = indent_level * indent_str.len;
+                const available_width = if (max_content_width > indent_width) max_content_width - indent_width else 0;
+                var total_width: usize = column_count + 1; // borders
+                for (col_widths) |w| total_width += w + 2; // content + padding
+
+                if (total_width > available_width and available_width > 0) {
+                    // Distribute width proportionally
+                    const scale_factor = @as(f32, @floatFromInt(available_width - (column_count + 1))) / @as(f32, @floatFromInt(total_width - (column_count + 1)));
+                    for (col_widths) |*w| {
+                        const scaled = @as(usize, @intFromFloat(@as(f32, @floatFromInt(w.*)) * scale_factor));
+                        w.* = if (scaled < 6) 6 else scaled;
+                    }
+                }
+
+                // Top border
+                var top_border = std.ArrayListUnmanaged(u8){};
+                defer top_border.deinit(app.allocator);
+                for (0..indent_level) |_| try top_border.appendSlice(app.allocator, indent_str);
+                try top_border.appendSlice(app.allocator, "┌");
+                for (col_widths, 0..) |width, i| {
+                    for (0..width + 2) |_| try top_border.appendSlice(app.allocator, "─");
+                    if (i < column_count - 1) {
+                        try top_border.appendSlice(app.allocator, "┬");
+                    }
+                }
+                try top_border.appendSlice(app.allocator, "┐");
+                try output_lines.append(app.allocator, try top_border.toOwnedSlice(app.allocator));
+
+                // Header row
+                var header_line = std.ArrayListUnmanaged(u8){};
+                defer header_line.deinit(app.allocator);
+                for (0..indent_level) |_| try header_line.appendSlice(app.allocator, indent_str);
+                try header_line.appendSlice(app.allocator, "│");
+                for (table.headers, 0..) |header, i| {
+                    try header_line.appendSlice(app.allocator, " ");
+                    const content_len = ui.AnsiParser.getVisibleLength(header);
+                    const padding = if (content_len >= col_widths[i]) 0 else col_widths[i] - content_len;
+
+                    // Apply alignment
+                    const alignment = table.alignments[i];
+                    if (alignment == .center) {
+                        const left_pad = padding / 2;
+                        const right_pad = padding - left_pad;
+                        for (0..left_pad) |_| try header_line.appendSlice(app.allocator, " ");
+                        try header_line.appendSlice(app.allocator, header);
+                        for (0..right_pad) |_| try header_line.appendSlice(app.allocator, " ");
+                    } else if (alignment == .right) {
+                        for (0..padding) |_| try header_line.appendSlice(app.allocator, " ");
+                        try header_line.appendSlice(app.allocator, header);
+                    } else { // left
+                        try header_line.appendSlice(app.allocator, header);
+                        for (0..padding) |_| try header_line.appendSlice(app.allocator, " ");
+                    }
+
+                    try header_line.appendSlice(app.allocator, " │");
+                }
+                try output_lines.append(app.allocator, try header_line.toOwnedSlice(app.allocator));
+
+                // Header separator
+                var separator = std.ArrayListUnmanaged(u8){};
+                defer separator.deinit(app.allocator);
+                for (0..indent_level) |_| try separator.appendSlice(app.allocator, indent_str);
+                try separator.appendSlice(app.allocator, "├");
+                for (col_widths, 0..) |width, i| {
+                    for (0..width + 2) |_| try separator.appendSlice(app.allocator, "─");
+                    if (i < column_count - 1) {
+                        try separator.appendSlice(app.allocator, "┼");
+                    }
+                }
+                try separator.appendSlice(app.allocator, "┤");
+                try output_lines.append(app.allocator, try separator.toOwnedSlice(app.allocator));
+
+                // Body rows
+                const row_count = table.rows.len / column_count;
+                for (0..row_count) |row_idx| {
+                    var row_line = std.ArrayListUnmanaged(u8){};
+                    defer row_line.deinit(app.allocator);
+                    for (0..indent_level) |_| try row_line.appendSlice(app.allocator, indent_str);
+                    try row_line.appendSlice(app.allocator, "│");
+
+                    for (0..column_count) |col_idx| {
+                        const cell_idx = row_idx * column_count + col_idx;
+                        const cell_text = table.rows[cell_idx];
+                        try row_line.appendSlice(app.allocator, " ");
+
+                        const content_len = ui.AnsiParser.getVisibleLength(cell_text);
+                        const padding = if (content_len >= col_widths[col_idx]) 0 else col_widths[col_idx] - content_len;
+
+                        const alignment = table.alignments[col_idx];
+                        if (alignment == .center) {
+                            const left_pad = padding / 2;
+                            const right_pad = padding - left_pad;
+                            for (0..left_pad) |_| try row_line.appendSlice(app.allocator, " ");
+                            try row_line.appendSlice(app.allocator, cell_text);
+                            for (0..right_pad) |_| try row_line.appendSlice(app.allocator, " ");
+                        } else if (alignment == .right) {
+                            for (0..padding) |_| try row_line.appendSlice(app.allocator, " ");
+                            try row_line.appendSlice(app.allocator, cell_text);
+                        } else { // left
+                            try row_line.appendSlice(app.allocator, cell_text);
+                            for (0..padding) |_| try row_line.appendSlice(app.allocator, " ");
+                        }
+
+                        try row_line.appendSlice(app.allocator, " │");
+                    }
+
+                    try output_lines.append(app.allocator, try row_line.toOwnedSlice(app.allocator));
+                }
+
+                // Bottom border
+                var bottom_border = std.ArrayListUnmanaged(u8){};
+                defer bottom_border.deinit(app.allocator);
+                for (0..indent_level) |_| try bottom_border.appendSlice(app.allocator, indent_str);
+                try bottom_border.appendSlice(app.allocator, "└");
+                for (col_widths, 0..) |width, i| {
+                    for (0..width + 2) |_| try bottom_border.appendSlice(app.allocator, "─");
+                    if (i < column_count - 1) {
+                        try bottom_border.appendSlice(app.allocator, "┴");
+                    }
+                }
+                try bottom_border.appendSlice(app.allocator, "┘");
+                try output_lines.append(app.allocator, try bottom_border.toOwnedSlice(app.allocator));
+            },
              .blank_line => {
                 try output_lines.append(app.allocator, try app.allocator.dupe(u8, ""));
             },
@@ -319,11 +472,11 @@ fn renderItemsToLines(
 }
 
 
-fn drawExpandedNote(
+fn drawExpandedMessage(
     app: *App,
     writer: anytype,
-    note: *Note,
-    note_index: usize,
+    message: *Message,
+    message_index: usize,
     absolute_y: *usize,
 ) !void {
     const left_padding = 2;
@@ -337,7 +490,7 @@ fn drawExpandedNote(
         for (content_lines.items) |line| app.allocator.free(line);
         content_lines.deinit(app.allocator);
     }
-    try renderItemsToLines(app, &note.processed_content, &content_lines, 0, max_content_width);
+    try renderItemsToLines(app, &message.processed_content, &content_lines, 0, max_content_width);
 
     // Step 2: Draw the box around the rendered lines using the classic logic.
     const box_height = content_lines.items.len + 2;
@@ -346,12 +499,12 @@ fn drawExpandedNote(
         const current_absolute_y = absolute_y.* + line_idx;
         try app.valid_cursor_positions.append(app.allocator, current_absolute_y);
 
-        // Render only rows 1 to height-2 (leaves space for status bar at height)
-        if (current_absolute_y >= app.scroll_y and current_absolute_y - app.scroll_y <= app.terminal_size.height - 2) {
+        // Render only rows 1 to height-4 (leaves space for separator, input, status bar)
+        if (current_absolute_y >= app.scroll_y and current_absolute_y - app.scroll_y <= app.terminal_size.height - 4) {
             const screen_y = (current_absolute_y - app.scroll_y) + 1;
 
-            // Draw cursor
-            if (current_absolute_y == app.cursor_y) try writer.print("\x1b[{d};1H>", .{screen_y}) else try writer.print("\x1b[{d};1H ", .{screen_y});
+            // Draw cursor (with ANSI reset and extra space to clear column 2)
+            if (current_absolute_y == app.cursor_y) try writer.print("\x1b[{d};1H\x1b[0m> ", .{screen_y}) else try writer.print("\x1b[{d};1H\x1b[0m  ", .{screen_y});
             
             // Move to start of box
             try writer.print("\x1b[{d}G", .{left_padding + 1});
@@ -382,41 +535,82 @@ fn drawExpandedNote(
         .y_end = absolute_y.* - 2,
         .x_start = 1,
         .x_end = app.terminal_size.width,
-        .note = &app.notes.items[note_index],
+        .message = &app.messages.items[message_index],
     });
 }
 
-fn drawCollapsedNote(
+fn drawInputField(app: *App, writer: anytype) !void {
+    const height = app.terminal_size.height;
+    const width = app.terminal_size.width;
+
+    // Input field occupies rows: height-3, height-2, height-1
+    // Row height-1 is status bar (handled by drawTaskbar)
+    // Row height-2 is input box
+    // Row height-3 is separator
+
+    const separator_row = height - 2;
+    const input_row = height - 1;
+
+    // Draw separator
+    try writer.print("\x1b[{d};1H", .{separator_row});
+    for (0..width) |_| try writer.writeAll("─");
+
+    // Draw input box
+    try writer.print("\x1b[{d};1H> ", .{input_row});
+
+    // Show input buffer content
+    const max_display = width - 3; // Account for "> " prompt
+    const buffer_text = if (app.input_buffer.items.len > max_display)
+        app.input_buffer.items[app.input_buffer.items.len - max_display..]
+    else
+        app.input_buffer.items;
+
+    try writer.writeAll(buffer_text);
+
+    // Show cursor at end of input
+    if (app.input_buffer.items.len < max_display) {
+        try writer.writeAll("_"); // Visual cursor
+    }
+
+    // Clear to end of line (removes any leftover characters from previous input)
+    try writer.writeAll("\x1b[K");
+}
+
+fn drawCollapsedMessage(
     app: *App,
     writer: anytype,
-    note: *Note,
-    note_index: usize,
+    message: *Message,
+    message_index: usize,
     absolute_y: *usize,
 ) !void {
     const left_padding = 2;
     const current_absolute_y = absolute_y.*;
     try app.valid_cursor_positions.append(app.allocator, current_absolute_y);
 
-    // Render only rows 1 to height-2 (leaves space for status bar at height)
-    if (current_absolute_y >= app.scroll_y and current_absolute_y - app.scroll_y <= app.terminal_size.height - 2) {
+    // Render only rows 1 to height-4 (leaves space for separator, input, status bar)
+    if (current_absolute_y >= app.scroll_y and current_absolute_y - app.scroll_y <= app.terminal_size.height - 4) {
         const screen_y = (current_absolute_y - app.scroll_y) + 1;
 
-        // Draw cursor
+        // Draw cursor (with ANSI reset and extra space to clear column 2)
         if (current_absolute_y == app.cursor_y) {
-            try writer.print("\x1b[{d};1H>", .{screen_y});
+            try writer.print("\x1b[{d};1H\x1b[0m> ", .{screen_y});
         } else {
-             try writer.print("\x1b[{d};1H ", .{screen_y});
+             try writer.print("\x1b[{d};1H\x1b[0m  ", .{screen_y});
         }
         try writer.print("\x1b[{d}G", .{left_padding + 1});
-        const filename = fs.path.basename(note.path);
-        try writer.print("[ {s} ]", .{filename});
+        const role_label = switch (message.role) {
+            .user => "You",
+            .assistant => "Assistant",
+            .system => "System",
+        };
+        try writer.print("[ {s} ]", .{role_label});
     }
     try app.clickable_areas.append(app.allocator, .{
         .y_start = absolute_y.*,
         .y_end = absolute_y.*,
         .x_start = left_padding + 1,
-        .x_end = left_padding + 1 + fs.path.basename(note.path).len + 4,
-        .note = &app.notes.items[note_index],
+        .x_end = left_padding + 15, // Enough space for labels
+        .message = &app.messages.items[message_index],
     });
     absolute_y.* += 2;
 }
@@ -424,7 +618,9 @@ fn drawCollapsedNote(
 pub const App = struct {
     allocator: mem.Allocator,
     config: Config,
-    notes: std.ArrayListUnmanaged(Note),
+    messages: std.ArrayListUnmanaged(Message),
+    ollama_client: ollama.OllamaClient,
+    input_buffer: std.ArrayListUnmanaged(u8),
     clickable_areas: std.ArrayListUnmanaged(ClickableArea),
     scroll_y: usize = 0,
     cursor_y: usize = 1,
@@ -439,65 +635,169 @@ pub const App = struct {
         var app = App{
             .allocator = allocator,
             .config = config,
-            .notes = .{},
+            .messages = .{},
+            .ollama_client = ollama.OllamaClient.init(allocator, config.ollama_host),
+            .input_buffer = .{},
             .clickable_areas = .{},
             .terminal_size = try ui.Tui.getTerminalSize(),
             .valid_cursor_positions = .{},
             .saved_expansion_states = .{},
         };
-        const dir_path = app.config.notes_dir;
-        std.fs.cwd().makeDir(dir_path) catch |err| {
-            if (err != error.PathAlreadyExists) return err;
-        };
-        var dir = try fs.cwd().openDir(dir_path, .{ .iterate = true });
-        defer dir.close();
-        var it = dir.iterate();
-        while (try it.next()) |entry| {
-            if (entry.kind == .file) {
-                const file_path = try fs.path.join(allocator, &.{ dir_path, entry.name });
-                defer allocator.free(file_path);
 
-                var file = dir.openFile(entry.name, .{}) catch |err| {
-                    std.debug.print("Failed to open file {s}: {any}\n", .{ file_path, err });
-                    continue;
-                };
-                defer file.close();
+        // Add a welcome message
+        const welcome_text = "Welcome to ZodoLlama! Type your message below and press Enter to chat.";
+        const welcome_processed = try markdown.processMarkdown(allocator, welcome_text);
+        try app.messages.append(allocator, .{
+            .role = .system,
+            .content = try allocator.dupe(u8, welcome_text),
+            .processed_content = welcome_processed,
+            .is_expanded = true,
+            .timestamp = std.time.milliTimestamp(),
+        });
 
-                const content_raw = file.readToEndAlloc(allocator, 1024 * 1024) catch |err| {
-                    std.debug.print("Failed to read file {s}: {any}\n", .{ file_path, err });
-                    continue;
-                };
-                defer allocator.free(content_raw);
-
-                const content_rn_fixed = try mem.replaceOwned(u8, allocator, content_raw, "\r\n", "\n");
-                defer allocator.free(content_rn_fixed);
-                const content_r_fixed = try mem.replaceOwned(u8, allocator, content_rn_fixed, "\r", "\n");
-                defer allocator.free(content_r_fixed);
-
-                const content_processed = try markdown.processMarkdown(allocator, content_r_fixed);
-                const owned_path = try allocator.dupe(u8, file_path);
-
-                try app.notes.append(app.allocator, .{ .path = owned_path, .processed_content = content_processed });
-            }
-        }
         return app;
     }
 
+    // Helper function to redraw the screen immediately
+    fn redrawScreen(self: *App) !void {
+        self.terminal_size = try ui.Tui.getTerminalSize();
+        var stdout_buffer: [8192]u8 = undefined;
+        var buffered_writer = ui.BufferedStdoutWriter.init(&stdout_buffer);
+        const writer = buffered_writer.writer();
+
+        // Move cursor to home WITHOUT clearing - prevents flicker
+        try writer.writeAll("\x1b[H");
+        self.clickable_areas.clearRetainingCapacity();
+        self.valid_cursor_positions.clearRetainingCapacity();
+
+        var absolute_y: usize = 1;
+        for (self.messages.items, 0..) |_, i| {
+            const message = &self.messages.items[i];
+            if (message.is_expanded) {
+                try drawExpandedMessage(self, writer, message, i, &absolute_y);
+            } else {
+                try drawCollapsedMessage(self, writer, message, i, &absolute_y);
+            }
+        }
+
+        try drawInputField(self, writer);
+        try ui.drawTaskbar(self, writer);
+
+        // Clear from current cursor position to end of screen
+        // This removes any leftover content from previous renders
+        try writer.writeAll("\x1b[J");
+
+        try buffered_writer.flush();
+    }
+
+    // Send a message and get streaming response from Ollama
+    pub fn sendMessage(self: *App, user_text: []const u8) !void {
+        // 1. Add user message
+        const user_content = try self.allocator.dupe(u8, user_text);
+        const user_processed = try markdown.processMarkdown(self.allocator, user_content);
+        try self.messages.append(self.allocator, .{
+            .role = .user,
+            .content = user_content,
+            .processed_content = user_processed,
+            .is_expanded = true,
+            .timestamp = std.time.milliTimestamp(),
+        });
+
+        // ** IMMEDIATE REDRAW - Show user message right away **
+        try self.redrawScreen();
+
+        // 2. Prepare message history for Ollama
+        var ollama_messages = std.ArrayListUnmanaged(ollama.ChatMessage){};
+        defer ollama_messages.deinit(self.allocator);
+
+        for (self.messages.items) |msg| {
+            const role_str = switch (msg.role) {
+                .user => "user",
+                .assistant => "assistant",
+                .system => "system",
+            };
+            try ollama_messages.append(self.allocator, .{
+                .role = role_str,
+                .content = msg.content,
+            });
+        }
+
+        // 3. Create placeholder for assistant response
+        const assistant_content = try self.allocator.dupe(u8, "Thinking...");
+        const assistant_processed = try markdown.processMarkdown(self.allocator, assistant_content);
+        try self.messages.append(self.allocator, .{
+            .role = .assistant,
+            .content = assistant_content,
+            .processed_content = assistant_processed,
+            .is_expanded = true,
+            .timestamp = std.time.milliTimestamp(),
+        });
+
+        // ** REDRAW - Show "Thinking..." placeholder **
+        try self.redrawScreen();
+
+        // 4. Get streaming response from Ollama
+        var response_buffer = std.ArrayListUnmanaged(u8){};
+        defer response_buffer.deinit(self.allocator);
+
+        const StreamContext = struct {
+            app: *App,
+            response_buffer: *std.ArrayListUnmanaged(u8),
+        };
+
+        var stream_ctx = StreamContext{
+            .app = self,
+            .response_buffer = &response_buffer,
+        };
+
+        const streamCallback = struct {
+            fn callback(ctx: *StreamContext, chunk: []const u8) void {
+                // Append chunk to response buffer
+                ctx.response_buffer.appendSlice(ctx.app.allocator, chunk) catch return;
+
+                // Update the last message with accumulated response
+                var last_message = &ctx.app.messages.items[ctx.app.messages.items.len - 1];
+                ctx.app.allocator.free(last_message.content);
+                for (last_message.processed_content.items) |*item| {
+                    item.deinit(ctx.app.allocator);
+                }
+                last_message.processed_content.deinit(ctx.app.allocator);
+
+                last_message.content = ctx.app.allocator.dupe(u8, ctx.response_buffer.items) catch return;
+                last_message.processed_content = markdown.processMarkdown(ctx.app.allocator, last_message.content) catch return;
+
+                // Redraw to show the new content
+                ctx.app.redrawScreen() catch return;
+            }
+        }.callback;
+
+        // Call streaming chat
+        try self.ollama_client.chatStream(
+            self.config.model,
+            ollama_messages.items,
+            &stream_ctx,
+            streamCallback,
+        );
+    }
+
     pub fn deinit(self: *App) void {
-        for (self.notes.items) |*note| {
-            self.allocator.free(note.path);
-            for (note.processed_content.items) |*item| {
+        for (self.messages.items) |*message| {
+            self.allocator.free(message.content);
+            for (message.processed_content.items) |*item| {
                 item.deinit(self.allocator);
             }
-            note.processed_content.deinit(self.allocator);
+            message.processed_content.deinit(self.allocator);
         }
-        self.notes.deinit(self.allocator);
+        self.messages.deinit(self.allocator);
+        self.ollama_client.deinit();
+        self.input_buffer.deinit(self.allocator);
         self.clickable_areas.deinit(self.allocator);
         self.valid_cursor_positions.deinit(self.allocator);
         self.saved_expansion_states.deinit(self.allocator);
     }
 
     pub fn run(self: *App, app_tui: *ui.Tui) !void {
+        _ = app_tui; // Will be used later for editor integration
         while (true) {
             const current_time = std.time.milliTimestamp();
 
@@ -512,13 +812,13 @@ pub const App = struct {
 
                     // Save current expansion states
                     self.saved_expansion_states.clearRetainingCapacity();
-                    for (self.notes.items) |note| {
-                        try self.saved_expansion_states.append(self.allocator, note.is_expanded);
+                    for (self.messages.items) |message| {
+                        try self.saved_expansion_states.append(self.allocator, message.is_expanded);
                     }
 
-                    // Collapse all notes for smooth resizing
-                    for (self.notes.items) |*note| {
-                        note.is_expanded = false;
+                    // Collapse all messages for smooth resizing
+                    for (self.messages.items) |*message| {
+                        message.is_expanded = false;
                     }
                 }
             }
@@ -528,9 +828,9 @@ pub const App = struct {
                 self.resize_in_progress = false;
 
                 // Restore expansion states
-                for (self.notes.items, 0..) |*note, i| {
+                for (self.messages.items, 0..) |*message, i| {
                     if (i < self.saved_expansion_states.items.len) {
-                        note.is_expanded = self.saved_expansion_states.items[i];
+                        message.is_expanded = self.saved_expansion_states.items[i];
                     }
                 }
                 self.saved_expansion_states.clearRetainingCapacity();
@@ -540,23 +840,27 @@ pub const App = struct {
             var stdout_buffer: [8192]u8 = undefined;
             var buffered_writer = ui.BufferedStdoutWriter.init(&stdout_buffer);
             const writer = buffered_writer.writer();
-            try writer.writeAll("\x1b[2J");
+            // Move cursor to home WITHOUT clearing - prevents flicker
+            try writer.writeAll("\x1b[H");
             self.clickable_areas.clearRetainingCapacity();
             self.valid_cursor_positions.clearRetainingCapacity();
 
             var absolute_y: usize = 1;
-            for (self.notes.items, 0..) |_, i| {
-                const note = &self.notes.items[i];
-                if (note.is_expanded) {
-                    try drawExpandedNote(self, writer, note, i, &absolute_y);
+            for (self.messages.items, 0..) |_, i| {
+                const message = &self.messages.items[i];
+                if (message.is_expanded) {
+                    try drawExpandedMessage(self, writer, message, i, &absolute_y);
                 } else {
-                    try drawCollapsedNote(self, writer, note, i, &absolute_y);
+                    try drawCollapsedMessage(self, writer, message, i, &absolute_y);
                 }
             }
 
+            // Draw input field at the bottom (3 rows before status)
+            try drawInputField(self, writer);
             try ui.drawTaskbar(self, writer);
+            // Clear from current cursor position to end of screen
+            try writer.writeAll("\x1b[J");
             try buffered_writer.flush();
-            var note_to_open: ?[]const u8 = null;
             var should_redraw = false;
             while (!should_redraw) {
                 // Check for resize signal before blocking on input
@@ -593,62 +897,18 @@ pub const App = struct {
                     continue;
                 }
                 const input = read_buffer[0..@intCast(bytes_read)];
-                if (try ui.handleInput(self, input, &note_to_open, &should_redraw)) {
+                if (try ui.handleInput(self, input, &should_redraw)) {
                     return;
                 }
-
-                if (note_to_open != null) break;
             }
 
-            // View height accounts for status bar: total height - status line - padding
-            const view_height = self.terminal_size.height - 2;
+            // View height accounts for input field + status bar: total height - 4 rows
+            const view_height = self.terminal_size.height - 4;
             if (self.cursor_y < self.scroll_y + 1) {
                 self.scroll_y = self.cursor_y - 1;
             }
             if (self.cursor_y > self.scroll_y + view_height) {
                 self.scroll_y = self.cursor_y - view_height;
-            }
-
-            if (note_to_open) |note_path| {
-                app_tui.disableRawMode();
-                openEditorAndWait(self.allocator, self.config.editor, note_path) catch |err| {
-                    try app_tui.enableRawMode();
-                    std.debug.print("Failed to open editor: {any}\n", .{err});
-                };
-                try app_tui.enableRawMode();
-
-                for (self.notes.items, 0..) |_, i| {
-                    if (mem.eql(u8, self.notes.items[i].path, note_path)) {
-                        var note = &self.notes.items[i];
-                        for (note.processed_content.items) |*item| {
-                            item.deinit(self.allocator);
-                        }
-                        note.processed_content.deinit(self.allocator);
-                        
-                        var dir = try fs.cwd().openDir(fs.path.dirname(note.path).?, .{});
-                        var file = dir.openFile(fs.path.basename(note.path), .{}) catch |err| {
-                            std.debug.print("Failed to reopen file {s} for reloading: {any}\n", .{note.path, err});
-                            note.processed_content = std.ArrayListUnmanaged(markdown.RenderableItem){};
-                            continue;
-                        };
-                        defer file.close();
-
-                        const content_raw = file.readToEndAlloc(self.allocator, 1024 * 1024) catch |err| {
-                            std.debug.print("Failed to re-read file {s}: {any}\n", .{note.path, err});
-                            note.processed_content = std.ArrayListUnmanaged(markdown.RenderableItem){};
-                            continue;
-                        };
-                        defer self.allocator.free(content_raw);
-
-                        const content_rn_fixed = try mem.replaceOwned(u8, self.allocator, content_raw, "\r\n", "\n");
-                        defer self.allocator.free(content_rn_fixed);
-                        const content_r_fixed = try mem.replaceOwned(u8, self.allocator, content_rn_fixed, "\r", "\n");
-                        defer self.allocator.free(content_r_fixed);
-
-                        note.processed_content = try markdown.processMarkdown(self.allocator, content_r_fixed);
-                        break;
-                    }
-                }
             }
         }
     }
@@ -656,7 +916,8 @@ pub const App = struct {
 
 const ConfigFile = struct {
     editor: ?[]const []const u8 = null,
-    notes_dir: ?[]const u8 = null,
+    ollama_host: ?[]const u8 = null,
+    model: ?[]const u8 = null,
 };
 
 fn loadConfigFromFile(allocator: mem.Allocator) !Config {
@@ -665,15 +926,16 @@ fn loadConfigFromFile(allocator: mem.Allocator) !Config {
     default_editor[0] = try allocator.dupe(u8, "nvim");
 
     var config = Config{
-        .notes_dir = try allocator.dupe(u8, "my_notes"),
+        .ollama_host = try allocator.dupe(u8, "http://localhost:11434"),
+        .model = try allocator.dupe(u8, "gpt-oss:120b"),
         .editor = default_editor,
     };
 
     // Try to get home directory
     const home = std.posix.getenv("HOME") orelse return config;
 
-    // Build config file path: ~/.config/zigmark/config.json
-    const config_dir = try fs.path.join(allocator, &.{home, ".config", "zigmark"});
+    // Build config file path: ~/.config/zodollama/config.json
+    const config_dir = try fs.path.join(allocator, &.{home, ".config", "zodollama"});
     defer allocator.free(config_dir);
     const config_path = try fs.path.join(allocator, &.{config_dir, "config.json"});
     defer allocator.free(config_path);
@@ -694,7 +956,8 @@ fn loadConfigFromFile(allocator: mem.Allocator) !Config {
             const default_config =
                 \\{
                 \\  "editor": ["nvim"],
-                \\  "notes_dir": "my_notes"
+                \\  "ollama_host": "http://localhost:11434",
+                \\  "model": "gpt-oss:120b"
                 \\}
                 \\
             ;
@@ -714,9 +977,14 @@ fn loadConfigFromFile(allocator: mem.Allocator) !Config {
     defer parsed.deinit();
 
     // Apply loaded values
-    if (parsed.value.notes_dir) |notes_dir| {
-        allocator.free(config.notes_dir);
-        config.notes_dir = try allocator.dupe(u8, notes_dir);
+    if (parsed.value.ollama_host) |ollama_host| {
+        allocator.free(config.ollama_host);
+        config.ollama_host = try allocator.dupe(u8, ollama_host);
+    }
+
+    if (parsed.value.model) |model| {
+        allocator.free(config.model);
+        config.model = try allocator.dupe(u8, model);
     }
 
     if (parsed.value.editor) |editor| {
@@ -746,12 +1014,20 @@ pub fn main() !void {
 
     // CLI flags override config file
     while (args.next()) |arg| {
-        if (std.mem.eql(u8, arg, "--notes-dir")) {
-            if (args.next()) |path| {
-                allocator.free(config.notes_dir);
-                config.notes_dir = try allocator.dupe(u8, path);
+        if (std.mem.eql(u8, arg, "--ollama-host")) {
+            if (args.next()) |host| {
+                allocator.free(config.ollama_host);
+                config.ollama_host = try allocator.dupe(u8, host);
             } else {
-                std.debug.print("Error: --notes-dir flag requires a path argument.\n", .{});
+                std.debug.print("Error: --ollama-host flag requires a URL argument.\n", .{});
+                return;
+            }
+        } else if (std.mem.eql(u8, arg, "--model")) {
+            if (args.next()) |model| {
+                allocator.free(config.model);
+                config.model = try allocator.dupe(u8, model);
+            } else {
+                std.debug.print("Error: --model flag requires a model name argument.\n", .{});
                 return;
             }
         }

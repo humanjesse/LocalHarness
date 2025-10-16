@@ -4,6 +4,13 @@ const mem = std.mem;
 const lexer = @import("lexer.zig");
 const ascii = std.ascii;
 
+// --- Table Alignment ---
+pub const Alignment = enum {
+    left,
+    center,
+    right,
+};
+
 // --- AST Node Definition ---
 pub const AstNode = struct {
     tag: Tag,
@@ -11,6 +18,7 @@ pub const AstNode = struct {
     text: ?[]const u8,
     start_number: usize = 1,
     lang: ?[]const u8,
+    alignments: ?[]Alignment = null,
 
     pub const Tag = enum {
         document,
@@ -28,6 +36,9 @@ pub const AstNode = struct {
         strikethrough,
         horizontal_rule,
         link,
+        table,
+        table_row,
+        table_cell,
     };
 
     pub fn init(allocator: mem.Allocator, tag: Tag) !*AstNode {
@@ -67,6 +78,10 @@ pub const AstNode = struct {
                 allocator.free(text);
             }
         }
+        // Free alignments array if present
+        if (self.alignments) |alignments| {
+            allocator.free(alignments);
+        }
         allocator.destroy(self);
     }
 };
@@ -91,6 +106,7 @@ pub const RenderableItem = struct {
         list,
         link,
         blank_line,
+        table,
     };
 
     pub const Payload = union {
@@ -111,6 +127,12 @@ pub const RenderableItem = struct {
             url: []const u8,
         },
         blank_line: void,
+        table: struct {
+            headers: [][]const u8,
+            alignments: []Alignment,
+            rows: [][]const u8,
+            column_count: usize,
+        },
     };
 
     pub fn deinit(self: *RenderableItem, allocator: mem.Allocator) void {
@@ -140,6 +162,17 @@ pub const RenderableItem = struct {
             .link => {
                 allocator.free(self.payload.link.text);
                 allocator.free(self.payload.link.url);
+            },
+            .table => {
+                for (self.payload.table.headers) |header| {
+                    allocator.free(header);
+                }
+                allocator.free(self.payload.table.headers);
+                allocator.free(self.payload.table.alignments);
+                for (self.payload.table.rows) |row_cell| {
+                    allocator.free(row_cell);
+                }
+                allocator.free(self.payload.table.rows);
             },
             .horizontal_rule => {},
             .blank_line => {},
@@ -537,6 +570,86 @@ const Parser = struct {
         return count >= 3;
     }
 
+    fn parseAlignment(text: []const u8) Alignment {
+        const trimmed = mem.trim(u8, text, " \t");
+        if (trimmed.len == 0) return .left;
+
+        const starts_with_colon = trimmed[0] == ':';
+        const ends_with_colon = trimmed[trimmed.len - 1] == ':';
+
+        if (starts_with_colon and ends_with_colon) return .center;
+        if (ends_with_colon) return .right;
+        return .left;
+    }
+
+    fn isDelimiterCell(text: []const u8) bool {
+        const trimmed = mem.trim(u8, text, " \t");
+        if (trimmed.len < 3) return false;
+
+        var start: usize = 0;
+        var end: usize = trimmed.len;
+
+        // Skip leading colon
+        if (trimmed[0] == ':') start = 1;
+        // Skip trailing colon
+        if (trimmed[trimmed.len - 1] == ':') end = trimmed.len - 1;
+
+        var dash_count: usize = 0;
+        for (trimmed[start..end]) |c| {
+            if (c == '-') {
+                dash_count += 1;
+            } else if (c != ' ' and c != '\t') {
+                return false;
+            }
+        }
+
+        return dash_count >= 3;
+    }
+
+    fn isTableStart(self: *const Parser) bool {
+        var scan_pos = self.pos;
+
+        // Skip any leading indent
+        if (scan_pos < self.tokens.len and self.tokens[scan_pos].tag == .indent) {
+            scan_pos += 1;
+        }
+
+        // Check first line has pipes
+        var has_pipe = false;
+        while (scan_pos < self.tokens.len) {
+            const tok = self.tokens[scan_pos];
+            if (tok.tag == .newline) break;
+            if (tok.tag == .pipe) has_pipe = true;
+            scan_pos += 1;
+        }
+
+        if (!has_pipe) return false;
+
+        // Skip newline
+        if (scan_pos >= self.tokens.len or self.tokens[scan_pos].tag != .newline) return false;
+        scan_pos += 1;
+
+        // Skip indent on second line
+        if (scan_pos < self.tokens.len and self.tokens[scan_pos].tag == .indent) {
+            scan_pos += 1;
+        }
+
+        // Check second line is delimiter row (pipes with valid delimiters)
+        var has_valid_delimiter = false;
+        var second_line_has_pipe = false;
+        while (scan_pos < self.tokens.len) {
+            const tok = self.tokens[scan_pos];
+            if (tok.tag == .newline) break;
+            if (tok.tag == .pipe) second_line_has_pipe = true;
+            if (tok.tag == .text and isDelimiterCell(tok.text)) {
+                has_valid_delimiter = true;
+            }
+            scan_pos += 1;
+        }
+
+        return second_line_has_pipe and has_valid_delimiter;
+    }
+
     fn parseBlock(self: *Parser, min_indent: usize) anyerror!?*AstNode {
         if (self.eof()) return null;
         const backup_pos = self.pos;
@@ -557,6 +670,17 @@ const Parser = struct {
                 self.advance();
             }
             return try AstNode.init(self.allocator, .horizontal_rule);
+        }
+
+        // Check for table start
+        self.pos = backup_pos;
+        if (self.peek()) |tok| {
+            if (tok.tag == .indent) {
+                self.advance();
+            }
+        }
+        if (self.isTableStart()) {
+            return self.parseTable();
         }
 
         self.pos = backup_pos;
@@ -809,6 +933,219 @@ const Parser = struct {
         }
     }
 
+    fn parseTable(self: *Parser) anyerror!*AstNode {
+        const table = try AstNode.init(self.allocator, .table);
+
+        // Skip indent if present
+        if (!self.eof() and self.peek().?.tag == .indent) {
+            self.advance();
+        }
+
+        // Parse header row
+        var header_cells = std.ArrayListUnmanaged([]const u8){};
+        defer header_cells.deinit(self.allocator);
+
+        var cell_buffer = std.ArrayListUnmanaged(u8){};
+        defer cell_buffer.deinit(self.allocator);
+
+        // Skip leading pipe if present
+        if (!self.eof() and self.peek().?.tag == .pipe) {
+            self.advance();
+        }
+
+        while (!self.eof()) {
+            const tok = self.peek().?;
+            if (tok.tag == .newline) break;
+
+            if (tok.tag == .pipe) {
+                // End of cell
+                const cell_text = try cell_buffer.toOwnedSlice(self.allocator);
+                try header_cells.append(self.allocator, cell_text);
+                cell_buffer = std.ArrayListUnmanaged(u8){};
+                self.advance();
+            } else {
+                // Add to current cell
+                try cell_buffer.appendSlice(self.allocator, tok.text);
+                self.advance();
+            }
+        }
+
+        // Add last cell if buffer not empty
+        if (cell_buffer.items.len > 0) {
+            try header_cells.append(self.allocator, try cell_buffer.toOwnedSlice(self.allocator));
+        }
+
+        const column_count = header_cells.items.len;
+        if (column_count == 0) {
+            table.deinit(self.allocator);
+            return error.InvalidTable;
+        }
+
+        // Skip newline
+        if (!self.eof() and self.peek().?.tag == .newline) {
+            self.advance();
+        }
+
+        // Skip indent on delimiter row
+        if (!self.eof() and self.peek().?.tag == .indent) {
+            self.advance();
+        }
+
+        // Parse delimiter row to extract alignments
+        var alignments = try self.allocator.alloc(Alignment, column_count);
+        var align_idx: usize = 0;
+
+        // Skip leading pipe
+        if (!self.eof() and self.peek().?.tag == .pipe) {
+            self.advance();
+        }
+
+        while (!self.eof() and align_idx < column_count) {
+            const tok = self.peek().?;
+            if (tok.tag == .newline) break;
+
+            if (tok.tag == .pipe) {
+                self.advance();
+            } else if (tok.tag == .text) {
+                alignments[align_idx] = parseAlignment(tok.text);
+                align_idx += 1;
+                self.advance();
+            } else {
+                self.advance();
+            }
+        }
+
+        // Fill remaining alignments with left (if row was uneven)
+        while (align_idx < column_count) : (align_idx += 1) {
+            alignments[align_idx] = .left;
+        }
+
+        table.alignments = alignments;
+
+        // Skip newline after delimiter
+        if (!self.eof() and self.peek().?.tag == .newline) {
+            self.advance();
+        }
+
+        // Build header row node
+        const header_row = try AstNode.init(self.allocator, .table_row);
+        for (header_cells.items) |cell_text| {
+            const cell_node = try AstNode.init(self.allocator, .table_cell);
+
+            // Trim and parse inline content
+            const trimmed = mem.trim(u8, cell_text, " \t");
+            if (trimmed.len > 0) {
+                var cell_tokens = try lexer.tokenize(self.allocator, trimmed);
+                defer cell_tokens.deinit(self.allocator);
+
+                if (cell_tokens.items.len > 0) {
+                    var cell_parser = Parser.init(self.allocator, cell_tokens.items);
+                    try cell_parser.parseInline(&cell_node.children.?);
+                }
+            }
+            try header_row.children.?.append(self.allocator, cell_node);
+        }
+        try table.children.?.append(self.allocator, header_row);
+
+        // Free header cell texts
+        for (header_cells.items) |text| {
+            self.allocator.free(text);
+        }
+
+        // Parse body rows
+        while (!self.eof()) {
+            // Check if next line is a table row (has pipes)
+            const row_start_pos = self.pos;
+
+            // Skip indent
+            if (!self.eof() and self.peek().?.tag == .indent) {
+                self.advance();
+            }
+
+            // Check for pipes on this line
+            var scan_pos = self.pos;
+            var has_pipe = false;
+            while (scan_pos < self.tokens.len) {
+                const tok = self.tokens[scan_pos];
+                if (tok.tag == .newline) break;
+                if (tok.tag == .pipe) has_pipe = true;
+                scan_pos += 1;
+            }
+
+            if (!has_pipe) {
+                self.pos = row_start_pos;
+                break;
+            }
+
+            // Parse this row
+            var row_cells = std.ArrayListUnmanaged([]const u8){};
+            defer {
+                for (row_cells.items) |text| self.allocator.free(text);
+                row_cells.deinit(self.allocator);
+            }
+
+            cell_buffer = std.ArrayListUnmanaged(u8){};
+
+            // Skip leading pipe
+            if (!self.eof() and self.peek().?.tag == .pipe) {
+                self.advance();
+            }
+
+            while (!self.eof()) {
+                const tok = self.peek().?;
+                if (tok.tag == .newline) break;
+
+                if (tok.tag == .pipe) {
+                    const cell_text = try cell_buffer.toOwnedSlice(self.allocator);
+                    try row_cells.append(self.allocator, cell_text);
+                    cell_buffer = std.ArrayListUnmanaged(u8){};
+                    self.advance();
+                } else {
+                    try cell_buffer.appendSlice(self.allocator, tok.text);
+                    self.advance();
+                }
+            }
+
+            // Add last cell
+            if (cell_buffer.items.len > 0) {
+                try row_cells.append(self.allocator, try cell_buffer.toOwnedSlice(self.allocator));
+            }
+
+            // Build row node
+            const body_row = try AstNode.init(self.allocator, .table_row);
+            for (row_cells.items, 0..) |cell_text, idx| {
+                _ = idx;
+                const cell_node = try AstNode.init(self.allocator, .table_cell);
+
+                const trimmed = mem.trim(u8, cell_text, " \t");
+                if (trimmed.len > 0) {
+                    var cell_tokens = try lexer.tokenize(self.allocator, trimmed);
+                    defer cell_tokens.deinit(self.allocator);
+
+                    if (cell_tokens.items.len > 0) {
+                        var cell_parser = Parser.init(self.allocator, cell_tokens.items);
+                        try cell_parser.parseInline(&cell_node.children.?);
+                    }
+                }
+                try body_row.children.?.append(self.allocator, cell_node);
+            }
+
+            // Pad row with empty cells if needed
+            while (body_row.children.?.items.len < column_count) {
+                try body_row.children.?.append(self.allocator, try AstNode.init(self.allocator, .table_cell));
+            }
+
+            try table.children.?.append(self.allocator, body_row);
+
+            // Skip newline
+            if (!self.eof() and self.peek().?.tag == .newline) {
+                self.advance();
+            }
+        }
+
+        return table;
+    }
+
     fn parse(self: *Parser) anyerror!*AstNode {
         const doc = try AstNode.init(self.allocator, .document);
         while (!self.eof()) {
@@ -895,8 +1232,13 @@ fn renderNodeToStringRecursive(
             }
             try buffer.appendSlice(allocator, ANSI_RESET);
         },
+        .table_cell => {
+            for (node.children.?.items) |child| {
+                try renderNodeToStringRecursive(child, buffer, allocator);
+            }
+        },
         .text => if (node.text) |text| try buffer.appendSlice(allocator, text),
-        .code_block, .horizontal_rule, .unordered_list, .ordered_list => {},
+        .code_block, .horizontal_rule, .unordered_list, .ordered_list, .table, .table_row => {},
     }
 }
 
@@ -978,6 +1320,58 @@ fn astToRenderableItems(allocator: mem.Allocator, root: *AstNode) !std.ArrayList
                         .payload = .{ .link = .{ .text = text, .url = url } },
                     });
                 },
+                .table => {
+                    // Extract column count and alignments
+                    const alignments = child.alignments orelse return error.InvalidTable;
+                    const column_count = alignments.len;
+
+                    // Process header row (first child)
+                    if (child.children == null or child.children.?.items.len == 0) continue;
+
+                    const header_row = child.children.?.items[0];
+                    var headers = try allocator.alloc([]const u8, column_count);
+
+                    if (header_row.children) |header_cells| {
+                        for (header_cells.items, 0..) |cell, i| {
+                            if (i >= column_count) break;
+                            headers[i] = try renderNodeToString(allocator, cell);
+                        }
+                    }
+
+                    // Process body rows (remaining children)
+                    const body_row_count = child.children.?.items.len - 1;
+                    var all_cells = try allocator.alloc([]const u8, body_row_count * column_count);
+
+                    var cell_idx: usize = 0;
+                    for (child.children.?.items[1..]) |body_row| {
+                        if (body_row.children) |body_cells| {
+                            for (body_cells.items, 0..) |cell, col_idx| {
+                                if (col_idx >= column_count) break;
+                                if (cell_idx < all_cells.len) {
+                                    all_cells[cell_idx] = try renderNodeToString(allocator, cell);
+                                    cell_idx += 1;
+                                }
+                            }
+                            // Pad row with empty cells if needed
+                            while (cell_idx % column_count != 0 and cell_idx < all_cells.len) {
+                                all_cells[cell_idx] = try allocator.dupe(u8, "");
+                                cell_idx += 1;
+                            }
+                        }
+                    }
+
+                    const cloned_alignments = try allocator.dupe(Alignment, alignments);
+
+                    try items.append(allocator, .{
+                        .tag = .table,
+                        .payload = .{ .table = .{
+                            .headers = headers,
+                            .alignments = cloned_alignments,
+                            .rows = all_cells,
+                            .column_count = column_count,
+                        }},
+                    });
+                },
                 else => {},
             }
         }
@@ -1043,6 +1437,29 @@ fn cloneRenderableItem(
                 .text = try gpa.dupe(u8, item.payload.link.text),
                 .url = try gpa.dupe(u8, item.payload.link.url),
             }},
+        },
+        .table => {
+            var cloned_headers = try gpa.alloc([]const u8, item.payload.table.headers.len);
+            for (item.payload.table.headers, 0..) |header, i| {
+                cloned_headers[i] = try gpa.dupe(u8, header);
+            }
+
+            const cloned_alignments = try gpa.dupe(Alignment, item.payload.table.alignments);
+
+            var cloned_rows = try gpa.alloc([]const u8, item.payload.table.rows.len);
+            for (item.payload.table.rows, 0..) |row_cell, i| {
+                cloned_rows[i] = try gpa.dupe(u8, row_cell);
+            }
+
+            return .{
+                .tag = .table,
+                .payload = .{ .table = .{
+                    .headers = cloned_headers,
+                    .alignments = cloned_alignments,
+                    .rows = cloned_rows,
+                    .column_count = item.payload.table.column_count,
+                }},
+            };
         },
     };
 }

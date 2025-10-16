@@ -1,95 +1,106 @@
-# ZigMark
+# ZodoLlama
 
-A fast, lightweight terminal-based markdown viewer written in Zig. ZigMark provides an elegant TUI (Text User Interface) for browsing and editing markdown documents with real-time rendering.
+A fast, lightweight terminal-based chat interface for Ollama written in Zig. ZodoLlama provides an elegant TUI for chatting with local LLMs with real-time markdown rendering of responses.
 
 ## Features
 
-- **Beautiful rendering** with ANSI styling, box drawing, and proper text wrapping
-- **Interactive navigation** using vi-style keys and mouse support
-- **Expandable document view** - collapse/expand files for quick browsing
-- **Configurable editor** - works with nvim, nano, helix, VS Code, or any editor of your choice
-- **Live editing integration** - seamlessly open documents in your preferred editor
-- **Smooth window resizing** - intelligent content re-wrapping with state preservation
-- **Rich markdown support** - headers, lists, blockquotes, code blocks, links, and emphasis
-- **Advanced emoji support** - proper width calculation for emoji, skin tone modifiers, and ZWJ sequences (family/couple emoji)
+- **Streaming AI responses** - see tokens appear in real-time as the model generates them
+- **Beautiful markdown rendering** - AI responses rendered with ANSI styling, box drawing, and proper text wrapping
+- **Flicker-free display** - smooth streaming without screen flashing
+- **Interactive chat history** - expand/collapse messages using mouse clicks
+- **Ollama integration** - works with any Ollama-hosted model
+- **Configurable** - customize model, host, and editor preferences
+- **Rich markdown support** - headers, lists, blockquotes, code blocks, links, tables, and emphasis
+- **Advanced emoji support** - proper width calculation for emoji, skin tone modifiers, and ZWJ sequences
 - **Unicode-aware** text processing with proper line wrapping
+- **Smooth window resizing** - intelligent content re-wrapping with state preservation
 - **Memory efficient** with careful allocation management
 
 ## Prerequisites
 
-- **Zig compiler** (version 0.15.1 or later)
+- **Zig compiler** (version 0.15.2 or later)
+- **Ollama** - running locally with at least one model pulled
 - Any ANSI-compatible terminal (Ghostty, kitty, alacritty, xterm, iTerm2, etc.)
 
 ## Installation & Setup
 
-1. Clone the repository:
+1. Install and start Ollama:
+   ```bash
+   # Install Ollama from https://ollama.com
+   ollama pull llama3.2  # or any model you prefer
+   ollama serve          # start the Ollama server
+   ```
 
 2. Build the project:
    ```bash
    zig build
    ```
 
-3. Run ZigMark:
+3. Run ZodoLlama:
    ```bash
-   zig build run
+   ./zig-out/bin/my_tui_app
    ```
 
 ## Configuration
 
-ZigMark creates a config file at `~/.config/zigmark/config.json` on first run. Edit it to customize your setup:
+ZodoLlama creates a config file at `~/.config/zodollama/config.json` on first run. Edit it to customize your setup:
 
 ```json
 {
   "editor": ["nvim"],
-  "notes_dir": "my_notes"
+  "ollama_host": "http://localhost:11434",
+  "model": "llama3.2"
 }
 ```
 
-**Supported Editors:**
-- Terminal editors: `["nvim"]`, `["nano"]`, `["hx"]`, `["emacs"]`
-- GUI editors (need `--wait` flag): `["code", "--wait"]`, `["subl", "--wait"]`
+**Configuration Options:**
+- `ollama_host` - Ollama API endpoint (default: `http://localhost:11434`)
+- `model` - Model to use for chat (must be pulled in Ollama)
+- `editor` - Editor for future features
+
+**CLI Overrides:**
+```bash
+./zig-out/bin/my_tui_app --model gpt-oss:120b --ollama-host http://localhost:11434
+```
 
 **Priority:** CLI flags > config file > defaults
 
 ## Usage
 
-### Adding Markdown Files
+### Chatting with AI
 
-Place your markdown files in the `my_notes/` directory (created automatically on first run):
-
-You can also specify a custom notes directory:
-
-```bash
-zig build run -- --notes-dir /path/to/your/notes
-```
+1. Type your message in the input field at the bottom
+2. Press `Enter` to send
+3. Watch the AI response stream in real-time with markdown rendering
 
 ### Controls
 
 | Key/Action | Function |
 |------------|----------|
-| `j` / `k` | Navigate up/down through documents |
-| `Space` | Toggle expand/collapse current document |
-| `Enter` | Open current document in your configured editor |
-| `q` | Quit application |
+| `Escape` | Clear input field |
+| `Backspace` | Delete character from input |
+| `Enter` | Send message (when input has content) |
+| `/quit` + `Enter` | Quit application |
 | **Mouse** | |
-| Mouse wheel up/down | Scroll through documents |
-| Left click | Open document in editor |
-| Right click | Toggle expand/collapse |
+| Mouse wheel up/down | Scroll through messages |
+| Left click | Toggle expand/collapse message |
+| Right click | Toggle expand/collapse message |
 
-### Navigation Tips
+### Chat Tips
 
-- Documents appear as `[ filename ]` when collapsed
-- Use `j`/`k` or mouse to navigate between documents
-- Press `Space` to expand and view rendered markdown content
-- Press `Enter` or left-click to edit documents in your editor
+- Your messages and AI responses appear as expandable message boxes
+- The AI response streams in real-time - you'll see it being generated
+- All markdown in responses is rendered beautifully (code blocks, lists, tables, emphasis, etc.)
+- Messages stay in history - scroll up to see previous conversation
+- Use mouse wheel to navigate through long conversations
 
 ### Terminal Resize Handling
 
-ZigMark intelligently handles terminal window resizing:
-- Expanded notes automatically collapse during resize for smooth rendering
-- After resize completes (~200ms), notes re-expand with content properly wrapped to the new width
-- No glitchy artifacts during active window dragging
-- Preserves your expansion state across resize operations
+ZodoLlama intelligently handles terminal window resizing:
+- Messages automatically collapse during resize for smooth rendering
+- After resize completes (~200ms), messages re-expand with content properly wrapped to the new width
+- No flicker or glitchy artifacts during active window dragging
+- Preserves your expansion state and scroll position across resize operations
 
 ## Supported Markdown Features
 
@@ -101,6 +112,7 @@ ZigMark intelligently handles terminal window resizing:
 - **Code blocks** (``` fenced blocks) with syntax highlighting preparation
 - **Inline code** (`code`) with background styling
 - **Horizontal rules** (`---`)
+- **Tables** (GFM-style with `|` delimiters) - column alignment, Unicode box-drawing borders
 - **Emoji** - full Unicode emoji support with proper width calculation
 
 ## Unicode & Emoji Support
@@ -121,6 +133,60 @@ ZigMark includes comprehensive Unicode handling with ~98% accurate emoji renderi
 - Comprehensive Unicode range coverage (Unicode 15.0+)
 - State machine for ZWJ sequence detection
 - Proper handling of variation selectors and combining marks
+
+## Technical Details
+
+### Streaming Architecture
+
+ZodoLlama implements a sophisticated streaming system for real-time AI responses:
+
+- **Immediate User Feedback** - User messages appear instantly before API call
+- **Streaming Responses** - Ollama chat API with `stream: true` for token-by-token delivery
+- **Flicker-Free Rendering** - Uses `\x1b[H` (move cursor home) + `\x1b[J` (clear to end) instead of `\x1b[2J` (clear screen)
+- **Incremental Markdown Parsing** - Each chunk triggers re-parsing and re-rendering with full markdown support
+- **Efficient Redraws** - Only redraws changed content, preserving existing rendered lines
+
+### HTTP Client
+
+- MVP implementation uses `curl` subprocess for reliable streaming
+- Reads newline-delimited JSON (NDJSON) from Ollama streaming API
+- Future: native Zig `std.http.Client` implementation when Zig 0.15 stabilizes
+
+### Memory Management
+
+- Arena allocators for markdown parsing (freed after rendering)
+- General Purpose Allocator for message storage and output
+- Careful deallocation on message updates during streaming
+- No memory leaks in streaming callback loop
+
+### Rendering Pipeline
+
+1. User input → immediate display
+2. Ollama API call with streaming enabled
+3. For each chunk:
+   - Append to response buffer
+   - Free old parsed markdown
+   - Re-parse accumulated response
+   - Redraw screen (flicker-free)
+4. Continue until `done: true`
+
+## Project History
+
+ZodoLlama evolved from **ZigMark**, a terminal markdown document viewer. The conversion maintained the robust markdown rendering engine while transforming the interface from document browsing to AI chat.
+
+**What Changed:**
+- Document viewing → Chat interface with Ollama
+- File system integration → HTTP API streaming
+- Static markdown files → Dynamic AI-generated responses
+- Notes directory → Conversation history in memory
+- `notes_dir` config → `ollama_host` and `model` config
+
+**What Stayed:**
+- Same markdown parser and renderer
+- Same Unicode/emoji handling
+- Same mouse support for navigation
+- Same window resize intelligence
+- Same ANSI rendering pipeline
 
 ## Contributing
 

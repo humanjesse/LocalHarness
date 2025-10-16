@@ -24,12 +24,13 @@ pub const Token = struct {
         tilde,
         left_bracket,
         right_bracket,
+        pipe,
     };
 };
 
 fn isInlineDelimiter(char: u21) bool {
     return switch (char) {
-        '*', '_', '`', '~', '[', ']', '\n' => true,
+        '*', '_', '`', '~', '[', ']', '|', '\n' => true,
         else => false,
     };
 }
@@ -165,6 +166,10 @@ if (char == '>') {
             ']' => {
                 i += decode_result.len;
                 try tokens.append(allocator, .{ .tag = .right_bracket, .text = input[start..i] });
+            },
+            '|' => {
+                i += decode_result.len;
+                try tokens.append(allocator, .{ .tag = .pipe, .text = input[start..i] });
             },
             '\n' => {
                 i += decode_result.len;

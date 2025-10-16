@@ -283,7 +283,7 @@ pub const AnsiParser = struct {
 pub fn drawTaskbar(app: *const main.App, writer: anytype) !void {
     try writer.print("\x1b[{d};1H", .{app.terminal_size.height});
     try writer.print("\x1b[2K", .{});
-    try writer.print("Press 'q' to quit.", .{});
+    try writer.print("Type '/quit' and press Enter to exit.", .{});
 }
 // --- END: Merged from taskbar.zig ---
 
@@ -309,43 +309,53 @@ fn findAreaAtCursor(app: *const main.App) ?main.ClickableArea {
 pub fn handleInput(
     app: *main.App,
     input: []const u8,
-    note_to_open: *?[]const u8,
     should_redraw: *bool,
 ) !bool { // Returns true if the app should quit.
     if (input.len == 1) {
         switch (input[0]) {
-            'q' => return true,
-            'j' => {
-                if (findCursorIndex(app)) |idx| {
-                    if (idx + 1 < app.valid_cursor_positions.items.len) {
-                        app.cursor_y = app.valid_cursor_positions.items[idx + 1];
-                        should_redraw.* = true;
+            '\r', '\n' => {
+                // Enter key - check for commands or send message
+                if (app.input_buffer.items.len > 0) {
+                    // Check for /quit command
+                    if (mem.eql(u8, app.input_buffer.items, "/quit")) {
+                        return true; // Quit the application
                     }
+
+                    // Send the message
+                    const message_text = try app.allocator.dupe(u8, app.input_buffer.items);
+                    defer app.allocator.free(message_text);
+
+                    app.input_buffer.clearRetainingCapacity();
+                    should_redraw.* = true;
+
+                    // Send message and get response (blocks during streaming)
+                    try app.sendMessage(message_text);
                 }
             },
-            'k' => {
-                if (findCursorIndex(app)) |idx| {
-                    if (idx > 0) {
-                        app.cursor_y = app.valid_cursor_positions.items[idx - 1];
-                        should_redraw.* = true;
-                    }
-                }
-            },
-            '\r' => {
-                if (findAreaAtCursor(app)) |area| {
-                    note_to_open.* = area.note.path;
-                }
-            },
-            ' ' => {
-                if (findAreaAtCursor(app)) |area| {
-                    area.note.is_expanded = !area.note.is_expanded;
-                    if (!area.note.is_expanded) {
-                        app.cursor_y = area.y_start;
-                    }
+            0x7F, 0x08 => { // Backspace (DEL or BS)
+                if (app.input_buffer.items.len > 0) {
+                    _ = app.input_buffer.pop();
                     should_redraw.* = true;
                 }
             },
-            else => {},
+            0x1B => { // Escape - clear input buffer
+                if (app.input_buffer.items.len > 0) {
+                    app.input_buffer.clearRetainingCapacity();
+                    should_redraw.* = true;
+                }
+            },
+            ' ' => {
+                // Space always goes to input buffer in chat mode
+                try app.input_buffer.append(app.allocator, ' ');
+                should_redraw.* = true;
+            },
+            else => {
+                // Printable ASCII characters go to input buffer
+                if (input[0] >= 0x20 and input[0] <= 0x7E) {
+                    try app.input_buffer.append(app.allocator, input[0]);
+                    should_redraw.* = true;
+                }
+            },
         }
     }
 
@@ -408,12 +418,16 @@ pub fn handleInput(
                 if (clicked_y >= area.y_start and clicked_y <= area.y_end and
                     col >= area.x_start + 1 and col <= area.x_end + 1) {
                     switch (button) {
-                        0 => { // Left-click
-                            note_to_open.* = area.note.path;
+                        0 => { // Left-click - toggle expand
+                            area.message.is_expanded = !area.message.is_expanded;
+                            if (!area.message.is_expanded) {
+                                app.cursor_y = area.y_start;
+                            }
+                            should_redraw.* = true;
                         },
-                        2 => { // Right-click
-                            area.note.is_expanded = !area.note.is_expanded;
-                            if (!area.note.is_expanded) {
+                        2 => { // Right-click - also toggle
+                            area.message.is_expanded = !area.message.is_expanded;
+                            if (!area.message.is_expanded) {
                                 app.cursor_y = area.y_start;
                             }
                             should_redraw.* = true;
@@ -437,12 +451,16 @@ pub fn handleInput(
             const clicked_y = @as(usize, row) + app.scroll_y - 1;
             if (clicked_y >= area.y_start and clicked_y <= area.y_end and col >= area.x_start and col <= area.x_end) {
                 switch (button) {
-                    32 => { // Left-click
-                        note_to_open.* = area.note.path;
+                    32 => { // Left-click - toggle expand
+                        area.message.is_expanded = !area.message.is_expanded;
+                        if (!area.message.is_expanded) {
+                            app.cursor_y = area.y_start;
+                        }
+                        should_redraw.* = true;
                     },
-                    34 => { // Right-click
-                        area.note.is_expanded = !area.note.is_expanded;
-                        if (!area.note.is_expanded) {
+                    34 => { // Right-click - also toggle
+                        area.message.is_expanded = !area.message.is_expanded;
+                        if (!area.message.is_expanded) {
                             app.cursor_y = area.y_start;
                         }
                         should_redraw.* = true;
