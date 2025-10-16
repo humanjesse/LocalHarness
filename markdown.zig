@@ -4,6 +4,9 @@ const mem = std.mem;
 const lexer = @import("lexer.zig");
 const ascii = std.ascii;
 
+// Global color configuration (initialized at app startup)
+pub var COLOR_INLINE_CODE_BG: []const u8 = "\x1b[48;5;237m"; // Grey background - default
+
 // --- Table Alignment ---
 pub const Alignment = enum {
     left,
@@ -1172,8 +1175,13 @@ const ANSI_ITALIC_START = "\x1b[3m";
 const ANSI_UNDERLINE_START = "\x1b[4m";
 const ANSI_STRIKETHROUGH_START = "\x1b[9m";
 const ANSI_RESET = "\x1b[0m";
-const ANSI_BG_GREY_START = "\x1b[48;5;237m";
 const ANSI_BG_RESET = "\x1b[49m"; // Reset background only, preserves foreground and other styles
+
+/// Initialize markdown color configuration from app config
+/// Must be called once at app startup before processing any markdown
+pub fn initColors(inline_code_bg: []const u8) void {
+    COLOR_INLINE_CODE_BG = inline_code_bg;
+}
 
 fn renderNodeToStringRecursive(
     node: *AstNode,
@@ -1221,7 +1229,7 @@ fn renderNodeToStringRecursive(
             try buffer.appendSlice(allocator, ANSI_RESET);
         },
         .inline_code => {
-            try buffer.appendSlice(allocator, ANSI_BG_GREY_START);
+            try buffer.appendSlice(allocator, COLOR_INLINE_CODE_BG);
             if (node.text) |text| try buffer.appendSlice(allocator, text);
             try buffer.appendSlice(allocator, ANSI_BG_RESET); // Use BG reset instead of full reset to preserve outer styles
         },

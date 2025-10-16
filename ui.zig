@@ -280,12 +280,22 @@ pub const AnsiParser = struct {
 // --- END: Merged from ansi.zig ---
 
 // --- START: Merged from taskbar.zig ---
+
+// Global color configuration for UI elements (initialized at app startup)
+pub var status_color: []const u8 = "\x1b[33m"; // Default yellow
+
+/// Initialize UI color configuration from app config
+/// Must be called once at app startup
+pub fn initUIColors(status: []const u8) void {
+    status_color = status;
+}
+
 pub fn drawTaskbar(app: *const main.App, writer: anytype) !void {
     try writer.print("\x1b[{d};1H", .{app.terminal_size.height});
     try writer.print("\x1b[2K", .{});
 
     if (app.streaming_active) {
-        try writer.print("\x1b[33mAI is responding...\x1b[0m (wait for response to finish before sending) | Type '/quit' + Enter to exit", .{});
+        try writer.print("{s}AI is responding...\x1b[0m (wait for response to finish before sending) | Type '/quit' + Enter to exit", .{status_color});
     } else {
         try writer.print("Type '/quit' and press Enter to exit.", .{});
     }

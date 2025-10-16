@@ -23,12 +23,14 @@ pub const OllamaClient = struct {
     allocator: mem.Allocator,
     client: http.Client,
     base_url: []const u8,
+    endpoint: []const u8,
 
-    pub fn init(allocator: mem.Allocator, base_url: []const u8) OllamaClient {
+    pub fn init(allocator: mem.Allocator, base_url: []const u8, endpoint: []const u8) OllamaClient {
         return .{
             .allocator = allocator,
             .client = http.Client{ .allocator = allocator },
             .base_url = base_url,
+            .endpoint = endpoint,
         };
     }
 
@@ -78,7 +80,7 @@ pub const OllamaClient = struct {
 
         // Build URL
         var url_buffer: [256]u8 = undefined;
-        const url = try std.fmt.bufPrint(&url_buffer, "{s}/api/chat", .{self.base_url});
+        const url = try std.fmt.bufPrint(&url_buffer, "{s}{s}", .{self.base_url, self.endpoint});
 
         // For MVP, just use curl for now - we'll refactor to proper HTTP later
         // This avoids fighting with Zig 0.15.2's new IO system
@@ -165,7 +167,7 @@ pub const OllamaClient = struct {
 
         // Build URL
         var url_buffer: [256]u8 = undefined;
-        const url = try std.fmt.bufPrint(&url_buffer, "{s}/api/chat", .{self.base_url});
+        const url = try std.fmt.bufPrint(&url_buffer, "{s}{s}", .{self.base_url, self.endpoint});
 
         // Use curl with streaming - process line by line
         var curl_cmd = std.ArrayList(u8).initCapacity(self.allocator, 512) catch unreachable;
