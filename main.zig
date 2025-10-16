@@ -26,7 +26,9 @@ pub const Message = struct {
     role: enum { user, assistant, system },
     content: []const u8, // Raw markdown text
     processed_content: std.ArrayListUnmanaged(markdown.RenderableItem),
-    is_expanded: bool = true, // Default expanded for chat messages
+    thinking_content: ?[]const u8 = null, // Optional reasoning/thinking content
+    processed_thinking_content: ?std.ArrayListUnmanaged(markdown.RenderableItem) = null,
+    thinking_expanded: bool = true, // Controls thinking box expansion (main content always shown)
     timestamp: i64,
 };
 
@@ -235,6 +237,49 @@ fn truncateTextToWidth(allocator: mem.Allocator, text: []const u8, max_width: us
     return try result.toOwnedSlice(allocator);
 }
 
+// --- Helper function to find longest word in text ---
+fn getLongestWordLength(text: []const u8) usize {
+    var max_len: usize = 0;
+    var current_len: usize = 0;
+    var byte_idx: usize = 0;
+
+    while (byte_idx < text.len) {
+        const byte = text[byte_idx];
+
+        // Skip ANSI escape sequences
+        if (byte == 0x1b) {
+            var end = byte_idx;
+            while (end < text.len and text[end] != 'm') : (end += 1) {}
+            byte_idx = end + 1;
+            continue;
+        }
+
+        const char_len = std.unicode.utf8ByteSequenceLength(byte) catch 1;
+        if (byte_idx + char_len > text.len) break;
+
+        const codepoint = std.unicode.utf8Decode(text[byte_idx..][0..char_len]) catch {
+            byte_idx += 1;
+            continue;
+        };
+
+        // Check if it's a word boundary (space, newline, punctuation)
+        if (codepoint == ' ' or codepoint == '\n' or codepoint == '\t' or codepoint == ',' or codepoint == '.') {
+            if (current_len > max_len) max_len = current_len;
+            current_len = 0;
+        } else {
+            const char_width = ui.getCharWidth(codepoint);
+            current_len += char_width;
+        }
+
+        byte_idx += char_len;
+    }
+
+    // Check final word
+    if (current_len > max_len) max_len = current_len;
+
+    return max_len;
+}
+
 // --- NEW RECURSIVE CONTENT RENDERER ---
 
 fn renderItemsToLines(
@@ -415,24 +460,35 @@ fn renderItemsToLines(
                 const table = item.payload.table;
                 const column_count = table.column_count;
 
-                // Calculate column widths (minimum 8, based on content)
+                // Calculate ideal column widths and natural minimums
                 var col_widths = try app.allocator.alloc(usize, column_count);
                 defer app.allocator.free(col_widths);
+                var col_natural_mins = try app.allocator.alloc(usize, column_count);
+                defer app.allocator.free(col_natural_mins);
 
-                // Initialize with minimum widths
-                for (col_widths) |*w| w.* = 8;
+                // Initialize with absolute minimum
+                for (col_widths) |*w| w.* = 3;
+                for (col_natural_mins) |*m| m.* = 3;
 
-                // Check header widths
+                // Check header widths and calculate natural minimums
                 for (table.headers, 0..) |header, i| {
                     const len = ui.AnsiParser.getVisibleLength(header);
                     if (len > col_widths[i]) col_widths[i] = len;
+
+                    // Natural minimum is the header length (headers shouldn't wrap)
+                    const longest_word = getLongestWordLength(header);
+                    col_natural_mins[i] = @max(col_natural_mins[i], @max(longest_word, len));
                 }
 
-                // Check body cell widths
+                // Check body cell widths and update natural minimums
                 for (table.rows, 0..) |cell_text, idx| {
                     const col_idx = idx % column_count;
                     const len = ui.AnsiParser.getVisibleLength(cell_text);
                     if (len > col_widths[col_idx]) col_widths[col_idx] = len;
+
+                    // Update natural minimum based on longest word in this cell
+                    const longest_word = getLongestWordLength(cell_text);
+                    col_natural_mins[col_idx] = @max(col_natural_mins[col_idx], longest_word);
                 }
 
                 // Adjust if total width exceeds available
@@ -444,41 +500,102 @@ fn renderItemsToLines(
                 var total_width: usize = column_count + 1; // borders
                 for (col_widths) |w| total_width += w + 2; // content + padding
 
-                // Guard against underflow: ensure available_width can accommodate borders
-                const min_required_width = (column_count * 3) + (column_count + 1) + (column_count * 2); // min 3 chars per col + borders + padding
-                if (total_width > available_width and available_width > min_required_width) {
-                    // Distribute width proportionally
-                    const scale_factor = @as(f32, @floatFromInt(available_width - min_required_width)) / @as(f32, @floatFromInt(total_width - min_required_width));
-                    for (col_widths) |*w| {
-                        const scaled = @as(usize, @intFromFloat(@as(f32, @floatFromInt(w.*)) * scale_factor));
-                        w.* = if (scaled < 3) 3 else scaled; // Minimum 3 chars per column
-                    }
+                // Intelligent width distribution
+                if (total_width > available_width) {
+                    // Calculate minimum required width with natural minimums
+                    var min_total_width: usize = column_count + 1; // borders
+                    for (col_natural_mins) |m| min_total_width += m + 2; // content + padding
 
-                    // Recalculate total width after scaling
-                    var new_total_width: usize = column_count + 1;
-                    for (col_widths) |w| new_total_width += w + 2;
+                    if (available_width >= min_total_width) {
+                        // We can fit the table with natural minimums - distribute intelligently
+                        // Step 1: Set all columns to their natural minimum
+                        for (col_widths, 0..) |*w, i| {
+                            w.* = col_natural_mins[i];
+                        }
 
-                    // If still too wide (due to minimum width constraints), shrink columns iteratively
-                    while (new_total_width > available_width) {
-                        // Find the widest column and shrink it by 1
-                        var max_width: usize = 0;
-                        var max_idx: usize = 0;
-                        for (col_widths, 0..) |w, i| {
-                            if (w > max_width) {
-                                max_width = w;
-                                max_idx = i;
+                        // Step 2: Distribute remaining space to columns proportionally
+                        // but give more weight to columns that originally wanted more space
+                        var current_total: usize = min_total_width;
+                        const extra_space = available_width - min_total_width;
+
+                        if (extra_space > 0) {
+                            // Calculate total "demand" (how much extra each column wants)
+                            var total_demand: usize = 0;
+                            var demands = try app.allocator.alloc(usize, column_count);
+                            defer app.allocator.free(demands);
+
+                            for (col_widths, 0..) |ideal_width, i| {
+                                // How much does this column want beyond its natural minimum?
+                                const demand = if (ideal_width > col_natural_mins[i])
+                                    ideal_width - col_natural_mins[i]
+                                else
+                                    0;
+                                demands[i] = demand;
+                                total_demand += demand;
+                            }
+
+                            // Distribute extra space proportionally to demand
+                            if (total_demand > 0) {
+                                for (col_widths, 0..) |*w, i| {
+                                    const extra = (extra_space * demands[i]) / total_demand;
+                                    w.* += extra;
+                                }
+                            } else {
+                                // No demand - distribute evenly
+                                const per_column = extra_space / column_count;
+                                for (col_widths) |*w| {
+                                    w.* += per_column;
+                                }
                             }
                         }
 
-                        // If all columns are at minimum, break to prevent infinite loop
-                        if (max_width <= 3) break;
+                        // Recalculate and fine-tune if needed
+                        current_total = column_count + 1;
+                        for (col_widths) |w| current_total += w + 2;
 
-                        col_widths[max_idx] -= 1;
-                        new_total_width -= 1;
+                        // Final adjustment: if still too wide, shrink widest columns
+                        while (current_total > available_width) {
+                            // Find column with most excess above its natural minimum
+                            var max_excess: usize = 0;
+                            var max_idx: usize = 0;
+                            for (col_widths, 0..) |w, i| {
+                                const excess = if (w > col_natural_mins[i]) w - col_natural_mins[i] else 0;
+                                if (excess > max_excess) {
+                                    max_excess = excess;
+                                    max_idx = i;
+                                }
+                            }
+
+                            if (max_excess == 0) break; // All at natural minimum
+
+                            col_widths[max_idx] -= 1;
+                            current_total -= 1;
+                        }
+                    } else {
+                        // Terminal too narrow even for natural minimums - use absolute minimums
+                        const absolute_min: usize = 3;
+                        for (col_widths) |*w| w.* = absolute_min;
+
+                        // Still try to be smart: give slightly more to label columns
+                        var abs_min_total: usize = column_count + 1;
+                        for (col_widths) |w| abs_min_total += w + 2;
+
+                        if (abs_min_total <= available_width) {
+                            const extra = available_width - abs_min_total;
+                            // Give extra to narrowest columns first (likely labels)
+                            for (0..extra) |_| {
+                                var min_width: usize = 1000;
+                                var min_idx: usize = 0;
+                                for (col_natural_mins, 0..) |nat_min, i| {
+                                    if (nat_min < min_width) {
+                                        min_width = nat_min;
+                                        min_idx = i;
+                                    }
+                                }
+                                col_widths[min_idx] += 1;
+                            }
+                        }
                     }
-                } else if (available_width <= min_required_width) {
-                    // Terminal too narrow for table - use minimum widths
-                    for (col_widths) |*w| w.* = 3;
                 }
 
                 // Top border
@@ -645,7 +762,8 @@ fn renderItemsToLines(
 }
 
 
-fn drawExpandedMessage(
+
+fn drawMessage(
     app: *App,
     writer: anytype,
     message: *Message,
@@ -654,58 +772,115 @@ fn drawExpandedMessage(
 ) !void {
     const left_padding = 2;
     const y_start = absolute_y.*;
-
     const max_content_width = if (app.terminal_size.width > left_padding + 4) app.terminal_size.width - left_padding - 4 else 0;
 
-    // Step 1: Recursively render all content into a simple list of lines.
-    var content_lines = std.ArrayListUnmanaged([]const u8){};
+    // Build unified list of all lines to render (thinking + content)
+    var all_lines = std.ArrayListUnmanaged([]const u8){};
     defer {
-        for (content_lines.items) |line| app.allocator.free(line);
-        content_lines.deinit(app.allocator);
+        for (all_lines.items) |line| app.allocator.free(line);
+        all_lines.deinit(app.allocator);
     }
-    try renderItemsToLines(app, &message.processed_content, &content_lines, 0, max_content_width);
 
-    // Step 2: Draw the box around the rendered lines using the classic logic.
-    const box_height = content_lines.items.len + 2;
+    // Add thinking section if present
+    const has_thinking = message.thinking_content != null and message.processed_thinking_content != null;
+    if (has_thinking) {
+        if (message.thinking_expanded) {
+            // Expanded thinking: add header + thinking lines + separator
+            try all_lines.append(app.allocator, try app.allocator.dupe(u8, "\x1b[36mThinking\x1b[0m"));
+
+            var thinking_lines = std.ArrayListUnmanaged([]const u8){};
+            defer thinking_lines.deinit(app.allocator); // Only deinit the ArrayList, not the strings
+
+            if (message.processed_thinking_content) |*thinking_processed| {
+                try renderItemsToLines(app, thinking_processed, &thinking_lines, 0, max_content_width);
+            }
+
+            // Add thinking lines with dim styling (transfer ownership to all_lines)
+            for (thinking_lines.items) |line| {
+                var styled_line = std.ArrayListUnmanaged(u8){};
+                try styled_line.appendSlice(app.allocator, "\x1b[2m"); // Dim
+                try styled_line.appendSlice(app.allocator, line);
+                try styled_line.appendSlice(app.allocator, "\x1b[0m"); // Reset
+                try all_lines.append(app.allocator, try styled_line.toOwnedSlice(app.allocator));
+                // Free the original line since we created a styled copy
+                app.allocator.free(line);
+            }
+
+            // Add separator
+            try all_lines.append(app.allocator, try app.allocator.dupe(u8, "SEPARATOR"));
+        } else {
+            // Collapsed thinking: just show header
+            try all_lines.append(app.allocator, try app.allocator.dupe(u8, "\x1b[2m💭 Thinking (click to expand)\x1b[0m"));
+            try all_lines.append(app.allocator, try app.allocator.dupe(u8, "SEPARATOR"));
+        }
+    }
+
+    // Add main content lines (transfer ownership to all_lines)
+    var content_lines = std.ArrayListUnmanaged([]const u8){};
+    defer content_lines.deinit(app.allocator); // Only deinit the ArrayList, not the strings
+    try renderItemsToLines(app, &message.processed_content, &content_lines, 0, max_content_width);
+    try all_lines.appendSlice(app.allocator, content_lines.items);
+
+    // Now render the unified box with all lines
+    const box_height = all_lines.items.len + 2; // +2 for top and bottom borders
 
     for (0..box_height) |line_idx| {
         const current_absolute_y = absolute_y.* + line_idx;
         try app.valid_cursor_positions.append(app.allocator, current_absolute_y);
 
-        // Render only rows 1 to height-4 (leaves space for separator, input, status bar)
+        // Render only rows within viewport
         if (current_absolute_y >= app.scroll_y and current_absolute_y - app.scroll_y <= app.terminal_size.height - 4) {
             const screen_y = (current_absolute_y - app.scroll_y) + 1;
 
-            // Draw cursor (with ANSI reset and extra space to clear column 2)
-            if (current_absolute_y == app.cursor_y) try writer.print("\x1b[{d};1H\x1b[0m> ", .{screen_y}) else try writer.print("\x1b[{d};1H\x1b[0m  ", .{screen_y});
-            
+            // Draw cursor
+            if (current_absolute_y == app.cursor_y) {
+                try writer.print("\x1b[{d};1H\x1b[0m> ", .{screen_y});
+            } else {
+                try writer.print("\x1b[{d};1H\x1b[0m  ", .{screen_y});
+            }
+
             // Move to start of box
             try writer.print("\x1b[{d}G", .{left_padding + 1});
 
             if (line_idx == 0) {
+                // Top border
                 try writer.writeAll("┌");
                 for (0..max_content_width + 2) |_| try writer.writeAll("─");
                 try writer.writeAll("┐");
             } else if (line_idx == box_height - 1) {
+                // Bottom border
                 try writer.writeAll("└");
                 for (0..max_content_width + 2) |_| try writer.writeAll("─");
                 try writer.writeAll("┘");
             } else {
-                const line_text = content_lines.items[line_idx - 1];
-                const line_len = ui.AnsiParser.getVisibleLength(line_text);
-                try writer.writeAll("│ ");
-                try writer.writeAll(line_text);
-                const padding = if (line_len >= max_content_width) 0 else max_content_width - line_len;
-                for (0..padding) |_| try writer.writeAll(" ");
-                try writer.writeAll(" │");
+                // Content line
+                const content_line_idx = line_idx - 1;
+                const line_text = all_lines.items[content_line_idx];
+
+                // Check if this is a separator
+                if (mem.eql(u8, line_text, "SEPARATOR")) {
+                    try writer.writeAll("├");
+                    for (0..max_content_width + 2) |_| try writer.writeAll("─");
+                    try writer.writeAll("┤");
+                } else {
+                    // Regular content line
+                    const line_len = ui.AnsiParser.getVisibleLength(line_text);
+                    try writer.writeAll("│ ");
+                    try writer.writeAll(line_text);
+                    const padding = if (line_len >= max_content_width) 0 else max_content_width - line_len;
+                    for (0..padding) |_| try writer.writeAll(" ");
+                    try writer.writeAll(" │");
+                }
             }
         }
     }
-    absolute_y.* += box_height + 1;
 
+    absolute_y.* += box_height;
+
+    // Register single clickable area for entire message
     try app.clickable_areas.append(app.allocator, .{
         .y_start = y_start,
-        .y_end = absolute_y.* - 2,
+        .y_end = absolute_y.* - 1,
         .x_start = 1,
         .x_end = app.terminal_size.width,
         .message = &app.messages.items[message_index],
@@ -749,44 +924,11 @@ fn drawInputField(app: *App, writer: anytype) !void {
     try writer.writeAll("\x1b[K");
 }
 
-fn drawCollapsedMessage(
-    app: *App,
-    writer: anytype,
-    message: *Message,
-    message_index: usize,
-    absolute_y: *usize,
-) !void {
-    const left_padding = 2;
-    const current_absolute_y = absolute_y.*;
-    try app.valid_cursor_positions.append(app.allocator, current_absolute_y);
-
-    // Render only rows 1 to height-4 (leaves space for separator, input, status bar)
-    if (current_absolute_y >= app.scroll_y and current_absolute_y - app.scroll_y <= app.terminal_size.height - 4) {
-        const screen_y = (current_absolute_y - app.scroll_y) + 1;
-
-        // Draw cursor (with ANSI reset and extra space to clear column 2)
-        if (current_absolute_y == app.cursor_y) {
-            try writer.print("\x1b[{d};1H\x1b[0m> ", .{screen_y});
-        } else {
-             try writer.print("\x1b[{d};1H\x1b[0m  ", .{screen_y});
-        }
-        try writer.print("\x1b[{d}G", .{left_padding + 1});
-        const role_label = switch (message.role) {
-            .user => "You",
-            .assistant => "Assistant",
-            .system => "System",
-        };
-        try writer.print("[ {s} ]", .{role_label});
-    }
-    try app.clickable_areas.append(app.allocator, .{
-        .y_start = absolute_y.*,
-        .y_end = absolute_y.*,
-        .x_start = left_padding + 1,
-        .x_end = left_padding + 15, // Enough space for labels
-        .message = &app.messages.items[message_index],
-    });
-    absolute_y.* += 2;
-}
+pub const StreamChunk = struct {
+    thinking: ?[]const u8,
+    content: ?[]const u8,
+    done: bool,
+};
 
 pub const App = struct {
     allocator: mem.Allocator,
@@ -803,6 +945,15 @@ pub const App = struct {
     resize_in_progress: bool = false,
     saved_expansion_states: std.ArrayListUnmanaged(bool),
     last_resize_time: i64 = 0,
+    // Streaming state
+    streaming_active: bool = false,
+    stream_mutex: std.Thread.Mutex = .{},
+    stream_chunks: std.ArrayListUnmanaged(StreamChunk) = .{},
+    stream_thread: ?std.Thread = null,
+    stream_thread_ctx: ?*StreamThreadContext = null,
+    // Auto-scroll state
+    last_content_height: usize = 0,
+    auto_scroll_enabled: bool = false,
 
     pub fn init(allocator: mem.Allocator, config: Config) !App {
         var app = App{
@@ -824,7 +975,7 @@ pub const App = struct {
             .role = .system,
             .content = try allocator.dupe(u8, welcome_text),
             .processed_content = welcome_processed,
-            .is_expanded = true,
+            .thinking_expanded = true,
             .timestamp = std.time.milliTimestamp(),
         });
 
@@ -832,7 +983,8 @@ pub const App = struct {
     }
 
     // Helper function to redraw the screen immediately
-    fn redrawScreen(self: *App) !void {
+    // Returns the total content height (last absolute_y position)
+    fn redrawScreen(self: *App) !usize {
         self.terminal_size = try ui.Tui.getTerminalSize();
         var stdout_buffer: [8192]u8 = undefined;
         var buffered_writer = ui.BufferedStdoutWriter.init(&stdout_buffer);
@@ -846,24 +998,87 @@ pub const App = struct {
         var absolute_y: usize = 1;
         for (self.messages.items, 0..) |_, i| {
             const message = &self.messages.items[i];
-            if (message.is_expanded) {
-                try drawExpandedMessage(self, writer, message, i, &absolute_y);
-            } else {
-                try drawCollapsedMessage(self, writer, message, i, &absolute_y);
+            // Draw message (handles both thinking and content)
+            try drawMessage(self, writer, message, i, &absolute_y);
+        }
+
+        // Ensure cursor_y is always at a valid position
+        if (self.valid_cursor_positions.items.len > 0) {
+            var cursor_is_valid = false;
+            for (self.valid_cursor_positions.items) |pos| {
+                if (pos == self.cursor_y) {
+                    cursor_is_valid = true;
+                    break;
+                }
             }
+            if (!cursor_is_valid) {
+                // Snap to last valid position (bottom)
+                self.cursor_y = self.valid_cursor_positions.items[self.valid_cursor_positions.items.len - 1];
+            }
+        }
+
+        // Position cursor after last message content to clear any leftover content
+        const screen_y_for_clear = if (absolute_y > self.scroll_y)
+            (absolute_y - self.scroll_y) + 1
+        else
+            1;
+
+        // Only clear if there's space between content and input field
+        if (screen_y_for_clear < self.terminal_size.height - 2) {
+            try writer.print("\x1b[{d};1H\x1b[J", .{screen_y_for_clear});
         }
 
         try drawInputField(self, writer);
         try ui.drawTaskbar(self, writer);
 
-        // Clear from current cursor position to end of screen
-        // This removes any leftover content from previous renders
-        try writer.writeAll("\x1b[J");
-
         try buffered_writer.flush();
+
+        return absolute_y;
     }
 
-    // Send a message and get streaming response from Ollama
+    // Thread function context for background streaming
+    const StreamThreadContext = struct {
+        allocator: mem.Allocator,
+        app: *App,
+        ollama_client: *ollama.OllamaClient,
+        model: []const u8,
+        messages: []ollama.ChatMessage,
+    };
+
+    fn streamingThreadFn(ctx: *StreamThreadContext) void {
+        // Callback that adds chunks to the queue
+        const ChunkCallback = struct {
+            fn callback(chunk_ctx: *StreamThreadContext, thinking_chunk: ?[]const u8, content_chunk: ?[]const u8) void {
+                chunk_ctx.app.stream_mutex.lock();
+                defer chunk_ctx.app.stream_mutex.unlock();
+
+                // Create a chunk and add to queue
+                const chunk = StreamChunk{
+                    .thinking = if (thinking_chunk) |t| chunk_ctx.allocator.dupe(u8, t) catch null else null,
+                    .content = if (content_chunk) |c| chunk_ctx.allocator.dupe(u8, c) catch null else null,
+                    .done = false,
+                };
+                chunk_ctx.app.stream_chunks.append(chunk_ctx.allocator, chunk) catch return;
+            }
+        };
+
+        // Run the streaming
+        ctx.ollama_client.chatStream(
+            ctx.model,
+            ctx.messages,
+            true, // Enable thinking
+            ctx,
+            ChunkCallback.callback,
+        ) catch {};
+
+        // Add a "done" chunk
+        ctx.app.stream_mutex.lock();
+        defer ctx.app.stream_mutex.unlock();
+        const done_chunk = StreamChunk{ .thinking = null, .content = null, .done = true };
+        ctx.app.stream_chunks.append(ctx.allocator, done_chunk) catch return;
+    }
+
+    // Send a message and get streaming response from Ollama (non-blocking)
     pub fn sendMessage(self: *App, user_text: []const u8) !void {
         // 1. Add user message
         const user_content = try self.allocator.dupe(u8, user_text);
@@ -872,12 +1087,12 @@ pub const App = struct {
             .role = .user,
             .content = user_content,
             .processed_content = user_processed,
-            .is_expanded = true,
+            .thinking_expanded = true,
             .timestamp = std.time.milliTimestamp(),
         });
 
         // ** IMMEDIATE REDRAW - Show user message right away **
-        try self.redrawScreen();
+        _ = try self.redrawScreen();
 
         // 2. Prepare message history for Ollama
         var ollama_messages = std.ArrayListUnmanaged(ollama.ChatMessage){};
@@ -895,71 +1110,79 @@ pub const App = struct {
             });
         }
 
-        // 3. Create placeholder for assistant response
-        const assistant_content = try self.allocator.dupe(u8, "Thinking...");
+        // 3. Create placeholder for assistant response (empty initially)
+        const assistant_content = try self.allocator.dupe(u8, "");
         const assistant_processed = try markdown.processMarkdown(self.allocator, assistant_content);
         try self.messages.append(self.allocator, .{
             .role = .assistant,
             .content = assistant_content,
             .processed_content = assistant_processed,
-            .is_expanded = true,
+            .thinking_content = null,
+            .processed_thinking_content = null,
+            .thinking_expanded = true,
             .timestamp = std.time.milliTimestamp(),
         });
 
-        // ** REDRAW - Show "Thinking..." placeholder **
-        try self.redrawScreen();
+        // ** REDRAW - Show empty placeholder **
+        _ = try self.redrawScreen();
 
-        // 4. Get streaming response from Ollama
-        var response_buffer = std.ArrayListUnmanaged(u8){};
-        defer response_buffer.deinit(self.allocator);
+        // 4. Prepare thread context (convert ollama_messages to owned slice)
+        const messages_slice = try ollama_messages.toOwnedSlice(self.allocator);
 
-        const StreamContext = struct {
-            app: *App,
-            response_buffer: *std.ArrayListUnmanaged(u8),
-        };
-
-        var stream_ctx = StreamContext{
+        const thread_ctx = try self.allocator.create(StreamThreadContext);
+        thread_ctx.* = .{
+            .allocator = self.allocator,
             .app = self,
-            .response_buffer = &response_buffer,
+            .ollama_client = &self.ollama_client,
+            .model = self.config.model,
+            .messages = messages_slice,
         };
 
-        const streamCallback = struct {
-            fn callback(ctx: *StreamContext, chunk: []const u8) void {
-                // Append chunk to response buffer
-                ctx.response_buffer.appendSlice(ctx.app.allocator, chunk) catch return;
-
-                // Update the last message with accumulated response
-                var last_message = &ctx.app.messages.items[ctx.app.messages.items.len - 1];
-                ctx.app.allocator.free(last_message.content);
-                for (last_message.processed_content.items) |*item| {
-                    item.deinit(ctx.app.allocator);
-                }
-                last_message.processed_content.deinit(ctx.app.allocator);
-
-                last_message.content = ctx.app.allocator.dupe(u8, ctx.response_buffer.items) catch return;
-                last_message.processed_content = markdown.processMarkdown(ctx.app.allocator, last_message.content) catch return;
-
-                // Redraw to show the new content
-                ctx.app.redrawScreen() catch return;
-            }
-        }.callback;
-
-        // Call streaming chat
-        try self.ollama_client.chatStream(
-            self.config.model,
-            ollama_messages.items,
-            &stream_ctx,
-            streamCallback,
-        );
+        // 5. Start streaming in background thread
+        self.streaming_active = true;
+        self.auto_scroll_enabled = true; // Enable auto-scroll during streaming
+        self.stream_thread_ctx = thread_ctx;
+        self.stream_thread = try std.Thread.spawn(.{}, streamingThreadFn, .{thread_ctx});
     }
 
     pub fn deinit(self: *App) void {
+        // Wait for streaming thread to finish if active
+        if (self.stream_thread) |thread| {
+            thread.join();
+        }
+
+        // Clean up thread context if it exists
+        if (self.stream_thread_ctx) |ctx| {
+            // Note: msg.role and msg.content are NOT owned by the context
+            // They are pointers to existing message data, so we only free the array
+            self.allocator.free(ctx.messages);
+            self.allocator.destroy(ctx);
+        }
+
+        // Clean up stream chunks
+        for (self.stream_chunks.items) |chunk| {
+            if (chunk.thinking) |t| self.allocator.free(t);
+            if (chunk.content) |c| self.allocator.free(c);
+        }
+        self.stream_chunks.deinit(self.allocator);
+
         for (self.messages.items) |*message| {
             self.allocator.free(message.content);
             for (message.processed_content.items) |*item| {
                 item.deinit(self.allocator);
             }
             message.processed_content.deinit(self.allocator);
+
+            // Clean up thinking content if present
+            if (message.thinking_content) |thinking| {
+                self.allocator.free(thinking);
+            }
+            if (message.processed_thinking_content) |*thinking_processed| {
+                for (thinking_processed.items) |*item| {
+                    item.deinit(self.allocator);
+                }
+                thinking_processed.deinit(self.allocator);
+            }
         }
         self.messages.deinit(self.allocator);
         self.ollama_client.deinit();
@@ -971,42 +1194,133 @@ pub const App = struct {
 
     pub fn run(self: *App, app_tui: *ui.Tui) !void {
         _ = app_tui; // Will be used later for editor integration
+
+        // Buffers for accumulating stream data
+        var thinking_accumulator = std.ArrayListUnmanaged(u8){};
+        defer thinking_accumulator.deinit(self.allocator);
+        var content_accumulator = std.ArrayListUnmanaged(u8){};
+        defer content_accumulator.deinit(self.allocator);
+
         while (true) {
-            const current_time = std.time.milliTimestamp();
+            // Process stream chunks if streaming is active
+            if (self.streaming_active) {
+                self.stream_mutex.lock();
 
-            // Handle resize signals
-            if (ui.resize_pending) {
-                ui.resize_pending = false;
-                self.last_resize_time = current_time;
+                // Process all pending chunks
+                for (self.stream_chunks.items) |chunk| {
+                    if (chunk.done) {
+                        // Streaming complete - clean up
+                        self.streaming_active = false;
+                        self.auto_scroll_enabled = false; // Disable auto-scroll when streaming ends
+                        thinking_accumulator.clearRetainingCapacity();
+                        content_accumulator.clearRetainingCapacity();
 
-                // First resize signal - save states and collapse all
-                if (!self.resize_in_progress) {
-                    self.resize_in_progress = true;
+                        // Auto-collapse thinking box when streaming finishes
+                        if (self.messages.items.len > 0) {
+                            self.messages.items[self.messages.items.len - 1].thinking_expanded = false;
+                        }
 
-                    // Save current expansion states
-                    self.saved_expansion_states.clearRetainingCapacity();
-                    for (self.messages.items) |message| {
-                        try self.saved_expansion_states.append(self.allocator, message.is_expanded);
+                        // Wait for thread to finish and clean up context
+                        if (self.stream_thread) |thread| {
+                            self.stream_mutex.unlock();
+                            thread.join();
+                            self.stream_mutex.lock();
+                            self.stream_thread = null;
+
+                            // Free thread context and its data
+                            if (self.stream_thread_ctx) |ctx| {
+                                // Note: msg.role and msg.content are NOT owned by the context
+                                // They are pointers to existing message data, so we only free the array
+                                self.allocator.free(ctx.messages);
+                                self.allocator.destroy(ctx);
+                                self.stream_thread_ctx = null;
+                            }
+                        }
+                    } else {
+                        // Accumulate chunks
+                        if (chunk.thinking) |t| {
+                            try thinking_accumulator.appendSlice(self.allocator, t);
+                        }
+                        if (chunk.content) |c| {
+                            try content_accumulator.appendSlice(self.allocator, c);
+                        }
+
+                        // Update the last message
+                        if (self.messages.items.len > 0) {
+                            var last_message = &self.messages.items[self.messages.items.len - 1];
+
+                            // Update thinking content if we have any
+                            if (thinking_accumulator.items.len > 0) {
+                                if (last_message.thinking_content) |old_thinking| {
+                                    self.allocator.free(old_thinking);
+                                }
+                                if (last_message.processed_thinking_content) |*old_processed| {
+                                    for (old_processed.items) |*item| {
+                                        item.deinit(self.allocator);
+                                    }
+                                    old_processed.deinit(self.allocator);
+                                }
+
+                                last_message.thinking_content = try self.allocator.dupe(u8, thinking_accumulator.items);
+                                last_message.processed_thinking_content = try markdown.processMarkdown(self.allocator, last_message.thinking_content.?);
+                            }
+
+                            // Update main content
+                            self.allocator.free(last_message.content);
+                            for (last_message.processed_content.items) |*item| {
+                                item.deinit(self.allocator);
+                            }
+                            last_message.processed_content.deinit(self.allocator);
+
+                            last_message.content = try self.allocator.dupe(u8, content_accumulator.items);
+                            last_message.processed_content = try markdown.processMarkdown(self.allocator, last_message.content);
+                        }
                     }
 
-                    // Collapse all messages for smooth resizing
-                    for (self.messages.items) |*message| {
-                        message.is_expanded = false;
+                    // Free the chunk's data
+                    if (chunk.thinking) |t| self.allocator.free(t);
+                    if (chunk.content) |c| self.allocator.free(c);
+                }
+
+                // Clear processed chunks
+                const had_chunks = self.stream_chunks.items.len > 0;
+                self.stream_chunks.clearRetainingCapacity();
+                self.stream_mutex.unlock();
+
+                // Redraw if we processed any chunks
+                if (had_chunks) {
+                    // Render FIRST to get accurate content height
+                    const total_content_height = try self.redrawScreen();
+
+                    // NOW apply auto-scroll using the CURRENT content height
+                    if (self.auto_scroll_enabled) {
+                        const view_height = self.terminal_size.height - 4;
+                        if (total_content_height > view_height) {
+                            self.scroll_y = total_content_height - view_height;
+                        } else {
+                            self.scroll_y = 0;
+                        }
+
+                        // Update cursor to follow auto-scroll (prevents snap-back)
+                        if (self.valid_cursor_positions.items.len > 0) {
+                            self.cursor_y = self.valid_cursor_positions.items[self.valid_cursor_positions.items.len - 1];
+                        }
+
+                        // Re-render with corrected scroll position
+                        _ = try self.redrawScreen();
                     }
+
+                    // Save content height for next frame
+                    self.last_content_height = total_content_height;
+
+                    // Skip main loop render - we just rendered
+                    continue;
                 }
             }
 
-            // Check if resize has completed (no signals for 200ms)
-            if (self.resize_in_progress and (current_time - self.last_resize_time) > 200) {
-                self.resize_in_progress = false;
-
-                // Restore expansion states
-                for (self.messages.items, 0..) |*message, i| {
-                    if (i < self.saved_expansion_states.items.len) {
-                        message.is_expanded = self.saved_expansion_states.items[i];
-                    }
-                }
-                self.saved_expansion_states.clearRetainingCapacity();
+            // Handle resize signals (main content always expanded, no special handling needed)
+            if (ui.resize_pending) {
+                ui.resize_pending = false;
             }
 
             self.terminal_size = try ui.Tui.getTerminalSize();
@@ -1021,45 +1335,53 @@ pub const App = struct {
             var absolute_y: usize = 1;
             for (self.messages.items, 0..) |_, i| {
                 const message = &self.messages.items[i];
-                if (message.is_expanded) {
-                    try drawExpandedMessage(self, writer, message, i, &absolute_y);
-                } else {
-                    try drawCollapsedMessage(self, writer, message, i, &absolute_y);
-                }
+                // Draw message (handles both thinking and content)
+                try drawMessage(self, writer, message, i, &absolute_y);
+            }
+
+            // Position cursor after last message content to clear any leftover content
+            const screen_y_for_clear = if (absolute_y > self.scroll_y)
+                (absolute_y - self.scroll_y) + 1
+            else
+                1;
+
+            // Only clear if there's space between content and input field
+            if (screen_y_for_clear < self.terminal_size.height - 2) {
+                try writer.print("\x1b[{d};1H\x1b[J", .{screen_y_for_clear});
             }
 
             // Draw input field at the bottom (3 rows before status)
             try drawInputField(self, writer);
             try ui.drawTaskbar(self, writer);
-            // Clear from current cursor position to end of screen
-            try writer.writeAll("\x1b[J");
             try buffered_writer.flush();
-            var should_redraw = false;
-            while (!should_redraw) {
-                // Check for resize signal before blocking on input
-                if (ui.resize_pending) {
-                    should_redraw = true;
-                    break;
-                }
 
-                // Check for resize completion timeout
-                if (self.resize_in_progress) {
-                    const now = std.time.milliTimestamp();
-                    if (now - self.last_resize_time > 200) {
-                        should_redraw = true;
-                        break;
-                    }
-                }
+            // Update content height for auto-scroll calculations
+            self.last_content_height = absolute_y;
 
+            // If streaming is active, don't block - continue main loop to process chunks
+            if (self.streaming_active) {
+                // Read input non-blocking
                 var read_buffer: [128]u8 = undefined;
                 const bytes_read = ui.c.read(ui.c.STDIN_FILENO, &read_buffer, read_buffer.len);
-                if (bytes_read <= 0) {
-                    // Check again after read timeout/interrupt
+                if (bytes_read > 0) {
+                    const input = read_buffer[0..@intCast(bytes_read)];
+                    var should_redraw = false;
+                    if (try ui.handleInput(self, input, &should_redraw)) {
+                        return;
+                    }
+                }
+                // Continue main loop immediately to check for more chunks
+            } else {
+                // Normal blocking mode when not streaming
+                var should_redraw = false;
+                while (!should_redraw) {
+                    // Check for resize signal before blocking on input
                     if (ui.resize_pending) {
                         should_redraw = true;
                         break;
                     }
-                    // Also check resize timeout after read returns
+
+                    // Check for resize completion timeout
                     if (self.resize_in_progress) {
                         const now = std.time.milliTimestamp();
                         if (now - self.last_resize_time > 200) {
@@ -1067,11 +1389,29 @@ pub const App = struct {
                             break;
                         }
                     }
-                    continue;
-                }
-                const input = read_buffer[0..@intCast(bytes_read)];
-                if (try ui.handleInput(self, input, &should_redraw)) {
-                    return;
+
+                    var read_buffer: [128]u8 = undefined;
+                    const bytes_read = ui.c.read(ui.c.STDIN_FILENO, &read_buffer, read_buffer.len);
+                    if (bytes_read <= 0) {
+                        // Check again after read timeout/interrupt
+                        if (ui.resize_pending) {
+                            should_redraw = true;
+                            break;
+                        }
+                        // Also check resize timeout after read returns
+                        if (self.resize_in_progress) {
+                            const now = std.time.milliTimestamp();
+                            if (now - self.last_resize_time > 200) {
+                                should_redraw = true;
+                                break;
+                            }
+                        }
+                        continue;
+                    }
+                    const input = read_buffer[0..@intCast(bytes_read)];
+                    if (try ui.handleInput(self, input, &should_redraw)) {
+                        return;
+                    }
                 }
             }
 

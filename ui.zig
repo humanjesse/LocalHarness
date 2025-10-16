@@ -283,7 +283,12 @@ pub const AnsiParser = struct {
 pub fn drawTaskbar(app: *const main.App, writer: anytype) !void {
     try writer.print("\x1b[{d};1H", .{app.terminal_size.height});
     try writer.print("\x1b[2K", .{});
-    try writer.print("Type '/quit' and press Enter to exit.", .{});
+
+    if (app.streaming_active) {
+        try writer.print("\x1b[33mAI is responding...\x1b[0m (wait for response to finish before sending) | Type '/quit' + Enter to exit", .{});
+    } else {
+        try writer.print("Type '/quit' and press Enter to exit.", .{});
+    }
 }
 // --- END: Merged from taskbar.zig ---
 
@@ -321,6 +326,14 @@ pub fn handleInput(
                         return true; // Quit the application
                     }
 
+                    // Don't send new messages while streaming is active
+                    // User can type, but the message won't be sent until current stream finishes
+                    if (app.streaming_active) {
+                        // Optionally: could show a visual indicator or just ignore the Enter
+                        // For now, we just don't send the message
+                        return false;
+                    }
+
                     // Send the message
                     const message_text = try app.allocator.dupe(u8, app.input_buffer.items);
                     defer app.allocator.free(message_text);
@@ -328,7 +341,7 @@ pub fn handleInput(
                     app.input_buffer.clearRetainingCapacity();
                     should_redraw.* = true;
 
-                    // Send message and get response (blocks during streaming)
+                    // Send message and get response (non-blocking - runs in background thread)
                     try app.sendMessage(message_text);
                 }
             },
@@ -397,8 +410,14 @@ pub fn handleInput(
                     // Move cursor up by 1 position
                     if (cursor_idx > 0) {
                         app.cursor_y = app.valid_cursor_positions.items[cursor_idx - 1];
+                        app.auto_scroll_enabled = false; // Disable auto-scroll when user manually scrolls
                         should_redraw.* = true;
                     }
+                } else if (app.valid_cursor_positions.items.len > 0) {
+                    // Cursor not in valid positions - snap to nearest and scroll up
+                    app.cursor_y = app.valid_cursor_positions.items[app.valid_cursor_positions.items.len - 1];
+                    app.auto_scroll_enabled = false;
+                    should_redraw.* = true;
                 }
                 return false;
             } else if (button == 65) { // Scroll down
@@ -406,30 +425,30 @@ pub fn handleInput(
                     // Move cursor down by 1 position
                     if (cursor_idx + 1 < app.valid_cursor_positions.items.len) {
                         app.cursor_y = app.valid_cursor_positions.items[cursor_idx + 1];
+                        app.auto_scroll_enabled = false; // Disable auto-scroll when user manually scrolls
                         should_redraw.* = true;
                     }
+                } else if (app.valid_cursor_positions.items.len > 0) {
+                    // Cursor not in valid positions - snap to nearest and scroll down
+                    app.cursor_y = app.valid_cursor_positions.items[0];
+                    app.auto_scroll_enabled = false;
+                    should_redraw.* = true;
                 }
                 return false;
             }
 
-            // Handle click events on clickable areas
+            // Handle click events on clickable areas (toggles thinking box only)
             for (app.clickable_areas.items) |area| {
                 const clicked_y = @as(usize, row - 1) + app.scroll_y;
                 if (clicked_y >= area.y_start and clicked_y <= area.y_end and
                     col >= area.x_start + 1 and col <= area.x_end + 1) {
                     switch (button) {
-                        0 => { // Left-click - toggle expand
-                            area.message.is_expanded = !area.message.is_expanded;
-                            if (!area.message.is_expanded) {
-                                app.cursor_y = area.y_start;
-                            }
+                        0 => { // Left-click - toggle thinking box
+                            area.message.thinking_expanded = !area.message.thinking_expanded;
                             should_redraw.* = true;
                         },
-                        2 => { // Right-click - also toggle
-                            area.message.is_expanded = !area.message.is_expanded;
-                            if (!area.message.is_expanded) {
-                                app.cursor_y = area.y_start;
-                            }
+                        2 => { // Right-click - toggle thinking box
+                            area.message.thinking_expanded = !area.message.thinking_expanded;
                             should_redraw.* = true;
                         },
                         else => {},
@@ -451,18 +470,12 @@ pub fn handleInput(
             const clicked_y = @as(usize, row) + app.scroll_y - 1;
             if (clicked_y >= area.y_start and clicked_y <= area.y_end and col >= area.x_start and col <= area.x_end) {
                 switch (button) {
-                    32 => { // Left-click - toggle expand
-                        area.message.is_expanded = !area.message.is_expanded;
-                        if (!area.message.is_expanded) {
-                            app.cursor_y = area.y_start;
-                        }
+                    32 => { // Left-click - toggle thinking box
+                        area.message.thinking_expanded = !area.message.thinking_expanded;
                         should_redraw.* = true;
                     },
-                    34 => { // Right-click - also toggle
-                        area.message.is_expanded = !area.message.is_expanded;
-                        if (!area.message.is_expanded) {
-                            app.cursor_y = area.y_start;
-                        }
+                    34 => { // Right-click - toggle thinking box
+                        area.message.thinking_expanded = !area.message.thinking_expanded;
                         should_redraw.* = true;
                     },
                     else => {},

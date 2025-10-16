@@ -6,7 +6,7 @@ pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
 
     const exe = b.addExecutable(.{
-        .name = "my_tui_app",
+        .name = "zodollama",
         .root_module = b.createModule(.{
             .root_source_file = b.path("main.zig"),
             .target = target,

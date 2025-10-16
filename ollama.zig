@@ -14,6 +14,7 @@ const ChatResponse = struct {
     message: ?struct {
         role: []const u8,
         content: []const u8,
+        thinking: ?[]const u8 = null,
     } = null,
     done: bool = false,
 };
@@ -119,8 +120,9 @@ pub const OllamaClient = struct {
         self: *OllamaClient,
         model: []const u8,
         messages: []const ChatMessage,
+        think: bool,
         context: anytype,
-        callback: fn (ctx: @TypeOf(context), chunk: []const u8) void,
+        callback: fn (ctx: @TypeOf(context), thinking_chunk: ?[]const u8, content_chunk: ?[]const u8) void,
     ) !void {
         // Build JSON payload manually with stream: true
         var payload_list = std.ArrayListUnmanaged(u8){};
@@ -152,7 +154,11 @@ pub const OllamaClient = struct {
             try payload_list.appendSlice(self.allocator, "\"}");
         }
 
-        try payload_list.appendSlice(self.allocator, "],\"stream\":true}"); // Enable streaming
+        try payload_list.appendSlice(self.allocator, "],\"stream\":true");
+        if (think) {
+            try payload_list.appendSlice(self.allocator, ",\"think\":true");
+        }
+        try payload_list.appendSlice(self.allocator, "}");
 
         const payload = try payload_list.toOwnedSlice(self.allocator);
         defer self.allocator.free(payload);
@@ -209,10 +215,14 @@ pub const OllamaClient = struct {
                         };
                         defer parsed.deinit();
 
-                        // Extract content from message field
+                        // Extract thinking and content from message field
                         if (parsed.value.message) |msg| {
-                            if (msg.content.len > 0) {
-                                callback(context, msg.content);
+                            const thinking_chunk = if (msg.thinking) |t| if (t.len > 0) t else null else null;
+                            const content_chunk = if (msg.content.len > 0) msg.content else null;
+
+                            // Only call callback if there's something to report
+                            if (thinking_chunk != null or content_chunk != null) {
+                                callback(context, thinking_chunk, content_chunk);
                             }
                         }
 

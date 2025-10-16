@@ -9,6 +9,9 @@ my_notes/
 EMOJI_SUPPORT.md
 UPGRADE_NOTES.md
 
+# Archive folder for old test files
+archive/
+
 # Editor/IDE files
 .vscode/
 .idea/

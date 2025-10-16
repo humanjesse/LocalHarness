@@ -4,17 +4,21 @@ A fast, lightweight terminal-based chat interface for Ollama written in Zig. Zod
 
 ## Features
 
-- **Streaming AI responses** - see tokens appear in real-time as the model generates them
+- **Non-blocking streaming** - type, scroll, and interact while AI responds in real-time
+- **Background thread processing** - UI stays fully responsive during API calls
+- **Smart auto-scroll** - viewport automatically follows AI responses during streaming, disables on manual scroll
+- **AI thinking/reasoning blocks** - see the AI's thought process (when available), collapsible for clean reading
 - **Beautiful markdown rendering** - AI responses rendered with ANSI styling, box drawing, and proper text wrapping
-- **Flicker-free display** - smooth streaming without screen flashing
-- **Interactive chat history** - expand/collapse messages using mouse clicks
+- **Flicker-free display** - smooth streaming without screen flashing or duplicated borders
+- **Interactive chat history** - expand/collapse thinking blocks using mouse clicks
+- **Instant scrolling** - mouse wheel scrolling works immediately, no click required
 - **Ollama integration** - works with any Ollama-hosted model
-- **Configurable** - customize model, host, and editor preferences
+- **Configurable** - customize model, host, and editor preferences via JSON config
 - **Rich markdown support** - headers, lists, blockquotes, code blocks, links, tables, and emphasis
 - **Advanced emoji support** - proper width calculation for emoji, skin tone modifiers, and ZWJ sequences
-- **Unicode-aware** text processing with proper line wrapping
+- **Unicode-aware** text processing with proper line wrapping for CJK and multi-byte characters
 - **Smooth window resizing** - intelligent content re-wrapping with state preservation
-- **Memory efficient** with careful allocation management
+- **Thread-safe architecture** - mutex-protected streaming with proper memory management
 
 ## Prerequisites
 
@@ -38,7 +42,7 @@ A fast, lightweight terminal-based chat interface for Ollama written in Zig. Zod
 
 3. Run ZodoLlama:
    ```bash
-   ./zig-out/bin/my_tui_app
+   ./zig-out/bin/zodollama
    ```
 
 ## Configuration
@@ -60,7 +64,7 @@ ZodoLlama creates a config file at `~/.config/zodollama/config.json` on first ru
 
 **CLI Overrides:**
 ```bash
-./zig-out/bin/my_tui_app --model gpt-oss:120b --ollama-host http://localhost:11434
+./zig-out/bin/zodollama --model llama3.2 --ollama-host http://localhost:11434
 ```
 
 **Priority:** CLI flags > config file > defaults
@@ -82,25 +86,30 @@ ZodoLlama creates a config file at `~/.config/zodollama/config.json` on first ru
 | `Enter` | Send message (when input has content) |
 | `/quit` + `Enter` | Quit application |
 | **Mouse** | |
-| Mouse wheel up/down | Scroll through messages |
-| Left click | Toggle expand/collapse message |
-| Right click | Toggle expand/collapse message |
+| Mouse wheel up/down | Scroll through messages (auto-scroll disables on use) |
+| Left click on message | Toggle expand/collapse thinking block |
+| Right click on message | Toggle expand/collapse thinking block |
 
 ### Chat Tips
 
-- Your messages and AI responses appear as expandable message boxes
-- The AI response streams in real-time - you'll see it being generated
-- All markdown in responses is rendered beautifully (code blocks, lists, tables, emphasis, etc.)
-- Messages stay in history - scroll up to see previous conversation
-- Use mouse wheel to navigate through long conversations
+- Your messages and AI responses appear as bordered message boxes
+- The AI response streams in real-time - you'll see it being generated token-by-token
+- **Thinking blocks** - some models show their reasoning process in a collapsible "Thinking" section (auto-collapsed when response completes)
+- **Smart auto-scroll** - viewport automatically follows streaming responses; scroll up to read earlier parts and auto-scroll disables
+- **Instant scrolling** - mouse wheel works immediately without clicking first
+- **Fully responsive UI** - type, scroll, and interact while the AI is responding
+- Wait for the AI to finish (yellow status indicator disappears) before sending your next message
+- All markdown in responses is rendered beautifully (code blocks, lists, tables, emphasis, emoji, etc.)
+- Click on any message to toggle the thinking block visibility
+- Messages stay in history - scroll up to review the entire conversation
 
 ### Terminal Resize Handling
 
 ZodoLlama intelligently handles terminal window resizing:
-- Messages automatically collapse during resize for smooth rendering
-- After resize completes (~200ms), messages re-expand with content properly wrapped to the new width
-- No flicker or glitchy artifacts during active window dragging
-- Preserves your expansion state and scroll position across resize operations
+- Content automatically re-wraps to the new terminal width
+- Thinking blocks remain in their current state (collapsed/expanded)
+- No flicker or rendering artifacts during resize
+- Scroll position is preserved when possible
 
 ## Supported Markdown Features
 
@@ -112,12 +121,24 @@ ZodoLlama intelligently handles terminal window resizing:
 - **Code blocks** (``` fenced blocks) with syntax highlighting preparation
 - **Inline code** (`code`) with background styling
 - **Horizontal rules** (`---`)
-- **Tables** (GFM-style with `|` delimiters) - column alignment, Unicode box-drawing borders
+- **Tables** (GFM-style with `|` delimiters) - intelligent column width distribution, column alignment, Unicode box-drawing borders
 - **Emoji** - full Unicode emoji support with proper width calculation
+
+### Table Rendering
+
+ZodoLlama includes sophisticated table rendering with intelligent column width distribution:
+
+- **Natural minimum widths** - Each column calculates its natural minimum based on header length and longest words in cells
+- **Smart scaling** - When tables exceed terminal width, narrow columns (labels, categories) are protected while wide content columns wrap gracefully
+- **Multi-line cell support** - Long cell content wraps with 2-space continuation indent
+- **Proportional distribution** - Extra space is allocated based on each column's content demand
+- **Alignment support** - Left, center, and right alignment (GFM-style with `:` markers)
+
+This ensures label columns remain readable while content columns adapt to available space.
 
 ## Unicode & Emoji Support
 
-ZigMark includes comprehensive Unicode handling with ~98% accurate emoji rendering:
+ZodoLlama includes comprehensive Unicode handling with ~98% accurate emoji rendering:
 
 - ✅ **Basic emoji** (😀, 🎉, 🚀, ❤️)
 - ✅ **Emoji with skin tone modifiers** (👋🏽, 👶🏾, 👨🏿)
@@ -138,13 +159,19 @@ ZigMark includes comprehensive Unicode handling with ~98% accurate emoji renderi
 
 ### Streaming Architecture
 
-ZodoLlama implements a sophisticated streaming system for real-time AI responses:
+ZodoLlama implements a non-blocking multi-threaded streaming system for real-time AI responses:
 
+- **Background Thread Streaming** - API calls run in separate thread, main thread stays responsive
+- **Thread-Safe Chunk Queue** - Mutex-protected queue for passing data between threads
 - **Immediate User Feedback** - User messages appear instantly before API call
+- **Responsive UI During Streaming** - Type, scroll, and interact while AI responds
+- **Smart Auto-Scroll** - Viewport follows streaming responses, automatically disables on manual scroll
+- **Thinking/Reasoning Support** - Separate content streams for thinking and response content
 - **Streaming Responses** - Ollama chat API with `stream: true` for token-by-token delivery
-- **Flicker-Free Rendering** - Uses `\x1b[H` (move cursor home) + `\x1b[J` (clear to end) instead of `\x1b[2J` (clear screen)
+- **Flicker-Free Rendering** - Uses `\x1b[H` (move cursor home) with precise viewport clearing to prevent artifacts
 - **Incremental Markdown Parsing** - Each chunk triggers re-parsing and re-rendering with full markdown support
-- **Efficient Redraws** - Only redraws changed content, preserving existing rendered lines
+- **Efficient Event Loop** - Non-blocking input when streaming, blocking when idle for CPU efficiency
+- **Accurate Viewport Management** - Render-first approach ensures scroll position matches current content height
 
 ### HTTP Client
 
@@ -156,19 +183,29 @@ ZodoLlama implements a sophisticated streaming system for real-time AI responses
 
 - Arena allocators for markdown parsing (freed after rendering)
 - General Purpose Allocator for message storage and output
+- Thread-safe chunk allocation with mutex protection
 - Careful deallocation on message updates during streaming
+- Thread context cleanup after streaming completes
 - No memory leaks in streaming callback loop
 
 ### Rendering Pipeline
 
-1. User input → immediate display
-2. Ollama API call with streaming enabled
-3. For each chunk:
-   - Append to response buffer
-   - Free old parsed markdown
-   - Re-parse accumulated response
-   - Redraw screen (flicker-free)
-4. Continue until `done: true`
+1. User input → immediate display with placeholder for AI response
+2. Background thread spawned for Ollama API streaming
+3. Main event loop:
+   - Check mutex-protected chunk queue
+   - Process all pending chunks
+   - For each chunk:
+     - Append to thinking/content buffers
+     - Free old parsed markdown
+     - Re-parse accumulated thinking and content
+     - Calculate accurate content height
+     - Apply smart auto-scroll (if enabled)
+     - Redraw screen with corrected viewport (flicker-free)
+   - Handle user input (non-blocking)
+   - Continue until streaming completes
+4. Auto-collapse thinking block when streaming finishes
+5. Thread cleanup when `done: true` received
 
 ## Project History
 
