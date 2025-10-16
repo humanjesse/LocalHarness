@@ -31,3 +31,17 @@ Thumbs.db
 # Test executables
 simple_print
 test_stdout*
+http_example
+http_post_example
+http_post_example_0_15
+http_test
+test_http_post_working
+test_http_simple_post
+
+# Development documentation and examples
+HTTP_CLIENT_GUIDE.md
+ZIG_0_15_HTTP_GUIDE.md
+complete_example.zig
+ollama_client_example.zig
+http_example.zig
+http_post_example_0_15.zig

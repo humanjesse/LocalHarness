@@ -9,16 +9,29 @@ const ollama = @import("ollama.zig");
 
 pub const Config = struct {
     ollama_host: []const u8 = "http://localhost:11434",
-    model: []const u8 = "gpt-oss:120b",
+    ollama_endpoint: []const u8 = "/api/chat",
+    model: []const u8 = "llama3.2",
     editor: []const []const u8 = &.{"nvim"},
+    // Color customization
+    color_status: []const u8 = "\x1b[33m", // Yellow - AI responding status
+    color_link: []const u8 = "\x1b[36m", // Cyan - Link text
+    color_thinking_header: []const u8 = "\x1b[36m", // Cyan - "Thinking" header
+    color_thinking_dim: []const u8 = "\x1b[2m", // Dim - Thinking content
+    color_inline_code_bg: []const u8 = "\x1b[48;5;237m", // Grey background - Inline code
 
     pub fn deinit(self: *Config, allocator: mem.Allocator) void {
         allocator.free(self.ollama_host);
+        allocator.free(self.ollama_endpoint);
         allocator.free(self.model);
         for (self.editor) |arg| {
             allocator.free(arg);
         }
         allocator.free(self.editor);
+        allocator.free(self.color_status);
+        allocator.free(self.color_link);
+        allocator.free(self.color_thinking_header);
+        allocator.free(self.color_thinking_dim);
+        allocator.free(self.color_inline_code_bg);
     }
 };
 
@@ -436,7 +449,7 @@ fn renderItemsToLines(
                 defer formatted_text.deinit(app.allocator);
 
                 try formatted_text.appendSlice(app.allocator,"\x1b[4m"); // Start underline
-                try formatted_text.appendSlice(app.allocator,"\x1b[36m"); // Cyan color
+                try formatted_text.appendSlice(app.allocator, app.config.color_link); // Link color from config
                 try formatted_text.appendSlice(app.allocator,link_text);
                 try formatted_text.appendSlice(app.allocator,"\x1b[0m");  // Reset
                 try formatted_text.appendSlice(app.allocator," (");
@@ -786,7 +799,11 @@ fn drawMessage(
     if (has_thinking) {
         if (message.thinking_expanded) {
             // Expanded thinking: add header + thinking lines + separator
-            try all_lines.append(app.allocator, try app.allocator.dupe(u8, "\x1b[36mThinking\x1b[0m"));
+            var thinking_header = std.ArrayListUnmanaged(u8){};
+            defer thinking_header.deinit(app.allocator);
+            try thinking_header.appendSlice(app.allocator, app.config.color_thinking_header);
+            try thinking_header.appendSlice(app.allocator, "Thinking\x1b[0m");
+            try all_lines.append(app.allocator, try thinking_header.toOwnedSlice(app.allocator));
 
             var thinking_lines = std.ArrayListUnmanaged([]const u8){};
             defer thinking_lines.deinit(app.allocator); // Only deinit the ArrayList, not the strings
@@ -798,7 +815,7 @@ fn drawMessage(
             // Add thinking lines with dim styling (transfer ownership to all_lines)
             for (thinking_lines.items) |line| {
                 var styled_line = std.ArrayListUnmanaged(u8){};
-                try styled_line.appendSlice(app.allocator, "\x1b[2m"); // Dim
+                try styled_line.appendSlice(app.allocator, app.config.color_thinking_dim); // Dim from config
                 try styled_line.appendSlice(app.allocator, line);
                 try styled_line.appendSlice(app.allocator, "\x1b[0m"); // Reset
                 try all_lines.append(app.allocator, try styled_line.toOwnedSlice(app.allocator));
@@ -960,7 +977,7 @@ pub const App = struct {
             .allocator = allocator,
             .config = config,
             .messages = .{},
-            .ollama_client = ollama.OllamaClient.init(allocator, config.ollama_host),
+            .ollama_client = ollama.OllamaClient.init(allocator, config.ollama_host, config.ollama_endpoint),
             .input_buffer = .{},
             .clickable_areas = .{},
             .terminal_size = try ui.Tui.getTerminalSize(),
@@ -1430,7 +1447,13 @@ pub const App = struct {
 const ConfigFile = struct {
     editor: ?[]const []const u8 = null,
     ollama_host: ?[]const u8 = null,
+    ollama_endpoint: ?[]const u8 = null,
     model: ?[]const u8 = null,
+    color_status: ?[]const u8 = null,
+    color_link: ?[]const u8 = null,
+    color_thinking_header: ?[]const u8 = null,
+    color_thinking_dim: ?[]const u8 = null,
+    color_inline_code_bg: ?[]const u8 = null,
 };
 
 fn loadConfigFromFile(allocator: mem.Allocator) !Config {
@@ -1440,8 +1463,14 @@ fn loadConfigFromFile(allocator: mem.Allocator) !Config {
 
     var config = Config{
         .ollama_host = try allocator.dupe(u8, "http://localhost:11434"),
-        .model = try allocator.dupe(u8, "gpt-oss:120b"),
+        .ollama_endpoint = try allocator.dupe(u8, "/api/chat"),
+        .model = try allocator.dupe(u8, "llama3.2"),
         .editor = default_editor,
+        .color_status = try allocator.dupe(u8, "\x1b[33m"),
+        .color_link = try allocator.dupe(u8, "\x1b[36m"),
+        .color_thinking_header = try allocator.dupe(u8, "\x1b[36m"),
+        .color_thinking_dim = try allocator.dupe(u8, "\x1b[2m"),
+        .color_inline_code_bg = try allocator.dupe(u8, "\x1b[48;5;237m"),
     };
 
     // Try to get home directory
@@ -1470,7 +1499,13 @@ fn loadConfigFromFile(allocator: mem.Allocator) !Config {
                 \\{
                 \\  "editor": ["nvim"],
                 \\  "ollama_host": "http://localhost:11434",
-                \\  "model": "gpt-oss:120b"
+                \\  "ollama_endpoint": "/api/chat",
+                \\  "model": "llama3.2",
+                \\  "color_status": "\u001b[33m",
+                \\  "color_link": "\u001b[36m",
+                \\  "color_thinking_header": "\u001b[36m",
+                \\  "color_thinking_dim": "\u001b[2m",
+                \\  "color_inline_code_bg": "\u001b[48;5;237m"
                 \\}
                 \\
             ;
@@ -1511,6 +1546,36 @@ fn loadConfigFromFile(allocator: mem.Allocator) !Config {
         config.editor = new_editor;
     }
 
+    if (parsed.value.ollama_endpoint) |ollama_endpoint| {
+        allocator.free(config.ollama_endpoint);
+        config.ollama_endpoint = try allocator.dupe(u8, ollama_endpoint);
+    }
+
+    if (parsed.value.color_status) |color_status| {
+        allocator.free(config.color_status);
+        config.color_status = try allocator.dupe(u8, color_status);
+    }
+
+    if (parsed.value.color_link) |color_link| {
+        allocator.free(config.color_link);
+        config.color_link = try allocator.dupe(u8, color_link);
+    }
+
+    if (parsed.value.color_thinking_header) |color_thinking_header| {
+        allocator.free(config.color_thinking_header);
+        config.color_thinking_header = try allocator.dupe(u8, color_thinking_header);
+    }
+
+    if (parsed.value.color_thinking_dim) |color_thinking_dim| {
+        allocator.free(config.color_thinking_dim);
+        config.color_thinking_dim = try allocator.dupe(u8, color_thinking_dim);
+    }
+
+    if (parsed.value.color_inline_code_bg) |color_inline_code_bg| {
+        allocator.free(config.color_inline_code_bg);
+        config.color_inline_code_bg = try allocator.dupe(u8, color_inline_code_bg);
+    }
+
     return config;
 }
 
@@ -1520,6 +1585,10 @@ pub fn main() !void {
     const allocator = gpa.allocator();
     var config = try loadConfigFromFile(allocator);
     defer config.deinit(allocator);
+
+    // Initialize color configuration for markdown and UI
+    markdown.initColors(config.color_inline_code_bg);
+    ui.initUIColors(config.color_status);
 
     var args = try std.process.argsWithAllocator(allocator);
     defer args.deinit();

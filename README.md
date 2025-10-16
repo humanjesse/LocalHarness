@@ -2,6 +2,14 @@
 
 A fast, lightweight terminal-based chat interface for Ollama written in Zig. ZodoLlama provides an elegant TUI for chatting with local LLMs with real-time markdown rendering of responses.
 
+## Platform Support
+
+**Tested:** Linux x86_64 (Arch Linux, kernel 6.17+)
+**Should work:** Other Linux distributions, macOS (POSIX-compatible systems)
+**Not supported:** Windows
+
+ZodoLlama uses POSIX terminal APIs. If you try it on another platform, please open an issue and let us know if it works!
+
 ## Features
 
 - **Non-blocking streaming** - type, scroll, and interact while AI responds in real-time
@@ -13,7 +21,7 @@ A fast, lightweight terminal-based chat interface for Ollama written in Zig. Zod
 - **Interactive chat history** - expand/collapse thinking blocks using mouse clicks
 - **Instant scrolling** - mouse wheel scrolling works immediately, no click required
 - **Ollama integration** - works with any Ollama-hosted model
-- **Configurable** - customize model, host, and editor preferences via JSON config
+- **Configurable** - customize model, host, editor, and UI colors via JSON config
 - **Rich markdown support** - headers, lists, blockquotes, code blocks, links, tables, and emphasis
 - **Advanced emoji support** - proper width calculation for emoji, skin tone modifiers, and ZWJ sequences
 - **Unicode-aware** text processing with proper line wrapping for CJK and multi-byte characters
@@ -53,14 +61,31 @@ ZodoLlama creates a config file at `~/.config/zodollama/config.json` on first ru
 {
   "editor": ["nvim"],
   "ollama_host": "http://localhost:11434",
-  "model": "llama3.2"
+  "ollama_endpoint": "/api/chat",
+  "model": "llama3.2",
+  "color_status": "\u001b[33m",
+  "color_link": "\u001b[36m",
+  "color_thinking_header": "\u001b[36m",
+  "color_thinking_dim": "\u001b[2m",
+  "color_inline_code_bg": "\u001b[48;5;237m"
 }
 ```
 
 **Configuration Options:**
 - `ollama_host` - Ollama API endpoint (default: `http://localhost:11434`)
+- `ollama_endpoint` - API endpoint path (default: `/api/chat`)
 - `model` - Model to use for chat (must be pulled in Ollama)
 - `editor` - Editor for future features
+- `color_status` - Status message color (default: yellow `\u001b[33m`)
+- `color_link` - Link text color (default: cyan `\u001b[36m`)
+- `color_thinking_header` - "Thinking" header color (default: cyan `\u001b[36m`)
+- `color_thinking_dim` - Thinking content dimming (default: dim `\u001b[2m`)
+- `color_inline_code_bg` - Inline code background (default: grey `\u001b[48;5;237m`)
+
+**Available ANSI Color Codes:**
+- Basic colors: `\u001b[31m` (red), `\u001b[32m` (green), `\u001b[33m` (yellow), `\u001b[34m` (blue), `\u001b[35m` (magenta), `\u001b[36m` (cyan), `\u001b[37m` (white)
+- Styles: `\u001b[1m` (bold), `\u001b[2m` (dim), `\u001b[3m` (italic), `\u001b[4m` (underline)
+- 256-color backgrounds: `\u001b[48;5;NUMm` where NUM is 0-255
 
 **CLI Overrides:**
 ```bash
