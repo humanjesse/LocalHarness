@@ -13,9 +13,10 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Setup Zig
-        uses: goto-bus-stop/setup-zig@v2
-        with:
-          version: 0.15.2
+        run: |
+          wget -q https://ziglang.org/download/0.15.2/zig-linux-x86_64-0.15.2.tar.xz
+          tar -xf zig-linux-x86_64-0.15.2.tar.xz
+          echo "$PWD/zig-linux-x86_64-0.15.2" >> $GITHUB_PATH
 
       - name: Build Linux x86_64
         run: |
