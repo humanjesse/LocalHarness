@@ -1172,7 +1172,7 @@ const ANSI_ITALIC_START = "\x1b[3m";
 const ANSI_UNDERLINE_START = "\x1b[4m";
 const ANSI_STRIKETHROUGH_START = "\x1b[9m";
 const ANSI_RESET = "\x1b[0m";
-const ANSI_BG_GREY_START = "\x1b[48;5;250m";
+const ANSI_BG_GREY_START = "\x1b[48;5;237m";
 const ANSI_BG_RESET = "\x1b[49m"; // Reset background only, preserves foreground and other styles
 
 fn renderNodeToStringRecursive(

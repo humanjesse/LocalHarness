@@ -140,6 +140,101 @@ fn wrapRawText(allocator: mem.Allocator, text: []const u8, max_width: usize) !st
     return result;
 }
 
+fn truncateTextToWidth(allocator: mem.Allocator, text: []const u8, max_width: usize) ![]const u8 {
+    const visible_len = ui.AnsiParser.getVisibleLength(text);
+
+    // If text fits, return duplicate
+    if (visible_len <= max_width) {
+        return try allocator.dupe(u8, text);
+    }
+
+    // Text is too long - need to truncate with "..."
+    // Target: max_width visible chars total, with "..." at the end
+    // So we need max_width - 3 visible chars of text, then "..."
+
+    if (max_width < 3) {
+        // Very narrow - just return "..." or fewer dots
+        if (max_width == 0) return try allocator.dupe(u8, "");
+        if (max_width == 1) return try allocator.dupe(u8, ".");
+        if (max_width == 2) return try allocator.dupe(u8, "..");
+        return try allocator.dupe(u8, "...");
+    }
+
+    const target_visible = max_width - 3; // Reserve 3 for "..."
+
+    var result = std.ArrayListUnmanaged(u8){};
+    errdefer result.deinit(allocator);
+
+    var byte_idx: usize = 0;
+    var visible_count: usize = 0;
+    var in_ansi_sequence = false;
+    var in_zwj_sequence = false;
+
+    while (byte_idx < text.len and visible_count < target_visible) {
+        const byte = text[byte_idx];
+
+        // Handle ANSI escape sequences
+        if (byte == 0x1b) {
+            in_ansi_sequence = true;
+            try result.append(allocator, byte);
+            byte_idx += 1;
+            continue;
+        }
+
+        if (in_ansi_sequence) {
+            try result.append(allocator, byte);
+            byte_idx += 1;
+            // Check for end of ANSI sequence (letter in range 0x40-0x7E after '[')
+            if (byte >= 0x40 and byte <= 0x7E) {
+                in_ansi_sequence = false;
+            }
+            continue;
+        }
+
+        // Decode UTF-8 character
+        const char_len = std.unicode.utf8ByteSequenceLength(byte) catch 1;
+        if (byte_idx + char_len > text.len) break;
+
+        const codepoint = std.unicode.utf8Decode(text[byte_idx..][0..char_len]) catch {
+            byte_idx += 1;
+            continue;
+        };
+
+        const char_width = ui.getCharWidth(codepoint);
+
+        // Handle ZWJ sequences
+        var width_to_add: usize = char_width;
+        if (codepoint == 0x200D) { // Zero-Width Joiner
+            in_zwj_sequence = true;
+            width_to_add = 0;
+        } else if (in_zwj_sequence) {
+            if (char_width == 0) {
+                width_to_add = 0; // Zero-width modifier
+            } else if (char_width == 2) {
+                width_to_add = 0; // Another emoji in sequence
+            } else {
+                in_zwj_sequence = false;
+                width_to_add = char_width;
+            }
+        }
+
+        // Check if adding this character would exceed target
+        if (visible_count + width_to_add > target_visible) {
+            break;
+        }
+
+        // Add the character
+        try result.appendSlice(allocator, text[byte_idx..][0..char_len]);
+        visible_count += width_to_add;
+        byte_idx += char_len;
+    }
+
+    // Add "..."
+    try result.appendSlice(allocator, "...");
+
+    return try result.toOwnedSlice(allocator);
+}
+
 // --- NEW RECURSIVE CONTENT RENDERER ---
 
 fn renderItemsToLines(
@@ -343,16 +438,47 @@ fn renderItemsToLines(
                 // Adjust if total width exceeds available
                 const indent_width = indent_level * indent_str.len;
                 const available_width = if (max_content_width > indent_width) max_content_width - indent_width else 0;
+
+                // Calculate total width needed: borders + padding + content
+                // Format: "│ content │ content │" = (column_count + 1) borders + column_count * 2 spaces + sum(widths)
                 var total_width: usize = column_count + 1; // borders
                 for (col_widths) |w| total_width += w + 2; // content + padding
 
-                if (total_width > available_width and available_width > 0) {
+                // Guard against underflow: ensure available_width can accommodate borders
+                const min_required_width = (column_count * 3) + (column_count + 1) + (column_count * 2); // min 3 chars per col + borders + padding
+                if (total_width > available_width and available_width > min_required_width) {
                     // Distribute width proportionally
-                    const scale_factor = @as(f32, @floatFromInt(available_width - (column_count + 1))) / @as(f32, @floatFromInt(total_width - (column_count + 1)));
+                    const scale_factor = @as(f32, @floatFromInt(available_width - min_required_width)) / @as(f32, @floatFromInt(total_width - min_required_width));
                     for (col_widths) |*w| {
                         const scaled = @as(usize, @intFromFloat(@as(f32, @floatFromInt(w.*)) * scale_factor));
-                        w.* = if (scaled < 6) 6 else scaled;
+                        w.* = if (scaled < 3) 3 else scaled; // Minimum 3 chars per column
                     }
+
+                    // Recalculate total width after scaling
+                    var new_total_width: usize = column_count + 1;
+                    for (col_widths) |w| new_total_width += w + 2;
+
+                    // If still too wide (due to minimum width constraints), shrink columns iteratively
+                    while (new_total_width > available_width) {
+                        // Find the widest column and shrink it by 1
+                        var max_width: usize = 0;
+                        var max_idx: usize = 0;
+                        for (col_widths, 0..) |w, i| {
+                            if (w > max_width) {
+                                max_width = w;
+                                max_idx = i;
+                            }
+                        }
+
+                        // If all columns are at minimum, break to prevent infinite loop
+                        if (max_width <= 3) break;
+
+                        col_widths[max_idx] -= 1;
+                        new_total_width -= 1;
+                    }
+                } else if (available_width <= min_required_width) {
+                    // Terminal too narrow for table - use minimum widths
+                    for (col_widths) |*w| w.* = 3;
                 }
 
                 // Top border
@@ -376,7 +502,12 @@ fn renderItemsToLines(
                 try header_line.appendSlice(app.allocator, "│");
                 for (table.headers, 0..) |header, i| {
                     try header_line.appendSlice(app.allocator, " ");
-                    const content_len = ui.AnsiParser.getVisibleLength(header);
+
+                    // Truncate header to fit column width
+                    const truncated_header = try truncateTextToWidth(app.allocator, header, col_widths[i]);
+                    defer app.allocator.free(truncated_header);
+
+                    const content_len = ui.AnsiParser.getVisibleLength(truncated_header);
                     const padding = if (content_len >= col_widths[i]) 0 else col_widths[i] - content_len;
 
                     // Apply alignment
@@ -385,13 +516,13 @@ fn renderItemsToLines(
                         const left_pad = padding / 2;
                         const right_pad = padding - left_pad;
                         for (0..left_pad) |_| try header_line.appendSlice(app.allocator, " ");
-                        try header_line.appendSlice(app.allocator, header);
+                        try header_line.appendSlice(app.allocator, truncated_header);
                         for (0..right_pad) |_| try header_line.appendSlice(app.allocator, " ");
                     } else if (alignment == .right) {
                         for (0..padding) |_| try header_line.appendSlice(app.allocator, " ");
-                        try header_line.appendSlice(app.allocator, header);
+                        try header_line.appendSlice(app.allocator, truncated_header);
                     } else { // left
-                        try header_line.appendSlice(app.allocator, header);
+                        try header_line.appendSlice(app.allocator, truncated_header);
                         for (0..padding) |_| try header_line.appendSlice(app.allocator, " ");
                     }
 
@@ -413,41 +544,83 @@ fn renderItemsToLines(
                 try separator.appendSlice(app.allocator, "┤");
                 try output_lines.append(app.allocator, try separator.toOwnedSlice(app.allocator));
 
-                // Body rows
+                // Body rows - with multi-line cell support
                 const row_count = table.rows.len / column_count;
                 for (0..row_count) |row_idx| {
-                    var row_line = std.ArrayListUnmanaged(u8){};
-                    defer row_line.deinit(app.allocator);
-                    for (0..indent_level) |_| try row_line.appendSlice(app.allocator, indent_str);
-                    try row_line.appendSlice(app.allocator, "│");
+                    // Wrap all cells in this row
+                    var wrapped_cells = try app.allocator.alloc(std.ArrayListUnmanaged([]const u8), column_count);
+                    defer {
+                        for (wrapped_cells) |*cell_lines| {
+                            for (cell_lines.items) |line| app.allocator.free(line);
+                            cell_lines.deinit(app.allocator);
+                        }
+                        app.allocator.free(wrapped_cells);
+                    }
 
+                    // Wrap each cell's text and find max line count
+                    // Wrap to (col_width - 2) to leave room for continuation line indent
+                    var max_lines: usize = 1;
                     for (0..column_count) |col_idx| {
                         const cell_idx = row_idx * column_count + col_idx;
                         const cell_text = table.rows[cell_idx];
-                        try row_line.appendSlice(app.allocator, " ");
 
-                        const content_len = ui.AnsiParser.getVisibleLength(cell_text);
-                        const padding = if (content_len >= col_widths[col_idx]) 0 else col_widths[col_idx] - content_len;
-
-                        const alignment = table.alignments[col_idx];
-                        if (alignment == .center) {
-                            const left_pad = padding / 2;
-                            const right_pad = padding - left_pad;
-                            for (0..left_pad) |_| try row_line.appendSlice(app.allocator, " ");
-                            try row_line.appendSlice(app.allocator, cell_text);
-                            for (0..right_pad) |_| try row_line.appendSlice(app.allocator, " ");
-                        } else if (alignment == .right) {
-                            for (0..padding) |_| try row_line.appendSlice(app.allocator, " ");
-                            try row_line.appendSlice(app.allocator, cell_text);
-                        } else { // left
-                            try row_line.appendSlice(app.allocator, cell_text);
-                            for (0..padding) |_| try row_line.appendSlice(app.allocator, " ");
+                        // Reserve 2 chars for indent on continuation lines
+                        const wrap_width = if (col_widths[col_idx] >= 2) col_widths[col_idx] - 2 else col_widths[col_idx];
+                        wrapped_cells[col_idx] = try wrapRawText(app.allocator, cell_text, wrap_width);
+                        if (wrapped_cells[col_idx].items.len > max_lines) {
+                            max_lines = wrapped_cells[col_idx].items.len;
                         }
-
-                        try row_line.appendSlice(app.allocator, " │");
                     }
 
-                    try output_lines.append(app.allocator, try row_line.toOwnedSlice(app.allocator));
+                    // Render each line of the row
+                    for (0..max_lines) |line_idx| {
+                        var row_line = std.ArrayListUnmanaged(u8){};
+                        defer row_line.deinit(app.allocator);
+                        for (0..indent_level) |_| try row_line.appendSlice(app.allocator, indent_str);
+                        try row_line.appendSlice(app.allocator, "│");
+
+                        for (0..column_count) |col_idx| {
+                            try row_line.appendSlice(app.allocator, " ");
+
+                            const cell_lines = wrapped_cells[col_idx].items;
+                            const cell_content = if (line_idx < cell_lines.len) blk: {
+                                // Add indentation for continuation lines (not the first line)
+                                if (line_idx > 0) {
+                                    var indented = std.ArrayListUnmanaged(u8){};
+                                    try indented.appendSlice(app.allocator, "  ");  // 2-space indent
+                                    try indented.appendSlice(app.allocator, cell_lines[line_idx]);
+                                    break :blk try indented.toOwnedSlice(app.allocator);
+                                } else {
+                                    break :blk try app.allocator.dupe(u8, cell_lines[line_idx]);
+                                }
+                            } else blk: {
+                                break :blk try app.allocator.dupe(u8, "");
+                            };
+                            defer app.allocator.free(cell_content);
+
+                            const content_len = ui.AnsiParser.getVisibleLength(cell_content);
+                            const padding = if (content_len >= col_widths[col_idx]) 0 else col_widths[col_idx] - content_len;
+
+                            const alignment = table.alignments[col_idx];
+                            if (alignment == .center and line_idx == 0) {  // Only center first line
+                                const left_pad = padding / 2;
+                                const right_pad = padding - left_pad;
+                                for (0..left_pad) |_| try row_line.appendSlice(app.allocator, " ");
+                                try row_line.appendSlice(app.allocator, cell_content);
+                                for (0..right_pad) |_| try row_line.appendSlice(app.allocator, " ");
+                            } else if (alignment == .right and line_idx == 0) {  // Only right-align first line
+                                for (0..padding) |_| try row_line.appendSlice(app.allocator, " ");
+                                try row_line.appendSlice(app.allocator, cell_content);
+                            } else {  // left (or continuation lines)
+                                try row_line.appendSlice(app.allocator, cell_content);
+                                for (0..padding) |_| try row_line.appendSlice(app.allocator, " ");
+                            }
+
+                            try row_line.appendSlice(app.allocator, " │");
+                        }
+
+                        try output_lines.append(app.allocator, try row_line.toOwnedSlice(app.allocator));
+                    }
                 }
 
                 // Bottom border
@@ -522,7 +695,7 @@ fn drawExpandedMessage(
                 const line_len = ui.AnsiParser.getVisibleLength(line_text);
                 try writer.writeAll("│ ");
                 try writer.writeAll(line_text);
-                const padding = max_content_width - line_len;
+                const padding = if (line_len >= max_content_width) 0 else max_content_width - line_len;
                 for (0..padding) |_| try writer.writeAll(" ");
                 try writer.writeAll(" │");
             }
