@@ -91,6 +91,7 @@ pub const OllamaClient = struct {
         think: bool,
         format: ?[]const u8,
         tools: ?[]const Tool,
+        keep_alive: ?[]const u8,
         context: anytype,
         callback: fn (ctx: @TypeOf(context), thinking_chunk: ?[]const u8, content_chunk: ?[]const u8, tool_calls_chunk: ?[]const ToolCall) void,
     ) !void {
@@ -206,6 +207,13 @@ pub const OllamaClient = struct {
                 }
                 try payload_list.append(self.allocator, ']');
             }
+        }
+
+        // Add keep_alive if provided
+        if (keep_alive) |ka| {
+            try payload_list.appendSlice(self.allocator, ",\"keep_alive\":\"");
+            try payload_list.appendSlice(self.allocator, ka);
+            try payload_list.appendSlice(self.allocator, "\"");
         }
 
         try payload_list.appendSlice(self.allocator, "}");

@@ -8,7 +8,8 @@ const permission = @import("permission.zig");
 pub const Config = struct {
     ollama_host: []const u8 = "http://localhost:11434",
     ollama_endpoint: []const u8 = "/api/chat",
-    model: []const u8 = "llama3.2",
+    model: []const u8 = "qwen3-coder:30b",
+    model_keep_alive: []const u8 = "15m", // How long to keep model in memory (e.g., "5m", "15m", or "-1" for infinite)
     editor: []const []const u8 = &.{"nvim"},
     // UI customization
     scroll_lines: usize = 3, // Number of lines to scroll per wheel movement
@@ -23,6 +24,7 @@ pub const Config = struct {
         allocator.free(self.ollama_host);
         allocator.free(self.ollama_endpoint);
         allocator.free(self.model);
+        allocator.free(self.model_keep_alive);
         for (self.editor) |arg| {
             allocator.free(arg);
         }
@@ -41,6 +43,7 @@ const ConfigFile = struct {
     ollama_host: ?[]const u8 = null,
     ollama_endpoint: ?[]const u8 = null,
     model: ?[]const u8 = null,
+    model_keep_alive: ?[]const u8 = null,
     scroll_lines: ?usize = null,
     color_status: ?[]const u8 = null,
     color_link: ?[]const u8 = null,
@@ -66,7 +69,8 @@ pub fn loadConfigFromFile(allocator: mem.Allocator) !Config {
     var config = Config{
         .ollama_host = try allocator.dupe(u8, "http://localhost:11434"),
         .ollama_endpoint = try allocator.dupe(u8, "/api/chat"),
-        .model = try allocator.dupe(u8, "llama3.2"),
+        .model = try allocator.dupe(u8, "qwen3-coder:30b"),
+        .model_keep_alive = try allocator.dupe(u8, "15m"),
         .editor = default_editor,
         .scroll_lines = 3,
         .color_status = try allocator.dupe(u8, "\x1b[33m"),
@@ -103,7 +107,8 @@ pub fn loadConfigFromFile(allocator: mem.Allocator) !Config {
                 \\  "editor": ["nvim"],
                 \\  "ollama_host": "http://localhost:11434",
                 \\  "ollama_endpoint": "/api/chat",
-                \\  "model": "llama3.2",
+                \\  "model": "qwen3-coder:30b",
+                \\  "model_keep_alive": "15m",
                 \\  "scroll_lines": 3,
                 \\  "color_status": "\u001b[33m",
                 \\  "color_link": "\u001b[36m",
@@ -137,6 +142,11 @@ pub fn loadConfigFromFile(allocator: mem.Allocator) !Config {
     if (parsed.value.model) |model| {
         allocator.free(config.model);
         config.model = try allocator.dupe(u8, model);
+    }
+
+    if (parsed.value.model_keep_alive) |model_keep_alive| {
+        allocator.free(config.model_keep_alive);
+        config.model_keep_alive = try allocator.dupe(u8, model_keep_alive);
     }
 
     if (parsed.value.editor) |editor| {

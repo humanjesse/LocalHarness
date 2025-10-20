@@ -23,7 +23,30 @@ pub fn main() !void {
 
     // CLI flags override config file
     while (args.next()) |arg| {
-        if (std.mem.eql(u8, arg, "--ollama-host")) {
+        if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
+            std.debug.print(
+                \\ZodoLlama - Terminal chat interface for Ollama
+                \\
+                \\Usage: zodollama [OPTIONS]
+                \\
+                \\Options:
+                \\  --ollama-host <URL>    Ollama server URL (default: http://localhost:11434)
+                \\  --model <NAME>         Model to use (default: from config file)
+                \\  --help, -h             Show this help message
+                \\
+                \\Configuration:
+                \\  Config file: ~/.config/zodollama/config.json
+                \\
+                \\Controls:
+                \\  Ctrl+C        Send message / Cancel input
+                \\  Ctrl+D        Exit application
+                \\  Ctrl+L        Clear chat history
+                \\  Arrow Keys    Navigate and scroll
+                \\  Mouse         Click to scroll and interact
+                \\
+            , .{});
+            return;
+        } else if (std.mem.eql(u8, arg, "--ollama-host")) {
             if (args.next()) |host| {
                 allocator.free(config.ollama_host);
                 config.ollama_host = try allocator.dupe(u8, host);

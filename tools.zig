@@ -9,6 +9,7 @@ const file_tree = @import("tools/file_tree.zig");
 const read_file = @import("tools/read_file.zig");
 const write_file = @import("tools/write_file.zig");
 const replace_lines = @import("tools/replace_lines.zig");
+const grep_search = @import("tools/grep_search.zig");
 const current_time = @import("tools/current_time.zig");
 const add_task = @import("tools/add_task.zig");
 const list_tasks = @import("tools/list_tasks.zig");
@@ -192,6 +193,7 @@ pub fn getAllToolDefinitions(allocator: std.mem.Allocator) ![]ToolDefinition {
     try tools.append(allocator, try read_file.getDefinition(allocator));
     try tools.append(allocator, try write_file.getDefinition(allocator));
     try tools.append(allocator, try replace_lines.getDefinition(allocator));
+    try tools.append(allocator, try grep_search.getDefinition(allocator));
 
     // System tools
     try tools.append(allocator, try current_time.getDefinition(allocator));

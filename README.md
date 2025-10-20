@@ -16,7 +16,7 @@ A fast, lightweight terminal chat interface for Ollama written in Zig. Chat with
 
 ```bash
 # Install and start Ollama
-ollama pull llama3.2
+ollama pull qwen3-coder:30b
 ollama serve
 
 # Build and run ZodoLlama
@@ -86,6 +86,7 @@ Risk: LOW
 
 *File System:*
 - `get_file_tree` - Generate file tree of current directory (auto-approved)
+- `grep_search` - Recursively search files for patterns with .gitignore awareness (auto-approved)
 - `read_file` - Read file contents (requires permission)
 - `write_file` - Create or overwrite files with content (requires permission, high risk)
 - `replace_lines` - Replace specific line ranges in existing files (requires permission, high risk)
@@ -108,7 +109,8 @@ Config file: `~/.config/zodollama/config.json` (created on first run)
 
 ```json
 {
-  "model": "llama3.2",
+  "model": "qwen3-coder:30b",
+  "model_keep_alive": "15m",
   "ollama_host": "http://localhost:11434",
   "editor": ["nvim"],
   "scroll_lines": 3
@@ -119,7 +121,8 @@ Config file: `~/.config/zodollama/config.json` (created on first run)
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `model` | string | `"llama3.2"` | Ollama model to use |
+| `model` | string | `"qwen3-coder:30b"` | Ollama model to use |
+| `model_keep_alive` | string | `"15m"` | How long to keep model in memory after last request. Use duration string ("5m", "15m") or "-1" for infinite. Balances responsiveness vs GPU/RAM usage. |
 | `ollama_host` | string | `"http://localhost:11434"` | Ollama server URL |
 | `editor` | array | `["nvim"]` | Command to open editor for notes |
 | `scroll_lines` | number | `3` | Lines to scroll per wheel movement |
@@ -131,7 +134,7 @@ Config file: `~/.config/zodollama/config.json` (created on first run)
 
 **CLI overrides:**
 ```bash
-./zig-out/bin/zodollama --model llama3.2 --ollama-host http://localhost:11434
+./zig-out/bin/zodollama --model qwen3-coder:30b --ollama-host http://localhost:11434
 ```
 
 ## Platform Support
@@ -176,7 +179,8 @@ MIT License - see LICENSE file for details.
 
 **Modular Codebase:**
 - `main.zig` (56 lines) - Entry point
-- `app.zig` (2006 lines) - Core application, App struct, event loop, rendering
+- `app.zig` (1197 lines) - Core application, App struct, event loop, business logic
+- `message_renderer.zig` (932 lines) - Message rendering, display logic, screen drawing
 - `config.zig` (344 lines) - Configuration and policy persistence
 - `ui.zig` (559 lines) - Terminal I/O, input handling, taskbar
 - `markdown.zig` (1502 lines) - Markdown parsing and rendering engine

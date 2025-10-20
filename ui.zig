@@ -62,6 +62,12 @@ pub const Tui = struct {
     }
 
     pub fn getTerminalSize() !TerminalSize {
+        // Check if stdout is actually a terminal first
+        if (c.isatty(c.STDOUT_FILENO) == 0) {
+            // Not a terminal (piped, redirected, or --help), return default size
+            return TerminalSize{ .width = 80, .height = 24 };
+        }
+
         var ws: c.struct_winsize = undefined;
         if (c.ioctl(c.STDOUT_FILENO, c.TIOCGWINSZ, &ws) == -1 or ws.ws_col == 0) {
             return error.IoctlFailed;
