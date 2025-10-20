@@ -111,6 +111,8 @@ Config file: `~/.config/zodollama/config.json` (created on first run)
 {
   "model": "qwen3-coder:30b",
   "model_keep_alive": "15m",
+  "num_ctx": 128000,
+  "num_predict": 8192,
   "ollama_host": "http://localhost:11434",
   "editor": ["nvim"],
   "scroll_lines": 3
@@ -123,6 +125,8 @@ Config file: `~/.config/zodollama/config.json` (created on first run)
 |--------|------|---------|-------------|
 | `model` | string | `"qwen3-coder:30b"` | Ollama model to use |
 | `model_keep_alive` | string | `"15m"` | How long to keep model in memory after last request. Use duration string ("5m", "15m") or "-1" for infinite. Balances responsiveness vs GPU/RAM usage. |
+| `num_ctx` | number | `128000` | Context window size in tokens (128k). Controls how much conversation history the model can see. Reduce if your model has a smaller context window. |
+| `num_predict` | number | `8192` | Maximum tokens to generate per response. Allows detailed code generation and explanations. Use `-1` for unlimited or `-2` to fill context window. |
 | `ollama_host` | string | `"http://localhost:11434"` | Ollama server URL |
 | `editor` | array | `["nvim"]` | Command to open editor for notes |
 | `scroll_lines` | number | `3` | Lines to scroll per wheel movement |

@@ -34,6 +34,8 @@ const StreamThreadContext = struct {
     format: ?[]const u8,
     tools: []const ollama.Tool,
     keep_alive: []const u8,
+    num_ctx: usize,
+    num_predict: isize,
 };
 
 // Define available tools for the model
@@ -243,6 +245,8 @@ pub const App = struct {
             ctx.format,
             if (ctx.tools.len > 0) ctx.tools else null, // Pass tools to model
             ctx.keep_alive,
+            ctx.num_ctx,
+            ctx.num_predict,
             ctx,
             ChunkCallback.callback,
         ) catch |err| {
@@ -274,6 +278,8 @@ pub const App = struct {
                     ctx.format,
                     if (ctx.tools.len > 0) ctx.tools else null,
                     ctx.keep_alive,
+                    ctx.num_ctx,
+                    ctx.num_predict,
                     ctx,
                     ChunkCallback.callback,
                 ) catch |retry_err| {
@@ -400,6 +406,8 @@ pub const App = struct {
             .format = format,
             .tools = self.tools,
             .keep_alive = self.config.model_keep_alive,
+            .num_ctx = self.config.num_ctx,
+            .num_predict = self.config.num_predict,
         };
 
         // Start streaming in background thread

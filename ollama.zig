@@ -92,6 +92,8 @@ pub const OllamaClient = struct {
         format: ?[]const u8,
         tools: ?[]const Tool,
         keep_alive: ?[]const u8,
+        num_ctx: ?usize,
+        num_predict: ?isize,
         context: anytype,
         callback: fn (ctx: @TypeOf(context), thinking_chunk: ?[]const u8, content_chunk: ?[]const u8, tool_calls_chunk: ?[]const ToolCall) void,
     ) !void {
@@ -214,6 +216,30 @@ pub const OllamaClient = struct {
             try payload_list.appendSlice(self.allocator, ",\"keep_alive\":\"");
             try payload_list.appendSlice(self.allocator, ka);
             try payload_list.appendSlice(self.allocator, "\"");
+        }
+
+        // Add options object for context window and generation settings
+        if (num_ctx != null or num_predict != null) {
+            try payload_list.appendSlice(self.allocator, ",\"options\":{");
+            var first = true;
+
+            if (num_ctx) |ctx| {
+                try payload_list.appendSlice(self.allocator, "\"num_ctx\":");
+                const ctx_str = try std.fmt.allocPrint(self.allocator, "{d}", .{ctx});
+                defer self.allocator.free(ctx_str);
+                try payload_list.appendSlice(self.allocator, ctx_str);
+                first = false;
+            }
+
+            if (num_predict) |pred| {
+                if (!first) try payload_list.append(self.allocator, ',');
+                try payload_list.appendSlice(self.allocator, "\"num_predict\":");
+                const pred_str = try std.fmt.allocPrint(self.allocator, "{d}", .{pred});
+                defer self.allocator.free(pred_str);
+                try payload_list.appendSlice(self.allocator, pred_str);
+            }
+
+            try payload_list.append(self.allocator, '}');
         }
 
         try payload_list.appendSlice(self.allocator, "}");

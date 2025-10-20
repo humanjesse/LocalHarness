@@ -10,6 +10,8 @@ pub const Config = struct {
     ollama_endpoint: []const u8 = "/api/chat",
     model: []const u8 = "qwen3-coder:30b",
     model_keep_alive: []const u8 = "15m", // How long to keep model in memory (e.g., "5m", "15m", or "-1" for infinite)
+    num_ctx: usize = 128000, // Context window size in tokens (default: 128k for full conversation history)
+    num_predict: isize = 8192, // Max tokens to generate per response (default: 8192 for detailed code generation)
     editor: []const []const u8 = &.{"nvim"},
     // UI customization
     scroll_lines: usize = 3, // Number of lines to scroll per wheel movement
@@ -44,6 +46,8 @@ const ConfigFile = struct {
     ollama_endpoint: ?[]const u8 = null,
     model: ?[]const u8 = null,
     model_keep_alive: ?[]const u8 = null,
+    num_ctx: ?usize = null,
+    num_predict: ?isize = null,
     scroll_lines: ?usize = null,
     color_status: ?[]const u8 = null,
     color_link: ?[]const u8 = null,
@@ -109,6 +113,8 @@ pub fn loadConfigFromFile(allocator: mem.Allocator) !Config {
                 \\  "ollama_endpoint": "/api/chat",
                 \\  "model": "qwen3-coder:30b",
                 \\  "model_keep_alive": "15m",
+                \\  "num_ctx": 128000,
+                \\  "num_predict": 8192,
                 \\  "scroll_lines": 3,
                 \\  "color_status": "\u001b[33m",
                 \\  "color_link": "\u001b[36m",
@@ -147,6 +153,14 @@ pub fn loadConfigFromFile(allocator: mem.Allocator) !Config {
     if (parsed.value.model_keep_alive) |model_keep_alive| {
         allocator.free(config.model_keep_alive);
         config.model_keep_alive = try allocator.dupe(u8, model_keep_alive);
+    }
+
+    if (parsed.value.num_ctx) |num_ctx| {
+        config.num_ctx = num_ctx;
+    }
+
+    if (parsed.value.num_predict) |num_predict| {
+        config.num_predict = num_predict;
     }
 
     if (parsed.value.editor) |editor| {
