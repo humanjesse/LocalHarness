@@ -44,13 +44,37 @@ Model Processes Results → Final Answer
 - **Use Case:** Understanding project structure
 
 #### `read_file`
-- **Description:** Read file contents
+- **Description:** Read file contents with line numbers (1-indexed)
 - **Permission:** Requires user approval (medium risk)
 - **Parameters:**
   - `path` (string): File path relative to project root
-- **Returns:** File contents (max 10MB)
+- **Returns:** File contents with line numbers (max 10MB)
+- **Output Format:** `1: line content\n2: line content...`
 - **Error Types:** `not_found`, `io_error`, `parse_error`
 - **Side Effect:** Triggers AST parsing and graph indexing (when graph RAG is enabled)
+
+#### `write_file`
+- **Description:** Create or overwrite a file with content
+- **Permission:** Requires user approval (high risk)
+- **Parameters:**
+  - `path` (string): File path relative to project root
+  - `content` (string): File content to write
+- **Returns:** Confirmation message with file size
+- **Error Types:** `validation_failed`, `io_error`
+- **Security:** Blocks absolute paths and directory traversal
+
+#### `replace_lines`
+- **Description:** Replace specific line ranges in existing files using 1-indexed line numbers
+- **Permission:** Requires user approval (high risk)
+- **Parameters:**
+  - `path` (string): File path relative to project root
+  - `line_start` (integer): First line to replace (1-indexed)
+  - `line_end` (integer): Last line to replace (inclusive, 1-indexed)
+  - `new_content` (string): Replacement content
+- **Returns:** Confirmation with lines replaced count
+- **Error Types:** `not_found`, `validation_failed`, `io_error`
+- **Workflow:** First call `read_file` to see line numbers, then call `replace_lines`
+- **Security:** Blocks absolute paths and directory traversal
 
 ### System Tools
 
@@ -168,7 +192,7 @@ When the AI requests a tool, the permission system evaluates:
 1. **Tool Risk Level:**
    - `safe`: Auto-approved (get_file_tree, get_current_time, task tools)
    - `medium`: Requires approval (read_file)
-   - `high`: Requires approval with warning (future: write_file, execute_command)
+   - `high`: Requires approval with warning (write_file, replace_lines)
 
 2. **User Decision:**
    - **Allow Once**: Execute this tool call only (one-time)
@@ -331,17 +355,22 @@ Ollama's tool calling format differs slightly from OpenAI:
 
 **Ollama sends:**
 ```json
-"arguments": {}  // JSON object
+"arguments": {"path": "file.txt", "line_start": 1}  // JSON object
 ```
 
 **OpenAI sends:**
 ```json
-"arguments": "{}"  // JSON string
+"arguments": "{\"path\": \"file.txt\", \"line_start\": 1}"  // JSON string
 ```
 
 ZodoLlama handles both formats by:
 1. Parsing with flexible `std.json.Value` type
-2. Converting objects to JSON strings when needed
+2. Converting objects to JSON strings with proper type handling:
+   - `.string` → Quoted string values
+   - `.integer` → Numeric values (e.g., `1`, `42`)
+   - `.number_string` → Pass-through numeric strings
+   - `.bool` → `true` or `false`
+   - `.null` → `null`
 3. Generating missing `id` and `type` fields if absent
 
 ## Model Compatibility

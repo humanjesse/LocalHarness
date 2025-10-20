@@ -368,6 +368,20 @@ pub const OllamaClient = struct {
                                                                 buf.appendSlice(self.allocator, v) catch continue;
                                                                 buf.appendSlice(self.allocator, "\"") catch continue;
                                                             },
+                                                            .integer => |v| {
+                                                                const int_str = std.fmt.allocPrint(self.allocator, "{d}", .{v}) catch continue;
+                                                                defer self.allocator.free(int_str);
+                                                                buf.appendSlice(self.allocator, int_str) catch continue;
+                                                            },
+                                                            .number_string => |v| {
+                                                                buf.appendSlice(self.allocator, v) catch continue;
+                                                            },
+                                                            .bool => |v| {
+                                                                buf.appendSlice(self.allocator, if (v) "true" else "false") catch continue;
+                                                            },
+                                                            .null => {
+                                                                buf.appendSlice(self.allocator, "null") catch continue;
+                                                            },
                                                             else => buf.appendSlice(self.allocator, "null") catch continue,
                                                         }
                                                     }

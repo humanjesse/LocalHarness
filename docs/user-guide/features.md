@@ -105,7 +105,9 @@ code here
 
 #### File System
 - **get_file_tree**: List all files in project
-- **read_file**: Read specific file contents
+- **read_file**: Read specific file contents with line numbers
+- **write_file**: Create or overwrite files with content
+- **replace_lines**: Replace specific line ranges in existing files
 
 #### System
 - **get_current_time**: Get current date/time
@@ -430,8 +432,8 @@ All tools return JSON with:
 ### Current Limitations
 
 **File access:**
-- Read-only (no write operations yet)
 - Limited to 10MB per file
+- Write operations require permission approval
 - No directory traversal restrictions (future)
 
 **Models:**
@@ -452,10 +454,10 @@ All tools return JSON with:
 - Relationship understanding
 - Context-aware responses
 
-**File Operations:**
-- Write files
-- Edit code
+**Advanced File Operations:**
 - Create directories
+- Delete/rename files
+- Batch operations
 
 **Advanced Tools:**
 - Execute commands (with safety)
