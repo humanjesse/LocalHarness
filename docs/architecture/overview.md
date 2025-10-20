@@ -1,0 +1,438 @@
+# ZodoLlama Architecture Overview
+
+## Introduction
+
+ZodoLlama is a fast, lightweight terminal chat interface for Ollama written in Zig. This document provides a high-level overview of the system architecture.
+
+## Core Design Principles
+
+1. **Performance**: Non-blocking UI, efficient rendering, minimal overhead
+2. **Simplicity**: Clean codebase, modular design, easy to understand
+3. **Extensibility**: Plugin-style tool system, configurable components
+4. **Safety**: Permission system, memory safety via Zig, error handling
+
+## System Architecture
+
+```
+┌──────────────────────────────────────────────────────────┐
+│                         User                             │
+└────────────────────┬─────────────────────────────────────┘
+                     │
+                     ↓
+        ┌────────────────────────────┐
+        │   Terminal UI (ui.zig)     │
+        │  • Input handling          │
+        │  • Mouse support           │
+        │  • Scrolling               │
+        │  • Taskbar                 │
+        └────────────┬───────────────┘
+                     │
+                     ↓
+        ┌────────────────────────────┐
+        │   App Core (app.zig)       │
+        │  • Event loop              │
+        │  • Message history         │
+        │  • Rendering logic         │
+        │  • Tool execution          │
+        └────────────┬───────────────┘
+                     │
+        ┌────────────┼────────────┐
+        │            │            │
+        ↓            ↓            ↓
+┌──────────────┐ ┌────────┐ ┌──────────┐
+│ Markdown     │ │ Ollama │ │ Tools    │
+│ Renderer     │ │ Client │ │ System   │
+│              │ │        │ │          │
+│ • Parser     │ │ • Chat │ │ • Def    │
+│ • Lexer      │ │ • Tool │ │ • Exec   │
+│ • Render     │ │   Call │ │ • Perm   │
+└──────────────┘ └────┬───┘ └────┬─────┘
+                      │          │
+                      ↓          ↓
+              ┌──────────────────────────┐
+              │  Ollama Server           │
+              │  (External)              │
+              └──────────────────────────┘
+```
+
+## Component Breakdown
+
+### 1. Entry Point (`main.zig`) - 56 lines
+**Responsibilities:**
+- Initialize configuration
+- Create App instance
+- Run event loop
+- Handle graceful shutdown
+
+### 2. Application Core (`app.zig`) - 2006 lines
+**Responsibilities:**
+- Central event loop coordination
+- Message history management
+- Streaming response handling
+- Tool execution orchestration
+- Master loop iteration control
+- Task context injection
+- Viewport and rendering management
+
+**Key Structures:**
+```zig
+pub const App = struct {
+    allocator: mem.Allocator,
+    config: Config,
+    messages: ArrayList(Message),
+    streaming_active: bool,
+    pending_tool_execution: ?[]ollama.ToolCall,
+    tool_call_depth: usize,
+    max_tool_depth: usize,
+    state: AppState,  // Task management
+    app_context: AppContext,  // Tool execution context
+    // ... UI state ...
+};
+```
+
+### 3. Terminal UI (`ui.zig`) - 559 lines
+**Responsibilities:**
+- Raw terminal mode setup
+- Input capture (keyboard, mouse)
+- Mouse wheel scrolling
+- Taskbar rendering
+- Non-blocking input handling
+
+**Key Functions:**
+- `enableRawMode()` / `disableRawMode()`
+- `readInput()` - Non-blocking input with timeout
+- `handleMouseEvent()` - Mouse wheel and click handling
+- `renderTaskbar()` - Status bar at bottom
+
+### 4. Markdown Engine (`markdown.zig`) - 1502 lines
+**Responsibilities:**
+- Parse markdown into tokens
+- Render formatted output
+- Handle complex features:
+  - Headers, emphasis, links
+  - Code blocks, inline code
+  - Lists (ordered/unordered)
+  - Tables
+  - Blockquotes
+  - Emoji (including ZWJ sequences)
+
+**Architecture:**
+```
+Raw Text → Lexer (lexer.zig) → Tokens → Parser → Rendered Output
+```
+
+### 5. Ollama Client (`ollama.zig`) - 423 lines
+**Responsibilities:**
+- HTTP communication with Ollama server
+- Streaming response handling
+- Tool call parsing
+- JSON serialization/deserialization
+
+**Key Functions:**
+- `chatStream()` - Streaming chat API
+- `parseStreamChunk()` - Parse NDJSON responses
+- Tool call serialization
+
+### 6. Tool System (`tools.zig`) - 643 lines
+**Responsibilities:**
+- Tool definition registry
+- Structured tool result generation
+- Execution dispatch
+
+**Components:**
+- Tool definitions (schema + metadata)
+- `ToolResult` struct with error categorization
+- Execution functions for each tool
+- JSON formatting utilities
+
+### 7. Permission System (`permission.zig`) - 684 lines
+**Responsibilities:**
+- Fine-grained access control
+- User consent prompts
+- Policy persistence
+- Audit logging
+
+**Permission Levels:**
+- `safe`: Auto-approved (read-only, low risk)
+- `medium`: Requires user approval
+- `high`: Requires approval with warning
+
+### 8. Supporting Modules
+
+**`config.zig` (344 lines):**
+- Configuration file management
+- Policy storage
+- Default settings
+
+**`types.zig` (44 lines):**
+- Shared message types
+- Cross-module data structures
+
+**`state.zig` (69 lines):**
+- Session-ephemeral task tracking
+- Task status management
+
+**`context.zig` (18 lines):**
+- Tool execution context definition
+- Future graph RAG integration point
+
+**`render.zig` (252 lines):**
+- Text wrapping utilities
+- Formatting helpers
+- Width calculation
+
+**`tree.zig` (365 lines):**
+- File tree generation
+- Directory traversal
+
+**`lexer.zig` (194 lines):**
+- Markdown tokenization
+- Character-level parsing
+
+## Data Flow
+
+### Message Flow
+
+```
+User Input
+   ↓
+App.handleUserInput()
+   ↓
+Add to message history
+   ↓
+Start streaming thread
+   ↓
+Ollama API call (with tools)
+   ↓
+Stream response chunks
+   ↓
+Parse markdown incrementally
+   ↓
+Render to viewport
+   ↓
+Tool calls detected?
+   ├─ Yes → Execute tools → Add results → Continue streaming
+   └─ No → Stream complete
+```
+
+### Tool Execution Flow
+
+```
+Model requests tool
+   ↓
+Check permission system
+   ├─ Denied → Return error to model
+   └─ Approved ↓
+Execute tool function
+   ↓
+Generate ToolResult (structured JSON)
+   ↓
+Create two messages:
+   ├─ System message (user display)
+   └─ Tool message (model consumption)
+   ↓
+Add to history
+   ↓
+Auto-continue streaming
+```
+
+## Threading Model
+
+### Main Thread
+- UI rendering
+- Input handling
+- Message processing
+- Tool execution (Phase 1)
+
+### Streaming Thread
+- Ollama API communication
+- Response chunk parsing
+- Tool call detection
+- Thread-safe chunk queue
+
+**Synchronization:**
+- Mutex-protected chunk queue
+- Event-driven UI updates
+- Non-blocking input with timeout
+
+## Memory Management
+
+### Allocator Usage
+
+1. **General Purpose Allocator**: Main app allocations
+2. **Arena Allocators**: Markdown parsing (per-message)
+3. **Thread-safe Allocations**: Streaming chunk queue
+
+### Ownership Model
+
+- **Messages**: Owned by App, freed on history clear
+- **Markdown Tokens**: Arena-allocated, freed after rendering
+- **Tool Results**: Owned by message history
+- **Config/Policies**: Persistent, freed on app exit
+
+## State Management
+
+### App State (Ephemeral)
+```zig
+pub const AppState = struct {
+    tasks: ArrayListUnmanaged(Task),
+    next_task_id: usize,
+    session_start: i64,
+    iteration_count: usize,
+};
+```
+
+### Persistent State
+- Configuration: `~/.config/zodollama/config.json`
+- Permissions: `~/.config/zodollama/policies.json`
+
+## Rendering Pipeline
+
+```
+Markdown Text
+   ↓
+Lexer (tokenize)
+   ↓
+Parser (structure)
+   ↓
+Viewport calculation
+   ↓
+Text wrapping
+   ↓
+ANSI escape codes
+   ↓
+Terminal output
+```
+
+### Viewport Management
+
+**Receipt Printer Scroll:**
+- Auto-follows streaming content (like a receipt printer)
+- Cursor tracks newest content continuously
+- Manual scroll pauses auto-scroll
+- Auto-scroll resumes on next message
+
+**State Tracking:**
+- `viewport_start`: First visible line
+- `cursor_line`: Current cursor position
+- `user_scrolled_away`: Manual scroll detection flag
+
+## Master Loop Architecture
+
+The master loop enables agentic behavior by iterating until task completion.
+
+**Algorithm:**
+```
+1. Add user message to history
+2. Loop (max 10 iterations):
+   a. Call Ollama API with message history + tools
+   b. Collect response (content + tool_calls)
+   c. Add assistant message to history
+   d. If no tool_calls → break (task complete)
+   e. For each tool_call:
+      - Execute tool (with permission check)
+      - Add result to history
+      - Inject task context (if tasks exist)
+   f. Continue loop
+3. Return control to UI
+```
+
+**Safety Limits:**
+- Max 10 iterations per user message
+- Max 15 tool calls per iteration
+- Resets on new user message
+
+## Future Architecture (Graph RAG)
+
+Planned 5-layer architecture:
+
+```
+L5: Reasoning Agent (Master Loop)
+      ↓
+L4: Context Graph (Graph RAG)
+      ↓
+L3: Chat Memory
+      ↓
+L2: Indexer (Parser + Embedder)
+      ↓
+L1: Tool APIs
+```
+
+See [Master Loop & Graph RAG Plan](master-loop-graphrag.md) for details.
+
+## Configuration Architecture
+
+### Config Hierarchy
+1. Default values (hardcoded)
+2. Config file (`~/.config/zodollama/config.json`)
+3. CLI arguments (override file settings)
+
+### Configurable Components
+- Model selection
+- Ollama server URL
+- UI colors
+- Scroll behavior
+- Editor command
+
+## Error Handling
+
+### Levels
+1. **User-facing errors**: Displayed as messages
+2. **Tool errors**: Returned to model as structured results
+3. **Internal errors**: Logged, graceful degradation
+4. **Fatal errors**: Clean shutdown
+
+### Strategy
+- Permission denials → Added to history (model can adapt)
+- Tool execution failures → Structured error result
+- Network errors → Retry with backoff
+- Parse errors → Skip malformed data, continue
+
+## Performance Characteristics
+
+### Startup Time
+- Cold start: < 100ms
+- Config load: ~5ms
+- First render: < 50ms
+
+### Runtime
+- Streaming latency: < 50ms per chunk
+- Markdown render: < 10ms for typical message
+- Scroll performance: 60 FPS
+- Memory footprint: ~20MB base + message history
+
+### Scalability
+- Message history: Grows with conversation
+- Markdown complexity: O(n) where n = message length
+- Tool execution: Depends on tool (file I/O bound)
+
+## Security Model
+
+### Trust Boundaries
+1. **User Input**: Trusted (user controls terminal)
+2. **Model Output**: Untrusted (requires rendering safety)
+3. **Tool Execution**: Gated by permission system
+4. **File Access**: Restricted to project directory (future)
+
+### Protections
+- Permission system for all tool calls
+- No arbitrary command execution (yet)
+- Markdown rendering doesn't execute code
+- Memory safety via Zig
+
+## Testing Strategy
+
+### Current
+- Manual testing during development
+- Build-time type checking (Zig compiler)
+
+### Future
+- Unit tests for core components
+- Integration tests for tool system
+- End-to-end tests for user flows
+
+## See Also
+
+- [Tool Calling System](tool-calling.md)
+- [Task Management](task-management.md)
+- [Master Loop & Graph RAG](master-loop-graphrag.md)

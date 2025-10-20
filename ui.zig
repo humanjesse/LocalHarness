@@ -2,7 +2,9 @@
 // Manages terminal state, input, and drawing.
 const std = @import("std");
 const mem = std.mem;
-const main = @import("main.zig");
+const app_module = @import("app.zig");
+const types_module = @import("types.zig");
+const tree = @import("tools/tree.zig");
 
 // --- START: Merged from c_api.zig ---
 pub const c = @cImport({
@@ -290,11 +292,13 @@ pub fn initUIColors(status: []const u8) void {
     status_color = status;
 }
 
-pub fn drawTaskbar(app: *const main.App, writer: anytype) !void {
+pub fn drawTaskbar(app: *const app_module.App, writer: anytype) !void {
     try writer.print("\x1b[{d};1H", .{app.terminal_size.height});
     try writer.print("\x1b[2K", .{});
 
-    if (app.streaming_active) {
+    if (app.permission_pending) {
+        try writer.print("\x1b[33m⚠️  Permission Required:\x1b[0m Press \x1b[32mA\x1b[0m/\x1b[32mS\x1b[0m/\x1b[36mR\x1b[0m/\x1b[31mD\x1b[0m to respond", .{});
+    } else if (app.streaming_active) {
         try writer.print("{s}AI is responding...\x1b[0m (wait for response to finish before sending) | Type '/quit' + Enter to exit", .{status_color});
     } else {
         try writer.print("Type '/quit' and press Enter to exit.", .{});
@@ -303,7 +307,7 @@ pub fn drawTaskbar(app: *const main.App, writer: anytype) !void {
 // --- END: Merged from taskbar.zig ---
 
 // --- START: Merged from actions.zig ---
-fn findCursorIndex(app: *const main.App) ?usize {
+fn findCursorIndex(app: *const app_module.App) ?usize {
     for (app.valid_cursor_positions.items, 0..) |pos, i| {
         if (pos == app.cursor_y) {
             return i;
@@ -312,7 +316,7 @@ fn findCursorIndex(app: *const main.App) ?usize {
     return null;
 }
 
-fn findAreaAtCursor(app: *const main.App) ?main.ClickableArea {
+fn findAreaAtCursor(app: *const app_module.App) ?types_module.ClickableArea {
     for (app.clickable_areas.items) |area| {
         if (app.cursor_y >= area.y_start and app.cursor_y <= area.y_end) {
             return area;
@@ -321,11 +325,82 @@ fn findAreaAtCursor(app: *const main.App) ?main.ClickableArea {
     return null;
 }
 
+fn handleContextCommand(app: *app_module.App) !void {
+    // Generate tree structure
+    const tree_output = tree.generateTree(app.allocator, ".") catch return;
+    defer app.allocator.free(tree_output);
+
+    // Validate the tree output is valid UTF-8
+    if (!std.unicode.utf8ValidateSlice(tree_output)) {
+        return error.InvalidUtf8;
+    }
+
+    // Format message to LLM - requesting JSON response
+    const prompt = try std.fmt.allocPrint(
+        app.allocator,
+        \\Here are all the files in this project as a JSON array:
+        \\
+        \\{s}
+        \\
+        \\Based on this file list, analyze the project structure and respond ONLY with valid JSON in this exact format (no markdown, no code blocks, just raw JSON):
+        \\
+        \\{{
+        \\  "mainEntryPoints": ["list of main entry point files"],
+        \\  "projectType": ["detected project types like 'zig', 'web', 'cli', etc."],
+        \\  "keyDirectories": ["important directories in the project"],
+        \\  "configFiles": ["configuration files found"]
+        \\}}
+        \\
+        \\Return ONLY the JSON object, nothing else.
+        ,
+        .{tree_output},
+    );
+    defer app.allocator.free(prompt);
+
+    // Send to LLM via existing sendMessage functionality with JSON format
+    try app.sendMessage(prompt, "json");
+}
+
 pub fn handleInput(
-    app: *main.App,
+    app: *app_module.App,
     input: []const u8,
     should_redraw: *bool,
 ) !bool { // Returns true if the app should quit.
+    // Handle permission responses first (takes priority over normal input)
+    if (app.permission_pending and input.len == 1) {
+        const permission = @import("permission.zig");
+        switch (input[0]) {
+            '1' => {
+                app.permission_response = permission.PermissionMode.allow_once;
+                app.permission_pending = false;
+                should_redraw.* = true;
+                return false;
+            },
+            '2' => {
+                app.permission_response = permission.PermissionMode.ask_each_time; // Session grant
+                app.permission_pending = false;
+                should_redraw.* = true;
+                return false;
+            },
+            '3' => {
+                app.permission_response = permission.PermissionMode.always_allow; // Remember
+                app.permission_pending = false;
+                should_redraw.* = true;
+                return false;
+            },
+            '4' => {
+                app.permission_response = permission.PermissionMode.deny;
+                app.permission_pending = false;
+                should_redraw.* = true;
+                return false;
+            },
+            else => {
+                // Ignore other keys when permission is pending
+                return false;
+            },
+        }
+    }
+
     if (input.len == 1) {
         switch (input[0]) {
             '\r', '\n' => {
@@ -334,6 +409,14 @@ pub fn handleInput(
                     // Check for /quit command
                     if (mem.eql(u8, app.input_buffer.items, "/quit")) {
                         return true; // Quit the application
+                    }
+
+                    // Check for /context command
+                    if (mem.eql(u8, app.input_buffer.items, "/context")) {
+                        app.input_buffer.clearRetainingCapacity();
+                        should_redraw.* = true;
+                        try handleContextCommand(app);
+                        return false;
                     }
 
                     // Don't send new messages while streaming is active
@@ -352,12 +435,18 @@ pub fn handleInput(
                     should_redraw.* = true;
 
                     // Send message and get response (non-blocking - runs in background thread)
-                    try app.sendMessage(message_text);
+                    try app.sendMessage(message_text, null);
                 }
             },
             0x7F, 0x08 => { // Backspace (DEL or BS)
                 if (app.input_buffer.items.len > 0) {
                     _ = app.input_buffer.pop();
+                    should_redraw.* = true;
+                }
+            },
+            0x0F => { // Ctrl+O - toggle thinking box at cursor position
+                if (findAreaAtCursor(app)) |area| {
+                    area.message.thinking_expanded = !area.message.thinking_expanded;
                     should_redraw.* = true;
                 }
             },
@@ -417,83 +506,53 @@ pub fn handleInput(
             // Handle scroll wheel - move cursor like j/k navigation
             if (button == 64) { // Scroll up
                 if (findCursorIndex(app)) |cursor_idx| {
-                    // Move cursor up by 1 position
+                    // Move cursor up by scroll_lines positions
                     if (cursor_idx > 0) {
-                        app.cursor_y = app.valid_cursor_positions.items[cursor_idx - 1];
-                        app.auto_scroll_enabled = false; // Disable auto-scroll when user manually scrolls
+                        const scroll_amount = @min(app.config.scroll_lines, cursor_idx);
+                        app.cursor_y = app.valid_cursor_positions.items[cursor_idx - scroll_amount];
                         should_redraw.* = true;
+
+                        // Mark that user manually scrolled away (disables auto-scroll during streaming)
+                        if (app.streaming_active) {
+                            app.user_scrolled_away = true;
+                        }
                     }
                 } else if (app.valid_cursor_positions.items.len > 0) {
                     // Cursor not in valid positions - snap to nearest and scroll up
                     app.cursor_y = app.valid_cursor_positions.items[app.valid_cursor_positions.items.len - 1];
-                    app.auto_scroll_enabled = false;
                     should_redraw.* = true;
+
+                    // Mark that user manually scrolled away (disables auto-scroll during streaming)
+                    if (app.streaming_active) {
+                        app.user_scrolled_away = true;
+                    }
                 }
                 return false;
             } else if (button == 65) { // Scroll down
                 if (findCursorIndex(app)) |cursor_idx| {
-                    // Move cursor down by 1 position
-                    if (cursor_idx + 1 < app.valid_cursor_positions.items.len) {
-                        app.cursor_y = app.valid_cursor_positions.items[cursor_idx + 1];
-                        app.auto_scroll_enabled = false; // Disable auto-scroll when user manually scrolls
+                    // Move cursor down by scroll_lines positions
+                    const max_idx = app.valid_cursor_positions.items.len - 1;
+                    if (cursor_idx < max_idx) {
+                        const scroll_amount = @min(app.config.scroll_lines, max_idx - cursor_idx);
+                        app.cursor_y = app.valid_cursor_positions.items[cursor_idx + scroll_amount];
                         should_redraw.* = true;
                     }
                 } else if (app.valid_cursor_positions.items.len > 0) {
                     // Cursor not in valid positions - snap to nearest and scroll down
                     app.cursor_y = app.valid_cursor_positions.items[0];
-                    app.auto_scroll_enabled = false;
                     should_redraw.* = true;
                 }
                 return false;
             }
 
-            // Handle click events on clickable areas (toggles thinking box only)
-            for (app.clickable_areas.items) |area| {
-                const clicked_y = @as(usize, row - 1) + app.scroll_y;
-                if (clicked_y >= area.y_start and clicked_y <= area.y_end and
-                    col >= area.x_start + 1 and col <= area.x_end + 1) {
-                    switch (button) {
-                        0 => { // Left-click - toggle thinking box
-                            area.message.thinking_expanded = !area.message.thinking_expanded;
-                            should_redraw.* = true;
-                        },
-                        2 => { // Right-click - toggle thinking box
-                            area.message.thinking_expanded = !area.message.thinking_expanded;
-                            should_redraw.* = true;
-                        },
-                        else => {},
-                    }
-                    break;
-                }
-            }
+            // Mouse clicks no longer toggle thinking boxes - use Ctrl+O instead
+            // This allows users to select/highlight text for copying
         }
     }
 
     // Legacy X10 fallback - supports older terminals (223 col/row limit)
     // Format: \x1b[M + 3 bytes (button, col-32, row-32)
-    if (input.len >= 6 and mem.eql(u8, input[0..3], "\x1b[M")) {
-        const button = input[3];
-        const col = input[4] - 32;
-        const row = input[5] - 32;
-
-        for (app.clickable_areas.items) |area| {
-            const clicked_y = @as(usize, row) + app.scroll_y - 1;
-            if (clicked_y >= area.y_start and clicked_y <= area.y_end and col >= area.x_start and col <= area.x_end) {
-                switch (button) {
-                    32 => { // Left-click - toggle thinking box
-                        area.message.thinking_expanded = !area.message.thinking_expanded;
-                        should_redraw.* = true;
-                    },
-                    34 => { // Right-click - toggle thinking box
-                        area.message.thinking_expanded = !area.message.thinking_expanded;
-                        should_redraw.* = true;
-                    },
-                    else => {},
-                }
-                break;
-            }
-        }
-    }
+    // Mouse clicks no longer toggle thinking boxes - use Ctrl+O instead
 
     return false; // Do not quit
 }
