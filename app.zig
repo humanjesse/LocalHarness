@@ -626,20 +626,72 @@ fn drawMessage(
             try all_lines.append(app.allocator, try app.allocator.dupe(u8, range_text));
 
             try all_lines.append(app.allocator, try app.allocator.dupe(u8, ""));
-            try all_lines.append(app.allocator, try app.allocator.dupe(u8, "\x1b[1mNew content:\x1b[0m"));
+            try all_lines.append(app.allocator, try app.allocator.dupe(u8, "\x1b[1mChanges:\x1b[0m"));
 
-            // Show new content (green, truncated if too long)
-            const content_preview = if (parsed.value.new_content.len > 100)
-                try std.fmt.allocPrint(app.allocator, "{s}...", .{parsed.value.new_content[0..97]})
-            else
-                try app.allocator.dupe(u8, parsed.value.new_content);
-            defer app.allocator.free(content_preview);
+            // Read the file to get old content
+            const old_content_result = blk2: {
+                const file = std.fs.cwd().openFile(parsed.value.path, .{}) catch |err| {
+                    const error_msg = try std.fmt.allocPrint(app.allocator, "\x1b[33m(Unable to read file: {s})\x1b[0m", .{@errorName(err)});
+                    break :blk2 error_msg;
+                };
+                defer file.close();
 
-            var content_line = std.ArrayListUnmanaged(u8){};
-            try content_line.appendSlice(app.allocator, "\x1b[32m");  // Green
-            try content_line.appendSlice(app.allocator, content_preview);
-            try content_line.appendSlice(app.allocator, "\x1b[0m");
-            try all_lines.append(app.allocator, try content_line.toOwnedSlice(app.allocator));
+                const content = file.readToEndAlloc(app.allocator, 10 * 1024 * 1024) catch |err| {
+                    const error_msg = try std.fmt.allocPrint(app.allocator, "\x1b[33m(Unable to read file: {s})\x1b[0m", .{@errorName(err)});
+                    break :blk2 error_msg;
+                };
+                defer app.allocator.free(content);
+
+                // Split content into lines
+                var lines = std.ArrayListUnmanaged([]const u8){};
+                defer lines.deinit(app.allocator);
+
+                var line_iter = mem.splitScalar(u8, content, '\n');
+                while (line_iter.next()) |line| {
+                    try lines.append(app.allocator, line);
+                }
+
+                // Check if line numbers are valid
+                if (parsed.value.line_start == 0 or parsed.value.line_start > lines.items.len or parsed.value.line_end > lines.items.len) {
+                    const error_msg = try std.fmt.allocPrint(app.allocator, "\x1b[33m(Line numbers out of range: file has {d} lines)\x1b[0m", .{lines.items.len});
+                    break :blk2 error_msg;
+                }
+
+                // Extract the old lines (convert to 0-indexed) and add to all_lines
+                const start_idx = parsed.value.line_start - 1;
+                const end_idx = parsed.value.line_end - 1;
+
+                var line_num = parsed.value.line_start;
+                for (lines.items[start_idx..end_idx + 1]) |line| {
+                    const formatted_line = try std.fmt.allocPrint(app.allocator, "\x1b[31m- {d}: {s}\x1b[0m", .{line_num, line});
+                    try all_lines.append(app.allocator, formatted_line);
+                    line_num += 1;
+                }
+
+                break :blk2 try app.allocator.dupe(u8, ""); // Success marker (empty string)
+            };
+
+            // Check if there was an error reading the file
+            const had_error = old_content_result.len > 0 and mem.indexOf(u8, old_content_result, "Unable to read") != null;
+            if (had_error) {
+                try all_lines.append(app.allocator, try app.allocator.dupe(u8, old_content_result));
+            }
+            app.allocator.free(old_content_result);
+
+            // Empty line separator
+            try all_lines.append(app.allocator, try app.allocator.dupe(u8, ""));
+
+            // Format new content with + prefix and line numbers
+            var new_line_iter = mem.splitScalar(u8, parsed.value.new_content, '\n');
+            var line_num: usize = parsed.value.line_start;
+            while (new_line_iter.next()) |line| {
+                // Skip empty trailing line if new_content ends with newline
+                if (new_line_iter.index == null and line.len == 0) break;
+
+                const formatted_line = try std.fmt.allocPrint(app.allocator, "\x1b[32m+ {d}: {s}\x1b[0m", .{line_num, line});
+                try all_lines.append(app.allocator, formatted_line);
+                line_num += 1;
+            }
         } else {
             // Default formatting for other tools
             const args_preview = if (perm_req.tool_call.function.arguments.len > 100)
