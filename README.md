@@ -87,6 +87,8 @@ Risk: LOW
 *File System:*
 - `get_file_tree` - Generate file tree of current directory (auto-approved)
 - `read_file` - Read file contents (requires permission)
+- `write_file` - Create or overwrite files with content (requires permission, high risk)
+- `replace_lines` - Replace specific line ranges in existing files (requires permission, high risk)
 
 *System:*
 - `get_current_time` - Get current date and time (auto-approved)

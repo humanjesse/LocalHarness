@@ -70,6 +70,41 @@ fn execute(allocator: std.mem.Allocator, arguments: []const u8, context: *AppCon
     };
     defer allocator.free(content);
 
+    // Format content with clear header, numbered lines, and footer notes
+    var formatted_output = std.ArrayListUnmanaged(u8){};
+    defer formatted_output.deinit(allocator);
+    const writer = formatted_output.writer(allocator);
+
+    // Count total lines
+    var line_iter = std.mem.splitScalar(u8, content, '\n');
+    var lines = std.ArrayListUnmanaged([]const u8){};
+    defer lines.deinit(allocator);
+
+    while (line_iter.next()) |line| {
+        try lines.append(allocator, line);
+    }
+
+    const total_lines = lines.items.len;
+
+    // Wrap in code fence for proper formatting in both markdown and LLM
+    try writer.writeAll("```\n");
+
+    // Write header
+    try writer.print("File: {s}\n", .{parsed.value.path});
+    try writer.print("Total lines: {d}\n", .{total_lines});
+    try writer.writeAll("Content:\n");
+
+    // Write numbered lines
+    for (lines.items, 0..) |line, idx| {
+        try writer.print("{d}: {s}\n", .{ idx + 1, line });
+    }
+
+    // Write footer notes
+    try writer.writeAll("\nNotes: Lines are 1-indexed. Empty lines are preserved.\n");
+    try writer.writeAll("```");
+
+    const formatted = try formatted_output.toOwnedSlice(allocator);
+
     // Phase 2+: Trigger AST parsing here
     // if (context.graph) |graph| {
     //     _ = try context.parser.?.parseFile(parsed.value.path, content, graph, ...);
@@ -78,7 +113,7 @@ fn execute(allocator: std.mem.Allocator, arguments: []const u8, context: *AppCon
     // Mark file as read for edit_file requirement
     try context.state.markFileAsRead(parsed.value.path);
 
-    return ToolResult.ok(allocator, content, start_time);
+    return ToolResult.ok(allocator, formatted, start_time);
 }
 
 fn validate(allocator: std.mem.Allocator, arguments: []const u8) bool {

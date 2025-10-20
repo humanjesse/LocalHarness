@@ -601,10 +601,10 @@ fn drawMessage(
 
         // Format arguments based on tool type
         blk: {
-            if (mem.eql(u8, perm_req.tool_call.function.name, "edit_file")) {
-                // Special formatting for edit_file to show diff preview
-                const EditArgs = struct { path: []const u8, old_string: []const u8, new_string: []const u8, replace_all: bool = false };
-                const parsed = json.parseFromSlice(EditArgs, app.allocator, perm_req.tool_call.function.arguments, .{}) catch {
+            if (mem.eql(u8, perm_req.tool_call.function.name, "replace_lines")) {
+                // Special formatting for replace_lines to show line range and content preview
+                const ReplaceArgs = struct { path: []const u8, line_start: usize, line_end: usize, new_content: []const u8 };
+                const parsed = json.parseFromSlice(ReplaceArgs, app.allocator, perm_req.tool_call.function.arguments, .{}) catch {
                     // Fallback to raw if parsing fails
                     var args_line = std.ArrayListUnmanaged(u8){};
                     try args_line.appendSlice(app.allocator, "\x1b[1mArguments:\x1b[0m ");
@@ -620,38 +620,26 @@ fn drawMessage(
             try file_line.appendSlice(app.allocator, parsed.value.path);
             try all_lines.append(app.allocator, try file_line.toOwnedSlice(app.allocator));
 
+            // Line range
+            const range_text = try std.fmt.allocPrint(app.allocator, "\x1b[1mReplacing lines:\x1b[0m {d}-{d}", .{parsed.value.line_start, parsed.value.line_end});
+            defer app.allocator.free(range_text);
+            try all_lines.append(app.allocator, try app.allocator.dupe(u8, range_text));
+
             try all_lines.append(app.allocator, try app.allocator.dupe(u8, ""));
-            try all_lines.append(app.allocator, try app.allocator.dupe(u8, "\x1b[1mChange Preview:\x1b[0m"));
+            try all_lines.append(app.allocator, try app.allocator.dupe(u8, "\x1b[1mNew content:\x1b[0m"));
 
-            // Old string (red, with - prefix)
-            const old_preview = if (parsed.value.old_string.len > 60)
-                try std.fmt.allocPrint(app.allocator, "{s}...", .{parsed.value.old_string[0..57]})
+            // Show new content (green, truncated if too long)
+            const content_preview = if (parsed.value.new_content.len > 100)
+                try std.fmt.allocPrint(app.allocator, "{s}...", .{parsed.value.new_content[0..97]})
             else
-                try app.allocator.dupe(u8, parsed.value.old_string);
-            defer app.allocator.free(old_preview);
+                try app.allocator.dupe(u8, parsed.value.new_content);
+            defer app.allocator.free(content_preview);
 
-            var old_line = std.ArrayListUnmanaged(u8){};
-            try old_line.appendSlice(app.allocator, "\x1b[31m- ");  // Red
-            try old_line.appendSlice(app.allocator, old_preview);
-            try old_line.appendSlice(app.allocator, "\x1b[0m");
-            try all_lines.append(app.allocator, try old_line.toOwnedSlice(app.allocator));
-
-            // New string (green, with + prefix)
-            const new_preview = if (parsed.value.new_string.len > 60)
-                try std.fmt.allocPrint(app.allocator, "{s}...", .{parsed.value.new_string[0..57]})
-            else
-                try app.allocator.dupe(u8, parsed.value.new_string);
-            defer app.allocator.free(new_preview);
-
-            var new_line = std.ArrayListUnmanaged(u8){};
-            try new_line.appendSlice(app.allocator, "\x1b[32m+ ");  // Green
-            try new_line.appendSlice(app.allocator, new_preview);
-            try new_line.appendSlice(app.allocator, "\x1b[0m");
-            try all_lines.append(app.allocator, try new_line.toOwnedSlice(app.allocator));
-
-            if (parsed.value.replace_all) {
-                try all_lines.append(app.allocator, try app.allocator.dupe(u8, "\x1b[33m(Replace ALL occurrences)\x1b[0m"));
-            }
+            var content_line = std.ArrayListUnmanaged(u8){};
+            try content_line.appendSlice(app.allocator, "\x1b[32m");  // Green
+            try content_line.appendSlice(app.allocator, content_preview);
+            try content_line.appendSlice(app.allocator, "\x1b[0m");
+            try all_lines.append(app.allocator, try content_line.toOwnedSlice(app.allocator));
         } else {
             // Default formatting for other tools
             const args_preview = if (perm_req.tool_call.function.arguments.len > 100)

@@ -1,4 +1,4 @@
-// Edit File Tool - Makes targeted edits using exact string replacement
+// Replace Lines Tool - Replaces specific line ranges in a file
 const std = @import("std");
 const ollama = @import("../ollama.zig");
 const permission = @import("../permission.zig");
@@ -14,8 +14,8 @@ pub fn getDefinition(allocator: std.mem.Allocator) !ToolDefinition {
         .ollama_tool = .{
             .type = "function",
             .function = .{
-                .name = try allocator.dupe(u8, "edit_file"),
-                .description = try allocator.dupe(u8, "Makes targeted edits to an existing file by replacing exact string matches. You MUST use read_file first to see the current contents. Provide the exact old_string to be replaced (including whitespace) and the new_string to replace it with. The old_string must be unique unless you set replace_all=true."),
+                .name = try allocator.dupe(u8, "replace_lines"),
+                .description = try allocator.dupe(u8, "Replaces specific line ranges in a file. WORKFLOW: First call read_file to see the file with line numbers (e.g. '1: foo', '2: bar'). Then call replace_lines specifying which lines to replace. EXAMPLE: If read_file shows '1: hello' and you want to change it to 'goodbye', use {\"path\":\"file.txt\",\"line_start\":1,\"line_end\":1,\"new_content\":\"goodbye\"}. To replace multiple lines, set line_end higher. To add lines, include newlines in new_content (e.g. \"hello\\ngoodbye\" replaces line 1 with 2 lines)."),
                 .parameters = try allocator.dupe(u8,
                     \\{
                     \\  "type": "object",
@@ -24,27 +24,27 @@ pub fn getDefinition(allocator: std.mem.Allocator) !ToolDefinition {
                     \\      "type": "string",
                     \\      "description": "Relative path to the file to edit"
                     \\    },
-                    \\    "old_string": {
-                    \\      "type": "string",
-                    \\      "description": "Exact string to find and replace (must match exactly including whitespace)"
+                    \\    "line_start": {
+                    \\      "type": "integer",
+                    \\      "description": "First line number to replace (1-indexed, as shown in read_file output)"
                     \\    },
-                    \\    "new_string": {
-                    \\      "type": "string",
-                    \\      "description": "New string to replace with"
+                    \\    "line_end": {
+                    \\      "type": "integer",
+                    \\      "description": "Last line number to replace (inclusive, 1-indexed)"
                     \\    },
-                    \\    "replace_all": {
-                    \\      "type": "boolean",
-                    \\      "description": "If true, replace all occurrences. If false (default), old_string must be unique in the file."
+                    \\    "new_content": {
+                    \\      "type": "string",
+                    \\      "description": "New content to replace the specified lines with"
                     \\    }
                     \\  },
-                    \\  "required": ["path", "old_string", "new_string"]
+                    \\  "required": ["path", "line_start", "line_end", "new_content"]
                     \\}
                 ),
             },
         },
         .permission_metadata = .{
-            .name = "edit_file",
-            .description = "Edit file with exact string replacement",
+            .name = "replace_lines",
+            .description = "Replace lines in file",
             .risk_level = .high, // High risk - modifies files! Triggers preview in permission prompt
             .required_scopes = &.{.write_files},
             .validator = validate,
@@ -54,29 +54,28 @@ pub fn getDefinition(allocator: std.mem.Allocator) !ToolDefinition {
 }
 
 fn execute(allocator: std.mem.Allocator, arguments: []const u8, context: *AppContext) !ToolResult {
+    _ = context;
     const start_time = std.time.milliTimestamp();
 
     // Parse arguments
     const Args = struct {
         path: []const u8,
-        old_string: []const u8,
-        new_string: []const u8,
-        replace_all: bool = false,
+        line_start: usize,
+        line_end: usize,
+        new_content: []const u8,
     };
     const parsed = std.json.parseFromSlice(Args, allocator, arguments, .{}) catch {
         return ToolResult.err(allocator, .parse_error, "Invalid JSON arguments", start_time);
     };
     defer parsed.deinit();
 
-    // SAFETY: Check if file was read first (read-first requirement)
-    if (!context.state.wasFileRead(parsed.value.path)) {
-        const msg = try std.fmt.allocPrint(
-            allocator,
-            "You must use read_file on '{s}' before editing it",
-            .{parsed.value.path},
-        );
-        defer allocator.free(msg);
-        return ToolResult.err(allocator, .permission_denied, msg, start_time);
+    // Validate line numbers
+    if (parsed.value.line_start == 0) {
+        return ToolResult.err(allocator, .validation_failed, "line_start must be >= 1 (lines are 1-indexed)", start_time);
+    }
+
+    if (parsed.value.line_start > parsed.value.line_end) {
+        return ToolResult.err(allocator, .validation_failed, "line_start must be <= line_end", start_time);
     }
 
     // Read current file contents
@@ -94,32 +93,53 @@ fn execute(allocator: std.mem.Allocator, arguments: []const u8, context: *AppCon
     };
     defer allocator.free(content);
 
-    // Count occurrences of old_string
-    const count = std.mem.count(u8, content, parsed.value.old_string);
+    // Split content into lines
+    var lines = std.ArrayListUnmanaged([]const u8){};
+    defer lines.deinit(allocator);
 
-    if (count == 0) {
-        return ToolResult.err(allocator, .not_found, "String not found in file", start_time);
+    var line_iter = std.mem.splitScalar(u8, content, '\n');
+    while (line_iter.next()) |line| {
+        try lines.append(allocator, line);
     }
 
-    if (count > 1 and !parsed.value.replace_all) {
+    const total_lines = lines.items.len;
+
+    // Check if line numbers are in range
+    if (parsed.value.line_end > total_lines) {
         const msg = try std.fmt.allocPrint(
             allocator,
-            "String appears {d} times - not unique! Provide more context or set replace_all=true",
-            .{count},
+            "line_end ({d}) out of range (file has {d} lines)",
+            .{ parsed.value.line_end, total_lines },
         );
         defer allocator.free(msg);
         return ToolResult.err(allocator, .validation_failed, msg, start_time);
     }
 
-    // Perform the replacement
-    const new_content = try std.mem.replaceOwned(
-        u8,
-        allocator,
-        content,
-        parsed.value.old_string,
-        parsed.value.new_string,
-    );
-    defer allocator.free(new_content);
+    // Build new file content
+    var new_file_content = std.ArrayListUnmanaged(u8){};
+    defer new_file_content.deinit(allocator);
+    const writer = new_file_content.writer(allocator);
+
+    // Write lines before the edit range
+    for (lines.items[0 .. parsed.value.line_start - 1]) |line| {
+        try writer.print("{s}\n", .{line});
+    }
+
+    // Write the new content
+    try writer.writeAll(parsed.value.new_content);
+    if (parsed.value.new_content.len > 0 and parsed.value.new_content[parsed.value.new_content.len - 1] != '\n') {
+        try writer.writeByte('\n');
+    }
+
+    // Write lines after the edit range
+    if (parsed.value.line_end < total_lines) {
+        for (lines.items[parsed.value.line_end..]) |line| {
+            try writer.print("{s}\n", .{line});
+        }
+    }
+
+    const final_content = try new_file_content.toOwnedSlice(allocator);
+    defer allocator.free(final_content);
 
     // Write back to disk
     const write_file = std.fs.cwd().createFile(parsed.value.path, .{}) catch |err| {
@@ -129,17 +149,18 @@ fn execute(allocator: std.mem.Allocator, arguments: []const u8, context: *AppCon
     };
     defer write_file.close();
 
-    write_file.writeAll(new_content) catch |err| {
+    write_file.writeAll(final_content) catch |err| {
         const msg = try std.fmt.allocPrint(allocator, "Failed to write file: {}", .{err});
         defer allocator.free(msg);
         return ToolResult.err(allocator, .io_error, msg, start_time);
     };
 
     // Return success with details
+    const lines_replaced = parsed.value.line_end - parsed.value.line_start + 1;
     const success_msg = try std.fmt.allocPrint(
         allocator,
-        "Successfully replaced {d} occurrence(s) in {s}",
-        .{ count, parsed.value.path },
+        "Successfully replaced {d} line(s) ({d}-{d}) in {s}",
+        .{ lines_replaced, parsed.value.line_start, parsed.value.line_end, parsed.value.path },
     );
     defer allocator.free(success_msg);
 
@@ -149,9 +170,9 @@ fn execute(allocator: std.mem.Allocator, arguments: []const u8, context: *AppCon
 fn validate(allocator: std.mem.Allocator, arguments: []const u8) bool {
     const Args = struct {
         path: []const u8,
-        old_string: []const u8,
-        new_string: []const u8,
-        replace_all: bool = false,
+        line_start: usize,
+        line_end: usize,
+        new_content: []const u8,
     };
     const parsed = std.json.parseFromSlice(Args, allocator, arguments, .{}) catch return false;
     defer parsed.deinit();
@@ -162,8 +183,9 @@ fn validate(allocator: std.mem.Allocator, arguments: []const u8) bool {
     // Block directory traversal
     if (std.mem.indexOf(u8, parsed.value.path, "..") != null) return false;
 
-    // Must have actual changes (old and new can't be the same)
-    if (std.mem.eql(u8, parsed.value.old_string, parsed.value.new_string)) return false;
+    // Validate line numbers
+    if (parsed.value.line_start == 0) return false;
+    if (parsed.value.line_start > parsed.value.line_end) return false;
 
     return true;
 }
