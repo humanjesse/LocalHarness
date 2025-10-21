@@ -20,7 +20,51 @@ pub fn openEditorAndWait(allocator: mem.Allocator, editor: []const []const u8, n
     _ = term;
 }
 
+/// Extract active ANSI codes from text up to a given position
+fn extractActiveAnsiCodes(allocator: mem.Allocator, text: []const u8, up_to_pos: usize) !std.ArrayListUnmanaged([]const u8) {
+    var active_codes = std.ArrayListUnmanaged([]const u8){};
+    var i: usize = 0;
+
+    while (i < up_to_pos and i < text.len) {
+        if (text[i] == 0x1b and i + 1 < text.len and text[i + 1] == '[') {
+            // Find end of ANSI sequence
+            var end = i + 2;
+            while (end < text.len and text[end] != 'm') : (end += 1) {}
+            if (end < text.len) {
+                const ansi_code = text[i..end + 1];
+
+                // Check if it's a reset code
+                if (mem.indexOf(u8, ansi_code, "[0m") != null) {
+                    // Full reset - clear all active codes
+                    for (active_codes.items) |code| allocator.free(code);
+                    active_codes.clearRetainingCapacity();
+                } else if (mem.indexOf(u8, ansi_code, "[49m") != null) {
+                    // Background reset - remove background codes
+                    var j: usize = 0;
+                    while (j < active_codes.items.len) {
+                        if (mem.indexOf(u8, active_codes.items[j], "[48;") != null) {
+                            allocator.free(active_codes.items[j]);
+                            _ = active_codes.orderedRemove(j);
+                        } else {
+                            j += 1;
+                        }
+                    }
+                } else {
+                    // Add this code to active codes
+                    try active_codes.append(allocator, try allocator.dupe(u8, ansi_code));
+                }
+                i = end + 1;
+                continue;
+            }
+        }
+        i += 1;
+    }
+
+    return active_codes;
+}
+
 /// Wrap text to fit within max_width, respecting Unicode, ANSI codes, and ZWJ emoji sequences
+/// Properly closes and reopens ANSI codes at line breaks to prevent style bleeding
 pub fn wrapRawText(allocator: mem.Allocator, text: []const u8, max_width: usize) !std.ArrayListUnmanaged([]const u8) {
     var result = std.ArrayListUnmanaged([]const u8){};
     var line_iterator = mem.splitScalar(u8, text, '\n');
@@ -32,6 +76,8 @@ pub fn wrapRawText(allocator: mem.Allocator, text: []const u8, max_width: usize)
         }
 
         var current_byte_pos: usize = 0;
+        var is_continuation = false; // Track if this is a continuation line
+
         while (current_byte_pos < line.len) {
             var visible_chars: usize = 0;
             var byte_idx: usize = current_byte_pos;
@@ -99,11 +145,59 @@ pub fn wrapRawText(allocator: mem.Allocator, text: []const u8, max_width: usize)
                 }
             }
 
-            try result.append(allocator, try allocator.dupe(u8, line[current_byte_pos..break_pos]));
+            // Extract the line segment
+            const segment = line[current_byte_pos..break_pos];
+
+            // Check if this is a wrapped line (not the last segment)
+            const will_wrap = break_pos < line.len;
+
+            // Get active ANSI codes at the current position (for continuation lines)
+            var active_codes_start = if (is_continuation)
+                try extractActiveAnsiCodes(allocator, line, current_byte_pos)
+            else
+                std.ArrayListUnmanaged([]const u8){};
+            defer {
+                for (active_codes_start.items) |code| allocator.free(code);
+                active_codes_start.deinit(allocator);
+            }
+
+            // Get active ANSI codes at break position (for wrapping)
+            var active_codes_end = if (will_wrap)
+                try extractActiveAnsiCodes(allocator, line, break_pos)
+            else
+                std.ArrayListUnmanaged([]const u8){};
+            defer {
+                for (active_codes_end.items) |code| allocator.free(code);
+                active_codes_end.deinit(allocator);
+            }
+
+            // Build the output line
+            var output_line = std.ArrayListUnmanaged(u8){};
+
+            // Prepend active codes if this is a continuation line
+            if (is_continuation and active_codes_start.items.len > 0) {
+                for (active_codes_start.items) |code| {
+                    try output_line.appendSlice(allocator, code);
+                }
+            }
+
+            // Add the segment content
+            try output_line.appendSlice(allocator, segment);
+
+            // Append reset if this line will wrap and has active codes
+            if (will_wrap and active_codes_end.items.len > 0) {
+                try output_line.appendSlice(allocator, "\x1b[0m"); // Reset all styles
+            }
+
+            try result.append(allocator, try output_line.toOwnedSlice(allocator));
+
             current_byte_pos = break_pos;
             if (current_byte_pos < line.len and line[current_byte_pos] == ' ') {
                 current_byte_pos += 1;
             }
+
+            // Mark next iteration as a continuation if we're wrapping
+            is_continuation = will_wrap;
         }
     }
     return result;

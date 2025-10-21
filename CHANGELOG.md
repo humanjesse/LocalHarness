@@ -2,7 +2,50 @@
 
 All notable changes to ZodoLlama will be documented in this file.
 
-## [Unreleased] - 2025-01-19
+## [Unreleased] - 2025-01-20
+
+### Refactored
+- **Tool Executor State Machine** - Extracted tool execution logic into dedicated state machine module:
+  - Created `tool_executor.zig` (358 lines) with explicit state enum
+  - Removed ~440 lines of duplicate/inline execution logic from `app.zig`
+  - Implemented Command Pattern: state machine returns actions, App responds
+  - 5 clear states: `idle`, `evaluating_policy`, `awaiting_permission`, `executing`, `completed`
+  - Non-blocking `tick()` function advances state without blocking
+  - Removed `pending_tool_execution` field, replaced with `tool_executor: ToolExecutor`
+
+### Fixed
+- **Memory Safety** - Fixed string literal double-free bug:
+  - Removed incorrect `free(eval_result.reason)` calls (5 instances)
+  - `PolicyEngine.evaluate()` returns string literals, not heap-allocated strings
+  - Attempting to free string literals caused crashes during tool execution
+  - Audit logger properly duplicates reason strings for its own storage
+
+### Benefits
+- ✅ **Separation of Concerns** - Permission logic isolated from UI logic
+- ✅ **Testability** - State transitions can be unit tested independently
+- ✅ **Readability** - Explicit state enum vs implicit null checks
+- ✅ **Non-blocking** - tick() returns immediately, main loop never blocks
+- ✅ **Memory Safety** - Clear ownership, prevents double-free bugs
+
+### Technical Details
+- Modified `app.zig` (1352 lines):
+  - Removed lines 799-1075 (old inline tool execution)
+  - Updated streaming completion to call `tool_executor.startExecution()`
+  - Changed main loop to check `tool_executor.hasPendingWork()`
+  - App now responds to `TickResult` actions from state machine
+- Created `tool_executor.zig` (358 lines):
+  - `ToolExecutionState` enum with 5 states
+  - `TickResult` enum with 5 action types
+  - `tick()` method advances state and returns action
+  - Owns tool_calls until completion, manages permission flow
+- Updated documentation:
+  - `docs/architecture/overview.md` - Added state machine flow diagram
+  - `docs/architecture/tool-calling.md` - New "Tool Executor State Machine" section
+  - Both docs now reflect current architecture
+
+---
+
+## [Previous Release] - 2025-01-19
 
 ### Added
 - **Receipt Printer Scroll** - New scrolling behavior that automatically follows streaming content like a receipt printer:

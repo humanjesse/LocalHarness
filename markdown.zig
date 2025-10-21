@@ -1018,6 +1018,13 @@ const Parser = struct {
             }
         }
 
+        // Consume any remaining tokens on delimiter row (e.g., trailing pipe)
+        while (!self.eof()) {
+            const tok = self.peek().?;
+            if (tok.tag == .newline) break;
+            self.advance();
+        }
+
         // Fill remaining alignments with left (if row was uneven)
         while (align_idx < column_count) : (align_idx += 1) {
             alignments[align_idx] = .left;

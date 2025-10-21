@@ -122,30 +122,4 @@ pub fn build(b: *std.Build) void {
 
     const run_step = b.step("run", "Run the application");
     run_step.dependOn(&run_cmd.step);
-
-    // Test executable for task tools
-    const test_exe = b.addExecutable(.{
-        .name = "test_tools",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("test_tools.zig"),
-            .target = target,
-            .optimize = optimize,
-        }),
-    });
-
-    // Add imports for test executable
-    test_exe.root_module.addImport("tools", tools_module);
-    test_exe.root_module.addImport("state", state_module);
-    test_exe.root_module.addImport("config", config_module);
-    test_exe.root_module.addImport("context", context_module);
-    test_exe.root_module.addImport("ollama", ollama_module);
-
-    test_exe.linkSystemLibrary("c");
-    b.installArtifact(test_exe);
-
-    const test_run_cmd = b.addRunArtifact(test_exe);
-    test_run_cmd.step.dependOn(b.getInstallStep());
-
-    const test_step = b.step("test-tools", "Test the task management tools");
-    test_step.dependOn(&test_run_cmd.step);
 }

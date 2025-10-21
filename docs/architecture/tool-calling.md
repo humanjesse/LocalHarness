@@ -215,6 +215,104 @@ Risk: MEDIUM
 
 Policies are saved in `~/.config/zodollama/policies.json` and persist across sessions.
 
+## Tool Executor State Machine
+
+As of 2025-01-20, tool execution uses a dedicated state machine (`tool_executor.zig`) to manage the async execution flow. This replaces the previous inline execution approach.
+
+### Architecture
+
+```
+┌──────────────────────────────────────────┐
+│         TOOL EXECUTOR (State Machine)    │
+│  ┌────────────────────────────────────┐  │
+│  │ States:                            │  │
+│  │  idle                              │  │
+│  │    ↓                               │  │
+│  │  evaluating_policy                 │  │
+│  │    ↓                               │  │
+│  │  awaiting_permission (if needed)   │  │
+│  │    ↓                               │  │
+│  │  executing                         │  │
+│  │    ↓                               │  │
+│  │  completed                         │  │
+│  └────────────────────────────────────┘  │
+│                                          │
+│  tick() returns TickResult:              │
+│   • no_action                            │
+│   • show_permission_prompt               │
+│   • render_requested                     │
+│   • iteration_complete                   │
+│   • iteration_limit_reached              │
+└──────────────────────────────────────────┘
+                   ↓
+         ┌─────────────────┐
+         │   APP (Handler) │
+         │  - Shows prompts│
+         │  - Executes tools│
+         │  - Renders UI   │
+         └─────────────────┘
+```
+
+### How It Works
+
+**Main Loop in app.zig:**
+```zig
+if (tool_executor.hasPendingWork()) {
+    // Forward user's permission response if any
+    if (permission_response) |resp| {
+        tool_executor.setPermissionResponse(resp);
+    }
+
+    // Advance the state machine
+    const action = try tool_executor.tick(perm_manager, ...);
+
+    // React to what it tells us to do
+    switch (action) {
+        .show_permission_prompt => { /* Show UI prompt */ },
+        .render_requested => { /* Execute current tool */ },
+        .iteration_complete => { /* Start next AI response */ },
+        .iteration_limit_reached => { /* Stop, max iterations */ },
+        .no_action => { /* Waiting for user input */ },
+    }
+}
+```
+
+### Benefits
+
+| Aspect | Old Approach | New State Machine |
+|--------|--------------|-------------------|
+| **State** | Implicit (check if null) | Explicit enum |
+| **Control Flow** | 440 lines of nested logic | 5 clear states |
+| **Blocking** | Loop-based execution | tick() returns immediately |
+| **Separation** | Everything in app.zig | Logic in tool_executor |
+| **Testability** | Hard to test | State transitions testable |
+| **Readability** | Complex nested ifs | Clear state transitions |
+
+### State Transitions
+
+1. **idle** → User does nothing, no tools pending
+2. **evaluating_policy** → Checking metadata, validating args, evaluating permissions
+3. **awaiting_permission** → User must approve/deny (UI shows prompt)
+4. **executing** → Tool is running (handled by App)
+5. **completed** → All tools done, check iteration limit
+
+### Key Design Patterns
+
+**Command Pattern:**
+- State machine doesn't execute tools directly
+- Instead, it **tells App what to do** via TickResult
+- App handles UI-specific concerns (prompts, rendering, actual execution)
+
+**Non-Blocking:**
+- `tick()` never blocks
+- Just advances state and returns an action
+- Main loop continues processing input even during tool execution
+
+**Memory Safety:**
+- Ownership is clear: tool_executor owns tool_calls until completed
+- `eval_result.reason` is **not freed** (string literals from PolicyEngine)
+- Prevents double-free bugs
+
 ## Multi-Turn Tool Calling
 
 ### The Challenge

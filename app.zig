@@ -15,6 +15,7 @@ const context_module = @import("context.zig");
 const config_module = @import("config.zig");
 const render = @import("render.zig");
 const message_renderer = @import("message_renderer.zig");
+const tool_executor_module = @import("tool_executor.zig");
 
 // Re-export types for convenience
 pub const Message = types.Message;
@@ -75,14 +76,9 @@ pub const App = struct {
     // Permission system
     permission_manager: permission.PermissionManager,
     permission_pending: bool = false,
-    pending_permission_tool: ?ollama.ToolCall = null,
-    pending_permission_eval: ?permission.PolicyEngine.EvaluationResult = null,
-    permission_response: ?permission.PermissionMode = null,
-    // Tool execution state for async permission handling
-    pending_tool_execution: ?struct {
-        tool_calls: []ollama.ToolCall,
-        current_index: usize,
-    } = null,
+    permission_response: ?permission.PermissionMode = null, // Set by UI, consumed by tool_executor
+    // Tool execution state machine
+    tool_executor: tool_executor_module.ToolExecutor,
     // Phase 1: Task management state
     state: AppState,
     app_context: AppContext,
@@ -117,6 +113,7 @@ pub const App = struct {
             .saved_expansion_states = .{},
             .tools = tools,
             .permission_manager = perm_manager,
+            .tool_executor = tool_executor_module.ToolExecutor.init(allocator),
             // Phase 1: Initialize state (session-ephemeral)
             .state = AppState.init(allocator),
             .app_context = undefined, // Will be fixed by caller after struct is in final location
@@ -594,13 +591,8 @@ pub const App = struct {
         // Clean up permission manager
         self.permission_manager.deinit();
 
-        // Clean up pending permission tool if any
-        if (self.pending_permission_tool) |call| {
-            if (call.id) |id| self.allocator.free(id);
-            if (call.type) |call_type| self.allocator.free(call_type);
-            self.allocator.free(call.function.name);
-            self.allocator.free(call.function.arguments);
-        }
+        // Clean up tool executor
+        self.tool_executor.deinit();
 
         // Phase 1: Clean up state
         self.state.deinit();
@@ -616,280 +608,146 @@ pub const App = struct {
         defer content_accumulator.deinit(self.allocator);
 
         while (true) {
-            // Handle pending tool executions (async - doesn't block input)
-            if (self.pending_tool_execution) |*pending| {
-                // Check if waiting for permission response
-                if (self.permission_pending) {
-                    // Permission prompt is shown, wait for user response
-                    // Input handler will set permission_response when user presses A/S/R/D
-                    if (self.permission_response) |_| {
-                        // Permission granted or denied - clear pending state
-                        self.permission_pending = false;
+            // Handle pending tool executions using state machine (async - doesn't block input)
+            if (self.tool_executor.hasPendingWork()) {
+                // Forward permission response from App to tool_executor if available
+                if (self.permission_response) |response| {
+                    self.tool_executor.setPermissionResponse(response);
+                    self.permission_response = null;
+                }
 
-                        // Handle response and continue tool execution
-                        // (The actual execution will happen in next iteration with response set)
-                    }
-                    // Continue main loop to allow input processing
-                } else if (pending.current_index < pending.tool_calls.len) {
-                    // Execute next tool in the list
-                    const tool_call = pending.tool_calls[pending.current_index];
-                    const call_idx = pending.current_index;
+                // Advance the state machine
+                const tick_result = try self.tool_executor.tick(
+                    &self.permission_manager,
+                    self.state.iteration_count,
+                    self.max_iterations,
+                );
 
-                    // Get metadata
-                    const metadata = self.permission_manager.registry.getMetadata(tool_call.function.name);
+                switch (tick_result) {
+                    .no_action => {
+                        // Nothing to do - waiting for user input or other event
+                    },
 
-                    if (metadata) |meta| {
-                        // Validate arguments
-                        const valid = self.permission_manager.registry.validateArguments(
-                            tool_call.function.name,
-                            tool_call.function.arguments,
-                        ) catch false;
-
-                        if (!valid) {
-                            try self.permission_manager.audit_logger.log(
-                                tool_call.function.name,
-                                tool_call.function.arguments,
-                                .failed_validation,
-                                "Invalid arguments",
-                                false,
-                            );
-                            // Skip this tool, move to next
-                            pending.current_index += 1;
-                            continue;
-                        }
-
-                        // Check session grants
-                        const has_session_grant = self.permission_manager.session_state.hasGrant(
-                            tool_call.function.name,
-                            meta.required_scopes[0],
-                        ) != null;
-
-                        var should_execute = false;
-                        var user_choice: ?permission.PermissionMode = null;
-
-                        if (has_session_grant) {
-                            // Auto-approve with session grant
-                            should_execute = true;
-                            try self.permission_manager.audit_logger.log(
-                                tool_call.function.name,
-                                tool_call.function.arguments,
-                                .auto_approved,
-                                "Session grant active",
-                                false,
-                            );
-                        } else {
-                            // Evaluate policy
-                            const eval_result = self.permission_manager.policy_engine.evaluate(
-                                tool_call.function.name,
-                                tool_call.function.arguments,
-                                meta,
-                            ) catch {
-                                // Policy evaluation failed - skip
-                                pending.current_index += 1;
-                                continue;
-                            };
-
-                            if (eval_result.allowed and !eval_result.ask_user) {
-                                // Auto-approve
-                                should_execute = true;
-                                try self.permission_manager.audit_logger.log(
-                                    tool_call.function.name,
-                                    tool_call.function.arguments,
-                                    .auto_approved,
-                                    eval_result.reason,
-                                    false,
-                                );
-                            } else if (!eval_result.allowed and !eval_result.ask_user) {
-                                // Auto-deny
-                                try self.permission_manager.audit_logger.log(
-                                    tool_call.function.name,
-                                    tool_call.function.arguments,
-                                    .denied_by_policy,
-                                    eval_result.reason,
-                                    false,
-                                );
-                                pending.current_index += 1;
-                                continue;
-                            } else {
-                                // Need to ask user
-                                if (self.permission_response == null) {
-                                    // First time - show prompt
-                                    try self.showPermissionPrompt(tool_call, eval_result);
-                                    if (!self.user_scrolled_away) {
-                                        try self.maintainBottomAnchor();
-                                    }
-                                    _ = try message_renderer.redrawScreen(self);
-                                    if (!self.user_scrolled_away) {
-                                        self.updateCursorToBottom();
-                                    }
-                                    // Wait for response in next loop iteration
-                                    continue;
-                                } else {
-                                    // Response received
-                                    user_choice = self.permission_response;
-                                    self.permission_response = null; // Clear for next time
-
-                                    if (user_choice == null or user_choice.? == .deny) {
-                                        // Denied
-                                        try self.permission_manager.audit_logger.log(
-                                            tool_call.function.name,
-                                            tool_call.function.arguments,
-                                            .denied_by_user,
-                                            "User denied permission",
-                                            false,
-                                        );
-                                        pending.current_index += 1;
-                                        continue;
-                                    }
-
-                                    // Handle user choice
-                                    switch (user_choice.?) {
-                                        .allow_once => {},
-                                        .always_allow => {
-                                            // Save policy
-                                            var path_patterns: []const []const u8 = undefined;
-                                            if (meta.required_scopes[0] == .read_files or meta.required_scopes[0] == .write_files) {
-                                                var patterns = try self.allocator.alloc([]const u8, 1);
-                                                patterns[0] = try self.allocator.dupe(u8, "*");
-                                                path_patterns = patterns;
-                                            } else {
-                                                path_patterns = try self.allocator.alloc([]const u8, 0);
-                                            }
-
-                                            const deny_patterns = try self.allocator.alloc([]const u8, 0);
-
-                                            try self.permission_manager.policy_engine.addPolicy(.{
-                                                .scope = meta.required_scopes[0],
-                                                .mode = .always_allow,
-                                                .path_patterns = path_patterns,
-                                                .deny_patterns = deny_patterns,
-                                            });
-
-                                            config_module.savePolicies(self.allocator, &self.permission_manager) catch |err| {
-                                                std.debug.print("Warning: Failed to save policies: {}\n", .{err});
-                                            };
-                                        },
-                                        .ask_each_time => {
-                                            // Add session grant
-                                            try self.permission_manager.session_state.addGrant(.{
-                                                .tool_name = tool_call.function.name,
-                                                .granted_at = std.time.milliTimestamp(),
-                                                .scope = meta.required_scopes[0],
-                                            });
-                                        },
-                                        .deny => unreachable,
-                                    }
-
-                                    should_execute = true;
-                                    try self.permission_manager.audit_logger.log(
-                                        tool_call.function.name,
-                                        tool_call.function.arguments,
-                                        .user_approved,
-                                        eval_result.reason,
-                                        true,
-                                    );
+                    .show_permission_prompt => {
+                        // Tool executor needs to ask user for permission
+                        if (self.tool_executor.getPendingPermissionTool()) |tool_call| {
+                            if (self.tool_executor.getPendingPermissionEval()) |eval_result| {
+                                try self.showPermissionPrompt(tool_call, eval_result);
+                                self.permission_pending = true;
+                                if (!self.user_scrolled_away) {
+                                    try self.maintainBottomAnchor();
+                                }
+                                _ = try message_renderer.redrawScreen(self);
+                                if (!self.user_scrolled_away) {
+                                    self.updateCursorToBottom();
                                 }
                             }
                         }
+                    },
 
-                        // Execute if approved
-                        if (should_execute) {
-                            // Execute tool and get structured result
-                            var result = self.executeTool(tool_call) catch |err| blk: {
-                                const msg = try std.fmt.allocPrint(self.allocator, "Runtime error: {}", .{err});
-                                defer self.allocator.free(msg);
-                                break :blk try tools_module.ToolResult.err(self.allocator, .internal_error, msg, std.time.milliTimestamp());
-                            };
-                            defer result.deinit(self.allocator);
+                    .render_requested => {
+                        // Tool executor is ready to execute current tool (if in executing state)
+                        if (self.tool_executor.getCurrentState() == .executing) {
+                            if (self.tool_executor.getCurrentToolCall()) |tool_call| {
+                                const call_idx = self.tool_executor.current_index;
 
-                            // Create user-facing display message (FULL TRANSPARENCY)
-                            const display_content = try result.formatDisplay(
-                                self.allocator,
-                                tool_call.function.name,
-                                tool_call.function.arguments,
-                            );
-                            const display_processed = try markdown.processMarkdown(self.allocator, display_content);
+                                // Execute tool and get structured result
+                                var result = self.executeTool(tool_call) catch |err| blk: {
+                                    const msg = try std.fmt.allocPrint(self.allocator, "Runtime error: {}", .{err});
+                                    defer self.allocator.free(msg);
+                                    break :blk try tools_module.ToolResult.err(self.allocator, .internal_error, msg, std.time.milliTimestamp());
+                                };
+                                defer result.deinit(self.allocator);
 
-                            try self.messages.append(self.allocator, .{
-                                .role = .system,
-                                .content = display_content,
-                                .processed_content = display_processed,
-                                .thinking_expanded = false,
-                                .timestamp = std.time.milliTimestamp(),
-                            });
+                                // Create user-facing display message (FULL TRANSPARENCY)
+                                const display_content = try result.formatDisplay(
+                                    self.allocator,
+                                    tool_call.function.name,
+                                    tool_call.function.arguments,
+                                );
+                                const display_processed = try markdown.processMarkdown(self.allocator, display_content);
 
-                            // Receipt printer mode: auto-scroll to show tool results
-                            // UNLESS user has manually scrolled away
+                                try self.messages.append(self.allocator, .{
+                                    .role = .system,
+                                    .content = display_content,
+                                    .processed_content = display_processed,
+                                    .thinking_expanded = false,
+                                    .timestamp = std.time.milliTimestamp(),
+                                });
+
+                                // Receipt printer mode: auto-scroll to show tool results
+                                if (!self.user_scrolled_away) {
+                                    try self.maintainBottomAnchor();
+                                }
+                                _ = try message_renderer.redrawScreen(self);
+                                if (!self.user_scrolled_away) {
+                                    self.updateCursorToBottom();
+                                }
+
+                                // Create model-facing result (JSON for LLM)
+                                const tool_id_copy = if (tool_call.id) |id|
+                                    try self.allocator.dupe(u8, id)
+                                else
+                                    try std.fmt.allocPrint(self.allocator, "call_{d}", .{call_idx});
+
+                                const model_result = if (result.success and result.data != null)
+                                    try self.allocator.dupe(u8, result.data.?)
+                                else
+                                    try result.toJSON(self.allocator);
+
+                                const result_processed = try markdown.processMarkdown(self.allocator, model_result);
+
+                                try self.messages.append(self.allocator, .{
+                                    .role = .tool,
+                                    .content = model_result,
+                                    .processed_content = result_processed,
+                                    .thinking_expanded = false,
+                                    .timestamp = std.time.milliTimestamp(),
+                                    .tool_call_id = tool_id_copy,
+                                });
+
+                                // Receipt printer mode: auto-scroll to show tool result
+                                if (!self.user_scrolled_away) {
+                                    try self.maintainBottomAnchor();
+                                }
+                                _ = try message_renderer.redrawScreen(self);
+                                if (!self.user_scrolled_away) {
+                                    self.updateCursorToBottom();
+                                }
+
+                                // Tell executor to advance to next tool
+                                self.tool_executor.advanceAfterExecution();
+                            }
+                        } else {
+                            // Just redraw for other states
                             if (!self.user_scrolled_away) {
                                 try self.maintainBottomAnchor();
                             }
-
-                            // Redraw to show the display message
                             _ = try message_renderer.redrawScreen(self);
-
                             if (!self.user_scrolled_away) {
                                 self.updateCursorToBottom();
                             }
-
-                            // Create model-facing result (JSON for LLM)
-                            const tool_id_copy = if (tool_call.id) |id|
-                                try self.allocator.dupe(u8, id)
-                            else
-                                try std.fmt.allocPrint(self.allocator, "call_{d}", .{call_idx});
-
-                            // For success: send unwrapped data directly (e.g., {"id": 1})
-                            // For errors: send full ToolResult for structured error handling
-                            const model_result = if (result.success and result.data != null)
-                                try self.allocator.dupe(u8, result.data.?)
-                            else
-                                try result.toJSON(self.allocator);
-
-                            const result_processed = try markdown.processMarkdown(self.allocator, model_result);
-
-                            try self.messages.append(self.allocator, .{
-                                .role = .tool,
-                                .content = model_result,
-                                .processed_content = result_processed,
-                                .thinking_expanded = false,
-                                .timestamp = std.time.milliTimestamp(),
-                                .tool_call_id = tool_id_copy,
-                            });
-
-                            // Receipt printer mode: auto-scroll to show tool result
-                            // UNLESS user has manually scrolled away
-                            if (!self.user_scrolled_away) {
-                                try self.maintainBottomAnchor();
-                            }
-
-                            _ = try message_renderer.redrawScreen(self);
-
-                            if (!self.user_scrolled_away) {
-                                self.updateCursorToBottom();
-                            }
-
-                            // Move to next tool
-                            pending.current_index += 1;
                         }
-                    } else {
-                        // Tool not registered
-                        try self.permission_manager.audit_logger.log(
-                            tool_call.function.name,
-                            tool_call.function.arguments,
-                            .failed_validation,
-                            "Tool not registered",
-                            false,
-                        );
-                        pending.current_index += 1;
-                    }
-                } else {
-                    // All tools executed - check iteration limit before continuing
-                    self.state.iteration_count += 1;
+                    },
 
-                    // Reset tool call depth for next iteration (allows fresh tool calls)
-                    self.tool_call_depth = 0;
+                    .iteration_complete => {
+                        // All tools executed - increment iteration and continue streaming
+                        self.state.iteration_count += 1;
+                        self.tool_call_depth = 0; // Reset for next iteration
 
-                    if (self.state.iteration_count >= self.max_iterations) {
-                        // Max iterations reached - stop loop
+                        if (!self.user_scrolled_away) {
+                            try self.maintainBottomAnchor();
+                        }
+                        _ = try message_renderer.redrawScreen(self);
+                        if (!self.user_scrolled_away) {
+                            self.updateCursorToBottom();
+                        }
+
+                        try self.startStreaming(null);
+                    },
+
+                    .iteration_limit_reached => {
+                        // Max iterations reached - stop master loop
                         const msg = try std.fmt.allocPrint(
                             self.allocator,
                             "⚠️  Reached maximum iteration limit ({d}). Stopping master loop to prevent infinite execution.",
@@ -904,7 +762,6 @@ pub const App = struct {
                             .timestamp = std.time.milliTimestamp(),
                         });
 
-                        self.pending_tool_execution = null;
                         if (!self.user_scrolled_away) {
                             try self.maintainBottomAnchor();
                         }
@@ -912,19 +769,7 @@ pub const App = struct {
                         if (!self.user_scrolled_away) {
                             self.updateCursorToBottom();
                         }
-                    } else {
-                        // Continue conversation - inject task context and restart streaming
-                        self.pending_tool_execution = null;
-                        if (!self.user_scrolled_away) {
-                            try self.maintainBottomAnchor();
-                        }
-                        _ = try message_renderer.redrawScreen(self);
-                        if (!self.user_scrolled_away) {
-                            self.updateCursorToBottom();
-                        }
-
-                        try self.startStreaming(null);
-                    }
+                    },
                 }
             }
 
@@ -1010,13 +855,10 @@ pub const App = struct {
                                     }
                                 }
 
-                                // Store tool calls for execution in main loop (non-blocking)
-                                self.pending_tool_execution = .{
-                                    .tool_calls = tool_calls,
-                                    .current_index = 0,
-                                };
+                                // Start tool executor with new tool calls
+                                self.tool_executor.startExecution(tool_calls);
 
-                                // Don't execute here - will be handled in main loop
+                                // Re-lock mutex before continuing
                                 self.stream_mutex.lock();
                             }
                         }
@@ -1133,7 +975,7 @@ pub const App = struct {
             }
 
             // If streaming is active OR tools are executing, don't block - continue main loop to process chunks/tools
-            if (self.streaming_active or self.pending_tool_execution != null) {
+            if (self.streaming_active or self.tool_executor.hasPendingWork()) {
                 // Read input non-blocking
                 var read_buffer: [128]u8 = undefined;
                 const bytes_read = ui.c.read(ui.c.STDIN_FILENO, &read_buffer, read_buffer.len);

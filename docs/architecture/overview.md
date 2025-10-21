@@ -81,11 +81,12 @@ pub const App = struct {
     config: Config,
     messages: ArrayList(Message),
     streaming_active: bool,
-    pending_tool_execution: ?[]ollama.ToolCall,
+    tool_executor: ToolExecutor,  // State machine for async tool execution
     tool_call_depth: usize,
     max_tool_depth: usize,
     state: AppState,  // Task management
     app_context: AppContext,  // Tool execution context
+    permission_manager: PermissionManager,
     // ... UI state ...
 };
 ```
@@ -157,7 +158,29 @@ Raw Text → Lexer (lexer.zig) → Tokens → Parser → Rendered Output
 - `medium`: Requires user approval
 - `high`: Requires approval with warning
 
-### 8. Supporting Modules
+### 8. Tool Executor (`tool_executor.zig`) - 358 lines
+**Responsibilities:**
+- Async tool execution state machine
+- Permission flow orchestration
+- Iteration limit enforcement
+
+**State Machine:**
+```zig
+pub const ToolExecutionState = enum {
+    idle,              // No tools to execute
+    evaluating_policy, // Checking permissions
+    awaiting_permission, // Waiting for user
+    executing,         // Tool being executed
+    completed,         // Batch complete
+};
+```
+
+**Command Pattern:**
+- Returns `TickResult` actions to App
+- App responds to: `show_permission_prompt`, `render_requested`, `iteration_complete`
+- Non-blocking: tick() never blocks, just advances state
+
+### 9. Supporting Modules
 
 **`config.zig` (344 lines):**
 - Configuration file management
@@ -215,26 +238,56 @@ Tool calls detected?
    └─ No → Stream complete
 ```
 
-### Tool Execution Flow
+### Tool Execution Flow (State Machine)
 
 ```
-Model requests tool
+Model requests tool calls (streaming done)
    ↓
-Check permission system
-   ├─ Denied → Return error to model
-   └─ Approved ↓
-Execute tool function
+tool_executor.startExecution(calls)
    ↓
-Generate ToolResult (structured JSON)
+┌─────────────────────────────────────────┐
+│  ToolExecutor State Machine (tick())   │
+│                                         │
+│  idle → evaluating_policy               │
+│          ↓                              │
+│         Check metadata & validate args  │
+│          ↓                              │
+│         Evaluate permission policy      │
+│          ↓                              │
+│    ┌────┴────┐                          │
+│    │ Allowed? │                         │
+│    └─┬────┬──┘                          │
+│   Yes│    │No (ask_user)                │
+│      │    ↓                             │
+│      │  awaiting_permission             │
+│      │    ↓                             │
+│      │  [User responds]                 │
+│      │    ↓                             │
+│      └──→ executing                     │
+│            ↓                            │
+│       [App executes tool]               │
+│            ↓                            │
+│       Next tool (loop)                  │
+│            ↓                            │
+│         completed                       │
+│            ↓                            │
+│    Check iteration limit                │
+│    ┌──────┴──────┐                      │
+│    │ < max_iter? │                      │
+│    └─┬─────────┬─┘                      │
+│   Yes│         │No                      │
+│      ↓         ↓                        │
+│  Continue   Stop                        │
+└─────────────────────────────────────────┘
    ↓
-Create two messages:
-   ├─ System message (user display)
-   └─ Tool message (model consumption)
-   ↓
-Add to history
-   ↓
-Auto-continue streaming
+Auto-continue streaming (next iteration)
 ```
+
+**State Machine Benefits:**
+- Non-blocking: tick() returns immediately
+- Clear state: Always know where we are in execution
+- Separation: Permission logic isolated from App
+- Testable: State transitions can be unit tested
 
 ## Threading Model
 
