@@ -15,7 +15,7 @@ pub fn getDefinition(allocator: std.mem.Allocator) !ToolDefinition {
             .type = "function",
             .function = .{
                 .name = try allocator.dupe(u8, "grep_search"),
-                .description = try allocator.dupe(u8, "Search files for text pattern. Simple patterns do substring search (e.g., 'zigmark' finds '**ZigMark**'). Use * for wildcards (e.g., 'fn*init'). Always case-insensitive, respects .gitignore, and skips binary files."),
+                .description = try allocator.dupe(u8, "Search files for text patterns with flexible options. Supports wildcards (*), file filtering, and searching hidden/ignored files. Default: case-insensitive, respects .gitignore, skips .git and hidden dirs. Use include_hidden=true or ignore_gitignore=true for deeper searches."),
                 .parameters = try allocator.dupe(u8,
                     \\{
                     \\  "type": "object",
@@ -27,6 +27,18 @@ pub fn getDefinition(allocator: std.mem.Allocator) !ToolDefinition {
                     \\    "file_filter": {
                     \\      "type": "string",
                     \\      "description": "Optional: limit to files matching glob (e.g., '*.zig', '**/*.md')"
+                    \\    },
+                    \\    "max_results": {
+                    \\      "type": "integer",
+                    \\      "description": "Optional: max results to return (default: 200, max: 1000)"
+                    \\    },
+                    \\    "include_hidden": {
+                    \\      "type": "boolean",
+                    \\      "description": "Optional: search hidden directories like .config (default: false, always skips .git)"
+                    \\    },
+                    \\    "ignore_gitignore": {
+                    \\      "type": "boolean",
+                    \\      "description": "Optional: search files normally excluded by .gitignore (default: false)"
                     \\    }
                     \\  },
                     \\  "required": ["pattern"]
@@ -36,8 +48,8 @@ pub fn getDefinition(allocator: std.mem.Allocator) !ToolDefinition {
         },
         .permission_metadata = .{
             .name = "grep_search",
-            .description = "Search files in project",
-            .risk_level = .safe, // Auto-approve like get_file_tree
+            .description = "Search files in project (with optional hidden/gitignore bypass)",
+            .risk_level = .low, // Ask once per session due to powerful flags
             .required_scopes = &.{.read_files},
             .validator = validate,
         },
@@ -54,9 +66,11 @@ const SearchResult = struct {
 const SearchContext = struct {
     allocator: std.mem.Allocator,
     pattern: []const u8,
-    smart_case: bool,
+    case_insensitive: bool,
     max_results: usize,
     file_filter: ?[]const u8,
+    include_hidden: bool,
+    ignore_gitignore: bool,
     gitignore_patterns: std.ArrayListUnmanaged([]const u8),
     results: std.ArrayListUnmanaged(SearchResult),
     files_searched: usize,
@@ -72,6 +86,9 @@ fn execute(allocator: std.mem.Allocator, arguments: []const u8, context: *AppCon
     const Args = struct {
         pattern: []const u8,
         file_filter: ?[]const u8 = null,
+        max_results: ?usize = null,
+        include_hidden: ?bool = null,
+        ignore_gitignore: ?bool = null,
     };
 
     const parsed = std.json.parseFromSlice(Args, allocator, arguments, .{}) catch {
@@ -86,18 +103,25 @@ fn execute(allocator: std.mem.Allocator, arguments: []const u8, context: *AppCon
         return ToolResult.err(allocator, .validation_failed, "Pattern cannot be empty", start_time);
     }
 
+    // Apply defaults with validation
+    const max_results = if (args.max_results) |mr| @min(mr, 1000) else 200;
+    const include_hidden = args.include_hidden orelse false;
+    const ignore_gitignore = args.ignore_gitignore orelse false;
+
     // Always use case-insensitive search
     // This ensures searches work regardless of the case used in the pattern
     // e.g., searching for "potato", "Potato", or "POTATO" will all find any case variation
-    const smart_case = true;
+    const case_insensitive = true;
 
     // Initialize search context
     var search_ctx = SearchContext{
         .allocator = allocator,
         .pattern = args.pattern,
-        .smart_case = smart_case,
-        .max_results = 100, // Internal default
+        .case_insensitive = case_insensitive,
+        .max_results = max_results,
         .file_filter = args.file_filter,
+        .include_hidden = include_hidden,
+        .ignore_gitignore = ignore_gitignore,
         .gitignore_patterns = .{},
         .results = .{},
         .files_searched = 0,
@@ -179,16 +203,30 @@ fn searchDirectory(ctx: *SearchContext, dir: std.fs.Dir, rel_path: []const u8) !
             try std.fmt.allocPrint(ctx.allocator, "{s}/{s}", .{ rel_path, entry.name });
         defer ctx.allocator.free(entry_path);
 
-        // Check if ignored
-        if (isIgnored(ctx, entry_path)) {
+        // Check if ignored (only if respecting gitignore)
+        if (!ctx.ignore_gitignore and isIgnored(ctx, entry_path)) {
             ctx.files_skipped += 1;
             continue;
         }
 
         switch (entry.kind) {
             .directory => {
-                // Skip hidden directories
-                if (entry.name[0] == '.') {
+                // Always skip VCS directories
+                const vcs_dirs = [_][]const u8{ ".git", ".hg", ".svn", ".bzr" };
+                var should_skip_vcs = false;
+                for (vcs_dirs) |vcs| {
+                    if (std.mem.eql(u8, entry.name, vcs)) {
+                        should_skip_vcs = true;
+                        break;
+                    }
+                }
+                if (should_skip_vcs) {
+                    ctx.files_skipped += 1;
+                    continue;
+                }
+
+                // Skip other hidden directories unless include_hidden is true
+                if (entry.name[0] == '.' and !ctx.include_hidden) {
                     ctx.files_skipped += 1;
                     continue;
                 }
@@ -258,11 +296,17 @@ fn matchesPattern(ctx: *SearchContext, line: []const u8) bool {
     const has_wildcard = std.mem.indexOf(u8, ctx.pattern, "*") != null;
 
     if (has_wildcard) {
-        // Pattern has * wildcards - use wildcard matching
-        return matchesWildcard(line, ctx.pattern, ctx.smart_case);
+        // Pattern has * wildcards - try matching at each position in line (grep-like substring behavior)
+        var i: usize = 0;
+        while (i <= line.len) : (i += 1) {
+            if (matchesWildcard(line[i..], ctx.pattern, ctx.case_insensitive)) {
+                return true;
+            }
+        }
+        return false;
     } else {
         // Simple pattern - do substring search
-        if (ctx.smart_case) {
+        if (ctx.case_insensitive) {
             return indexOfIgnoreCase(line, ctx.pattern) != null;
         } else {
             return std.mem.indexOf(u8, line, ctx.pattern) != null;
@@ -304,7 +348,9 @@ fn matchesWildcard(text: []const u8, pattern: []const u8, case_insensitive: bool
         pat_idx += 1;
     }
 
-    return pat_idx == pattern.len and text_idx == text.len;
+    // For grep-like substring matching, pattern just needs to be fully consumed
+    // (trailing text after the match is okay)
+    return pat_idx == pattern.len;
 }
 
 fn indexOfIgnoreCase(haystack: []const u8, needle: []const u8) ?usize {
@@ -352,7 +398,14 @@ fn matchesGitignorePattern(path: []const u8, pattern: []const u8) bool {
         return std.mem.endsWith(u8, path, pattern[1..]);
     }
 
-    // Exact filename match (anywhere in path)
+    // Exact filename match - check basename to avoid false positives
+    // (e.g., pattern "node" shouldn't match "node_modules" or "components")
+    if (std.mem.indexOf(u8, pattern, "*") == null and std.mem.indexOf(u8, pattern, "/") == null) {
+        const basename = std.fs.path.basename(path);
+        return std.mem.eql(u8, basename, pattern);
+    }
+
+    // Fallback: pattern contains path separator or other wildcards
     if (std.mem.indexOf(u8, path, pattern) != null) {
         return true;
     }
@@ -409,11 +462,16 @@ fn formatResults(ctx: *SearchContext, args: anytype) ![]const u8 {
     if (ctx.file_filter) |filter| {
         try writer.print(" in {s} files", .{filter});
     }
-    if (ctx.smart_case) {
+    if (ctx.case_insensitive) {
         try writer.writeAll(" (case-insensitive)");
     } else {
         try writer.writeAll(" (case-sensitive)");
     }
+
+    // Show active special flags
+    if (ctx.include_hidden) try writer.writeAll(" [+hidden]");
+    if (ctx.ignore_gitignore) try writer.writeAll(" [+gitignored]");
+
     try writer.writeAll("\n\n");
 
     if (ctx.results.items.len == 0) {
@@ -455,7 +513,10 @@ fn formatResults(ctx: *SearchContext, args: anytype) ![]const u8 {
     try writer.print(" (searched {d} files, skipped {d} ignored)", .{ ctx.files_searched, ctx.files_skipped });
 
     if (ctx.results.items.len >= ctx.max_results) {
-        try writer.print("\nNote: Result limit ({d}) reached. There may be more matches.", .{ctx.max_results});
+        try writer.print(
+            \\
+            \\⚠️  Result limit ({d}) reached! Refine your pattern or use max_results parameter.
+        , .{ctx.max_results});
     }
 
     try writer.writeAll("\n```");
@@ -467,15 +528,24 @@ fn validate(allocator: std.mem.Allocator, arguments: []const u8) bool {
     const Args = struct {
         pattern: []const u8,
         file_filter: ?[]const u8 = null,
+        max_results: ?usize = null,
+        include_hidden: ?bool = null,
+        ignore_gitignore: ?bool = null,
     };
     const parsed = std.json.parseFromSlice(Args, allocator, arguments, .{}) catch return false;
     defer parsed.deinit();
+    const args = parsed.value;
 
     // Block empty pattern
-    if (parsed.value.pattern.len == 0) return false;
+    if (args.pattern.len == 0) return false;
+
+    // Validate max_results range
+    if (args.max_results) |mr| {
+        if (mr == 0 or mr > 1000) return false;
+    }
 
     // Validate file filter if provided
-    if (parsed.value.file_filter) |filter| {
+    if (args.file_filter) |filter| {
         // Block absolute paths
         if (std.mem.startsWith(u8, filter, "/")) return false;
         // Block directory traversal

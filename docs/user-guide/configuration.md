@@ -20,7 +20,12 @@ This file is automatically created on first run with default values.
   "color_link": "\u001b[36m",
   "color_thinking_header": "\u001b[36m",
   "color_thinking_dim": "\u001b[2m",
-  "color_inline_code_bg": "\u001b[48;5;237m"
+  "color_inline_code_bg": "\u001b[48;5;237m",
+  "graph_rag_enabled": false,
+  "embedding_model": "embeddinggemma:300m",
+  "indexing_model": "qwen3:30b",
+  "max_chunks_in_history": 5,
+  "zvdb_path": ".zodollama/graphrag.zvdb"
 }
 ```
 
@@ -82,6 +87,18 @@ This file is automatically created on first run with default values.
 - `1`: Precise, line-by-line scrolling
 - `3`: Default, balanced
 - `5`: Faster scrolling for large conversations
+
+### GraphRAG Settings
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `graph_rag_enabled` | boolean | `false` | Enable GraphRAG context compression |
+| `embedding_model` | string | `"embeddinggemma:300m"` | Model for vector embeddings |
+| `indexing_model` | string | `"qwen3:30b"` | Model for file analysis |
+| `max_chunks_in_history` | number | `5` | Max entities in summaries |
+| `zvdb_path` | string | `".zodollama/graphrag.zvdb"` | Vector DB path |
+
+GraphRAG builds knowledge graphs of read files in a secondary loop, compressing conversation history by 90%+ while preserving semantics. See [Features Guide](features.md#graphrag-context-compression).
 
 ### Color Settings
 

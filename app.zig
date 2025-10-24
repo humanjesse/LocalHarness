@@ -16,6 +16,12 @@ const config_module = @import("config.zig");
 const render = @import("render.zig");
 const message_renderer = @import("message_renderer.zig");
 const tool_executor_module = @import("tool_executor.zig");
+const zvdb = @import("zvdb/src/zvdb.zig");
+const embeddings_module = @import("embeddings.zig");
+const IndexingQueue = @import("graphrag/indexing_queue.zig").IndexingQueue;
+// TODO: Re-implement with LLM-based indexing
+// const graphrag_indexer = @import("graphrag/indexer.zig");
+const graphrag_query = @import("graphrag/query.zig");
 
 // Re-export types for convenience
 pub const Message = types.Message;
@@ -37,6 +43,8 @@ const StreamThreadContext = struct {
     keep_alive: []const u8,
     num_ctx: usize,
     num_predict: isize,
+    // GraphRAG summaries that need to be freed after thread completes
+    graphrag_summaries: [][]const u8,
 };
 
 // Define available tools for the model
@@ -85,6 +93,10 @@ pub const App = struct {
     max_iterations: usize = 10, // Master loop iteration limit
     // Auto-scroll state (receipt printer mode)
     user_scrolled_away: bool = false, // Tracks if user manually scrolled during streaming
+    // Graph RAG components
+    vector_store: ?*zvdb.HNSW(f32) = null,
+    embedder: ?*embeddings_module.EmbeddingsClient = null,
+    indexing_queue: ?*IndexingQueue = null,
 
     pub fn init(allocator: mem.Allocator, config: Config) !App {
         const tools = try createTools(allocator);
@@ -100,6 +112,82 @@ pub const App = struct {
             // Log error but don't fail - just continue with default policies
             std.debug.print("Warning: Failed to load policies: {}\n", .{err});
         };
+
+        // Initialize Graph RAG components if enabled
+        var vector_store_opt: ?*zvdb.HNSW(f32) = null;
+        var embedder_opt: ?*embeddings_module.EmbeddingsClient = null;
+        var indexing_queue_opt: ?*IndexingQueue = null;
+
+        if (config.graph_rag_enabled) {
+            if (std.posix.getenv("DEBUG_GRAPHRAG")) |_| {
+                std.debug.print("[INIT] Graph RAG enabled, initializing vector store and embedder...\n", .{});
+            }
+
+            // Initialize vector store
+            const vs = allocator.create(zvdb.HNSW(f32)) catch |err| blk: {
+                std.debug.print("Warning: Failed to create vector store: {}\n", .{err});
+                break :blk null;
+            };
+
+            if (vs) |store| {
+                errdefer allocator.destroy(store);
+
+                // Try to load existing index, fall back to creating new one
+                store.* = zvdb.HNSW(f32).load(allocator, config.zvdb_path) catch |err| blk: {
+                    if (err != error.FileNotFound) {
+                        std.debug.print("Warning: Failed to load vector store from {s}: {}\n", .{ config.zvdb_path, err });
+                    }
+                    // Create new index (m=16, ef_construction=200)
+                    break :blk zvdb.HNSW(f32).init(allocator, 16, 200);
+                };
+
+                vector_store_opt = store;
+
+                if (std.posix.getenv("DEBUG_GRAPHRAG")) |_| {
+                    std.debug.print("[INIT] Vector store initialized successfully\n", .{});
+                }
+
+                // Initialize embeddings client
+                const emb = allocator.create(embeddings_module.EmbeddingsClient) catch |err| blk: {
+                    std.debug.print("Warning: Failed to create embeddings client: {}\n", .{err});
+                    break :blk null;
+                };
+
+                if (emb) |client| {
+                    client.* = embeddings_module.EmbeddingsClient.init(allocator, config.ollama_host);
+                    embedder_opt = client;
+
+                    if (std.posix.getenv("DEBUG_GRAPHRAG")) |_| {
+                        std.debug.print("[INIT] Embeddings client initialized (host: {s}, model: {s})\n", .{ config.ollama_host, config.embedding_model });
+                    }
+
+                    // Initialize background indexing infrastructure
+                    const queue = allocator.create(IndexingQueue) catch |err| blk: {
+                        std.debug.print("Warning: Failed to create indexing queue: {}\n", .{err});
+                        break :blk null;
+                    };
+
+                    if (queue) |q| {
+                        q.* = IndexingQueue.init(allocator);
+                        indexing_queue_opt = q;
+
+                        if (std.posix.getenv("DEBUG_GRAPHRAG")) |_| {
+                            std.debug.print("[INIT] Indexing queue initialized\n", .{});
+                        }
+
+                        // Note: We can't spawn the worker thread yet because app_context
+                        // isn't initialized until after App.init() completes
+                        // The thread will be spawned in fixContextPointers() instead
+                    }
+                } else {
+                    // Failed to create embedder - clean up vector store
+                    store.deinit();
+                    allocator.destroy(store);
+                    vector_store_opt = null;
+                }
+            }
+        }
+
 
         var app = App{
             .allocator = allocator,
@@ -117,6 +205,9 @@ pub const App = struct {
             // Phase 1: Initialize state (session-ephemeral)
             .state = AppState.init(allocator),
             .app_context = undefined, // Will be fixed by caller after struct is in final location
+            .vector_store = vector_store_opt,
+            .embedder = embedder_opt,
+            .indexing_queue = indexing_queue_opt,
         };
 
         // Add system prompt
@@ -140,7 +231,13 @@ pub const App = struct {
             .allocator = self.allocator,
             .config = &self.config,
             .state = &self.state,
+            .ollama_client = &self.ollama_client,
+            .vector_store = self.vector_store,
+            .embedder = self.embedder,
+            .indexing_queue = self.indexing_queue,
         };
+
+        // No background worker thread - GraphRAG now runs sequentially after each response
     }
 
 
@@ -238,12 +335,14 @@ pub const App = struct {
         ctx.ollama_client.chatStream(
             ctx.model,
             ctx.messages,
-            true, // Enable thinking
+            ctx.app.config.enable_thinking, // Use config setting
             ctx.format,
             if (ctx.tools.len > 0) ctx.tools else null, // Pass tools to model
             ctx.keep_alive,
             ctx.num_ctx,
             ctx.num_predict,
+            null, // temperature - use model default for main chat
+            null, // repeat_penalty - use model default for main chat
             ctx,
             ChunkCallback.callback,
         ) catch |err| {
@@ -277,6 +376,8 @@ pub const App = struct {
                     ctx.keep_alive,
                     ctx.num_ctx,
                     ctx.num_predict,
+                    null, // temperature - use model default for main chat
+                    null, // repeat_penalty - use model default for main chat
                     ctx,
                     ChunkCallback.callback,
                 ) catch |retry_err| {
@@ -313,6 +414,87 @@ pub const App = struct {
         ctx.app.stream_chunks.append(ctx.allocator, done_chunk) catch return;
     }
 
+    // Helper to detect read_file tool results
+    fn isReadFileResult(content: []const u8) bool {
+        return mem.indexOf(u8, content, "File: ") != null and
+               mem.indexOf(u8, content, "Total lines:") != null;
+    }
+
+    // Helper to extract file path from read_file result
+    fn extractFilePathFromResult(content: []const u8) ?[]const u8 {
+        const file_prefix = "File: ";
+        const start_idx = mem.indexOf(u8, content, file_prefix) orelse return null;
+        const after_prefix = content[start_idx + file_prefix.len ..];
+
+        const end_idx = mem.indexOf(u8, after_prefix, "\n") orelse return null;
+        return after_prefix[0..end_idx];
+    }
+
+    // Compress message history by replacing read_file results with Graph RAG summaries
+    // Tracks allocated summaries in the provided list so caller can free them
+    fn compressMessageHistoryWithTracking(
+        self: *App,
+        messages: []const ollama.ChatMessage,
+        allocated_summaries: *std.ArrayListUnmanaged([]const u8),
+    ) ![]ollama.ChatMessage {
+        // Skip compression if Graph RAG is disabled or not initialized
+        if (!self.config.graph_rag_enabled or self.vector_store == null) {
+            return try self.allocator.dupe(ollama.ChatMessage, messages);
+        }
+
+        var compressed = std.ArrayListUnmanaged(ollama.ChatMessage){};
+        errdefer compressed.deinit(self.allocator);
+
+        for (messages) |msg| {
+            // Check if this is a tool result from read_file
+            if (mem.eql(u8, msg.role, "tool") and isReadFileResult(msg.content)) {
+                // Extract file path from content
+                const file_path = extractFilePathFromResult(msg.content) orelse {
+                    // Can't extract path, keep original
+                    try compressed.append(self.allocator, msg);
+                    continue;
+                };
+
+                // Check if file was indexed
+                if (!self.state.wasFileIndexed(file_path)) {
+                    // Not indexed, keep original
+                    try compressed.append(self.allocator, msg);
+                    continue;
+                }
+
+                // Try to generate Graph RAG summary
+                const summary_opt = graphrag_query.summarizeFileForHistory(
+                    self.allocator,
+                    self.vector_store.?,
+                    file_path,
+                    self.config.max_chunks_in_history,
+                ) catch |err| blk: {
+                    // Fallback to simple summary on error
+                    std.debug.print("Warning: Graph RAG summarization failed: {}\n", .{err});
+                    break :blk graphrag_query.createFallbackSummary(self.allocator, file_path, msg.content) catch null;
+                };
+
+                if (summary_opt) |summary| {
+                    // Track this allocation so caller can free it
+                    try allocated_summaries.append(self.allocator, summary);
+
+                    // Replace content with summary
+                    var compressed_msg = msg;
+                    compressed_msg.content = summary;
+                    try compressed.append(self.allocator, compressed_msg);
+                } else {
+                    // Ultimate fallback: keep original
+                    try compressed.append(self.allocator, msg);
+                }
+            } else {
+                // Keep other messages as-is
+                try compressed.append(self.allocator, msg);
+            }
+        }
+
+        return compressed.toOwnedSlice(self.allocator);
+    }
+
     // Internal method to start streaming with current message history
     fn startStreaming(self: *App, format: ?[]const u8) !void {
         // Set streaming flag FIRST - before any redraws
@@ -322,9 +504,12 @@ pub const App = struct {
         // Reset tool call depth when starting a new user message
         // (This will be set correctly by continueStreaming for tool calls)
 
-        // Prepare message history for Ollama
+        // Prepare message history for Ollama with GraphRAG compression
         var ollama_messages = std.ArrayListUnmanaged(ollama.ChatMessage){};
         defer ollama_messages.deinit(self.allocator);
+
+        // Track allocated summaries - will be transferred to thread context
+        var allocated_summaries = std.ArrayListUnmanaged([]const u8){};
 
         for (self.messages.items) |msg| {
             // Skip system messages when sending to API (they're for display only)
@@ -348,6 +533,19 @@ pub const App = struct {
                 .tool_call_id = msg.tool_call_id,
                 .tool_calls = msg.tool_calls,
             });
+        }
+
+        // Apply GraphRAG compression to replace read_file results with summaries
+        if (self.config.graph_rag_enabled and self.vector_store != null) {
+            const compressed_messages = try self.compressMessageHistoryWithTracking(
+                ollama_messages.items,
+                &allocated_summaries,
+            );
+            defer self.allocator.free(compressed_messages);
+
+            // Replace ollama_messages with compressed version
+            ollama_messages.clearRetainingCapacity();
+            try ollama_messages.appendSlice(self.allocator, compressed_messages);
         }
 
         // DEBUG: Print what we're sending to the API
@@ -392,6 +590,7 @@ pub const App = struct {
 
         // Prepare thread context
         const messages_slice = try ollama_messages.toOwnedSlice(self.allocator);
+        const summaries_slice = try allocated_summaries.toOwnedSlice(self.allocator);
 
         const thread_ctx = try self.allocator.create(StreamThreadContext);
         thread_ctx.* = .{
@@ -405,6 +604,7 @@ pub const App = struct {
             .keep_alive = self.config.model_keep_alive,
             .num_ctx = self.config.num_ctx,
             .num_predict = self.config.num_predict,
+            .graphrag_summaries = summaries_slice,
         };
 
         // Start streaming in background thread
@@ -500,7 +700,229 @@ pub const App = struct {
         return try tools_module.executeToolCall(self.allocator, tool_call, &self.app_context);
     }
 
+    // Process pending Graph RAG indexing in background (post-response)
+    // User can press any key to skip and continue chatting
+    fn processPendingIndexing(self: *App) !void {
+        const total_files = self.state.pending_index_files.items.len;
+        if (total_files == 0) return;
+
+        // Show initial status
+        const start_msg = try std.fmt.allocPrint(
+            self.allocator,
+            "📊 Indexing {d} pending file{s}... (press any key to skip)",
+            .{ total_files, if (total_files == 1) "" else "s" },
+        );
+        defer self.allocator.free(start_msg);
+
+        const start_processed = try markdown.processMarkdown(self.allocator, start_msg);
+        try self.messages.append(self.allocator, .{
+            .role = .system,
+            .content = try self.allocator.dupe(u8, start_msg),
+            .processed_content = start_processed,
+            .thinking_expanded = false,
+            .timestamp = std.time.milliTimestamp(),
+        });
+
+        // Redraw to show message
+        if (!self.user_scrolled_away) {
+            try self.maintainBottomAnchor();
+        }
+        _ = try message_renderer.redrawScreen(self);
+        if (!self.user_scrolled_away) {
+            self.updateCursorToBottom();
+        }
+
+        const indexed_count: usize = 0; // TODO: Will be used when LLM indexer is implemented
+        var skipped_count: usize = 0;
+
+        // Process each file in queue
+        while (self.state.popPendingIndexFile()) |pending| {
+            defer {
+                self.allocator.free(pending.path);
+                self.allocator.free(pending.content);
+            }
+
+            // Check for user input (non-blocking) - any key skips indexing
+            var read_buffer: [128]u8 = undefined;
+            const bytes_read = ui.c.read(ui.c.STDIN_FILENO, &read_buffer, read_buffer.len);
+            if (bytes_read > 0) {
+                // User pressed a key - stop indexing
+                const remaining = self.state.pending_index_files.items.len;
+
+                // Clear the queue
+                for (self.state.pending_index_files.items) |remaining_file| {
+                    self.allocator.free(remaining_file.path);
+                    self.allocator.free(remaining_file.content);
+                }
+                self.state.pending_index_files.clearRetainingCapacity();
+
+                const skip_msg = try std.fmt.allocPrint(
+                    self.allocator,
+                    "⏭️  Skipped indexing {d} remaining file{s}",
+                    .{ remaining + 1, if (remaining + 1 == 1) "" else "s" },
+                );
+                const skip_processed = try markdown.processMarkdown(self.allocator, skip_msg);
+                try self.messages.append(self.allocator, .{
+                    .role = .system,
+                    .content = skip_msg,
+                    .processed_content = skip_processed,
+                    .thinking_expanded = false,
+                    .timestamp = std.time.milliTimestamp(),
+                });
+
+                // Redraw and return
+                if (!self.user_scrolled_away) {
+                    try self.maintainBottomAnchor();
+                }
+                _ = try message_renderer.redrawScreen(self);
+                if (!self.user_scrolled_away) {
+                    self.updateCursorToBottom();
+                }
+
+                return;
+            }
+
+            // Show progress for current file
+            const progress_msg = try std.fmt.allocPrint(
+                self.allocator,
+                "  Indexing {s}...",
+                .{pending.path},
+            );
+            defer self.allocator.free(progress_msg);
+
+            const progress_processed = try markdown.processMarkdown(self.allocator, progress_msg);
+            try self.messages.append(self.allocator, .{
+                .role = .system,
+                .content = try self.allocator.dupe(u8, progress_msg),
+                .processed_content = progress_processed,
+                .thinking_expanded = false,
+                .timestamp = std.time.milliTimestamp(),
+            });
+
+            // Redraw to show progress
+            if (!self.user_scrolled_away) {
+                try self.maintainBottomAnchor();
+            }
+            _ = try message_renderer.redrawScreen(self);
+            if (!self.user_scrolled_away) {
+                self.updateCursorToBottom();
+            }
+
+            // TODO: Re-implement with LLM-based indexing
+            // Perform indexing
+            //if (self.vector_store != null and self.embedder != null) {
+            //    const num_chunks = graphrag_indexer.indexFile(
+            //        self.allocator,
+            //        self.vector_store.?,
+            //        self.embedder.?,
+            //        pending.path,
+            //        pending.content,
+            //        self.config.embedding_model,
+            //    ) catch |err| {
+            //        // Indexing failed - show error and skip
+            //        skipped_count += 1;
+            //
+            //        const error_msg = try std.fmt.allocPrint(
+            //            self.allocator,
+            //            "  ✗ Failed to index {s}: {}",
+            //            .{ pending.path, err },
+            //        );
+            //        const error_processed = try markdown.processMarkdown(self.allocator, error_msg);
+            //        try self.messages.append(self.allocator, .{
+            //            .role = .system,
+            //            .content = error_msg,
+            //            .processed_content = error_processed,
+            //            .thinking_expanded = false,
+            //            .timestamp = std.time.milliTimestamp(),
+            //        });
+            //
+            //        // Redraw and continue to next file
+            //        if (!self.user_scrolled_away) {
+            //            try self.maintainBottomAnchor();
+            //        }
+            //        _ = try message_renderer.redrawScreen(self);
+            //        if (!self.user_scrolled_away) {
+            //            self.updateCursorToBottom();
+            //        }
+            //
+            //        continue;
+            //    };
+            //
+            //    // Success - mark as indexed
+            //    try self.state.markFileAsIndexed(pending.path);
+            //    indexed_count += 1;
+            //
+            //    const success_msg = try std.fmt.allocPrint(
+            //        self.allocator,
+            //        "  ✓ Indexed {s} ({d} chunk{s})",
+            //        .{ pending.path, num_chunks, if (num_chunks == 1) "" else "s" },
+            //    );
+            //    const success_processed = try markdown.processMarkdown(self.allocator, success_msg);
+            //    try self.messages.append(self.allocator, .{
+            //        .role = .system,
+            //        .content = success_msg,
+            //        .processed_content = success_processed,
+            //        .thinking_expanded = false,
+            //        .timestamp = std.time.milliTimestamp(),
+            //    });
+            //
+            //    // Redraw to show success
+            //    if (!self.user_scrolled_away) {
+            //        try self.maintainBottomAnchor();
+            //    }
+            //    _ = try message_renderer.redrawScreen(self);
+            //    if (!self.user_scrolled_away) {
+            //        self.updateCursorToBottom();
+            //    }
+            //}
+            if (self.vector_store != null and self.embedder != null) {
+                // Temporary: skip indexing until LLM-based indexer is implemented
+                skipped_count += 1;
+            } else {
+                skipped_count += 1;
+            }
+        }
+
+        // Show completion summary
+        const summary_msg = if (skipped_count > 0)
+            try std.fmt.allocPrint(
+                self.allocator,
+                "✅ Indexing complete ({d} indexed, {d} skipped)",
+                .{ indexed_count, skipped_count },
+            )
+        else
+            try std.fmt.allocPrint(
+                self.allocator,
+                "✅ Indexing complete ({d} file{s} indexed)",
+                .{ indexed_count, if (indexed_count == 1) "" else "s" },
+            );
+
+        const summary_processed = try markdown.processMarkdown(self.allocator, summary_msg);
+        try self.messages.append(self.allocator, .{
+            .role = .system,
+            .content = summary_msg,
+            .processed_content = summary_processed,
+            .thinking_expanded = false,
+            .timestamp = std.time.milliTimestamp(),
+        });
+
+        // Final redraw
+        if (!self.user_scrolled_away) {
+            try self.maintainBottomAnchor();
+        }
+        _ = try message_renderer.redrawScreen(self);
+        if (!self.user_scrolled_away) {
+            self.updateCursorToBottom();
+        }
+    }
+
     pub fn deinit(self: *App) void {
+        // Clean up indexing queue
+        if (self.indexing_queue) |queue| {
+            queue.deinit();
+            self.allocator.destroy(queue);
+        }
+
         // Wait for streaming thread to finish if active
         if (self.stream_thread) |thread| {
             thread.join();
@@ -596,6 +1018,235 @@ pub const App = struct {
 
         // Phase 1: Clean up state
         self.state.deinit();
+
+        // Clean up Graph RAG components
+        if (self.vector_store) |vs| {
+            // Save index to disk before cleanup
+            vs.save(self.config.zvdb_path) catch |err| {
+                std.debug.print("Warning: Failed to save vector store: {}\n", .{err});
+            };
+            vs.deinit();
+            self.allocator.destroy(vs);
+        }
+
+        if (self.embedder) |emb| {
+            emb.deinit();
+            self.allocator.destroy(emb);
+        }
+    }
+
+    /// Progress callback context for GraphRAG indexing
+    const IndexingProgressContext = struct {
+        app: *App,
+        current_message_idx: ?usize = null, // Track which message to update
+        accumulated_content: std.ArrayListUnmanaged(u8) = .{},
+    };
+
+    /// Progress callback for GraphRAG indexing - updates UI with streaming content
+    fn indexingProgressCallback(user_data: *anyopaque, update_type: @import("graphrag/llm_indexer.zig").ProgressUpdateType, message: []const u8) void {
+        const ctx = @as(*IndexingProgressContext, @ptrCast(@alignCast(user_data)));
+
+        // Accumulate the message content
+        ctx.accumulated_content.appendSlice(ctx.app.allocator, message) catch return;
+
+        // Find or create the progress message
+        if (ctx.current_message_idx == null) {
+            // Create new system message for this indexing progress
+            const content = ctx.app.allocator.dupe(u8, ctx.accumulated_content.items) catch return;
+            const processed = markdown.processMarkdown(ctx.app.allocator, content) catch return;
+
+            ctx.app.messages.append(ctx.app.allocator, .{
+                .role = .system,
+                .content = content,
+                .processed_content = processed,
+                .thinking_expanded = false,
+                .timestamp = std.time.milliTimestamp(),
+            }) catch return;
+
+            ctx.current_message_idx = ctx.app.messages.items.len - 1;
+        } else {
+            // Update existing message
+            const idx = ctx.current_message_idx.?;
+            var msg = &ctx.app.messages.items[idx];
+
+            // Free old content
+            ctx.app.allocator.free(msg.content);
+            for (msg.processed_content.items) |*item| {
+                item.deinit(ctx.app.allocator);
+            }
+            msg.processed_content.deinit(ctx.app.allocator);
+
+            // Update with new content
+            msg.content = ctx.app.allocator.dupe(u8, ctx.accumulated_content.items) catch return;
+            msg.processed_content = markdown.processMarkdown(ctx.app.allocator, msg.content) catch return;
+        }
+
+        // Redraw screen to show progress
+        if (!ctx.app.user_scrolled_away) {
+            ctx.app.maintainBottomAnchor() catch return;
+        }
+        _ = message_renderer.redrawScreen(ctx.app) catch return;
+        if (!ctx.app.user_scrolled_away) {
+            ctx.app.updateCursorToBottom();
+        }
+
+        _ = update_type; // Unused for now, but available for future formatting
+    }
+
+    /// SECONDARY LOOP: Process all queued files for GraphRAG indexing
+    ///
+    /// This is the Graph RAG "secondary loop" that runs AFTER the main conversation
+    /// turn completes. It processes files queued by read_file during tool execution.
+    ///
+    /// Flow:
+    /// 1. Main loop: User asks question → LLM responds → Tools execute → read_file queues files
+    /// 2. Main loop: Response completes (no more tool calls)
+    /// 3. Secondary loop: THIS FUNCTION runs to process the queue
+    /// 4. For each file: LLM analyzes → Creates graph → Embeds → Stores in vector DB
+    /// 5. Return to idle state (waiting for next user message)
+    ///
+    /// This separation ensures:
+    /// - Main loop stays responsive (no blocking during conversation)
+    /// - Graph RAG processing is batched and efficient
+    /// - User sees clear progress updates during indexing
+    fn processQueuedFiles(self: *App) !void {
+        if (std.posix.getenv("DEBUG_GRAPHRAG")) |_| {
+            std.debug.print("[GRAPHRAG] processQueuedFiles called\n", .{});
+        }
+
+        const queue = self.indexing_queue orelse {
+            if (std.posix.getenv("DEBUG_GRAPHRAG")) |_| {
+                std.debug.print("[GRAPHRAG] No indexing queue available\n", .{});
+            }
+            return;
+        };
+
+        if (queue.isEmpty()) {
+            if (std.posix.getenv("DEBUG_GRAPHRAG")) |_| {
+                std.debug.print("[GRAPHRAG] Queue is empty\n", .{});
+            }
+            return; // Nothing to process
+        }
+
+        const count = queue.size();
+        const llm_indexer = @import("graphrag/llm_indexer.zig");
+
+        // Show user we're indexing
+        const indexing_msg = try std.fmt.allocPrint(
+            self.allocator,
+            "\n🔍 Indexing {d} file{s}...",
+            .{ count, if (count == 1) "" else "s" },
+        );
+        const indexing_processed = try markdown.processMarkdown(self.allocator, indexing_msg);
+        try self.messages.append(self.allocator, .{
+            .role = .system,
+            .content = indexing_msg,
+            .processed_content = indexing_processed,
+            .thinking_expanded = false,
+            .timestamp = std.time.milliTimestamp(),
+        });
+
+        // Redraw to show indexing message
+        if (!self.user_scrolled_away) {
+            try self.maintainBottomAnchor();
+        }
+        _ = try message_renderer.redrawScreen(self);
+        if (!self.user_scrolled_away) {
+            self.updateCursorToBottom();
+        }
+
+        // Drain all tasks from queue
+        const tasks = try queue.drainAll();
+        defer {
+            for (tasks) |*task| task.deinit();
+            self.allocator.free(tasks);
+        }
+
+        // Process each file with main model
+        for (tasks, 1..) |task, i| {
+            const progress_msg = try std.fmt.allocPrint(
+                self.allocator,
+                "  [{d}/{d}] {s}\n",
+                .{ i, tasks.len, task.file_path },
+            );
+            const progress_processed = try markdown.processMarkdown(self.allocator, progress_msg);
+            try self.messages.append(self.allocator, .{
+                .role = .system,
+                .content = progress_msg,
+                .processed_content = progress_processed,
+                .thinking_expanded = false,
+                .timestamp = std.time.milliTimestamp(),
+            });
+
+            // Redraw to show progress
+            if (!self.user_scrolled_away) {
+                try self.maintainBottomAnchor();
+            }
+            _ = try message_renderer.redrawScreen(self);
+            if (!self.user_scrolled_away) {
+                self.updateCursorToBottom();
+            }
+
+            // Set up progress context for streaming updates
+            var progress_ctx = IndexingProgressContext{
+                .app = self,
+            };
+            defer progress_ctx.accumulated_content.deinit(self.allocator);
+
+            // Use main model for indexing with progress callback
+            llm_indexer.indexFile(
+                self.allocator,
+                &self.ollama_client,
+                self.config.model, // Use main model, not indexing_model
+                &self.app_context,
+                task.file_path,
+                task.content,
+                indexingProgressCallback,
+                @ptrCast(&progress_ctx),
+            ) catch |err| {
+                const error_msg = try std.fmt.allocPrint(
+                    self.allocator,
+                    "    ⚠️  Indexing failed: {}",
+                    .{err},
+                );
+                const error_processed = try markdown.processMarkdown(self.allocator, error_msg);
+                try self.messages.append(self.allocator, .{
+                    .role = .system,
+                    .content = error_msg,
+                    .processed_content = error_processed,
+                    .thinking_expanded = false,
+                    .timestamp = std.time.milliTimestamp(),
+                });
+                continue;
+            };
+
+            // Mark file as indexed in state
+            self.state.markFileAsIndexed(task.file_path) catch |err| {
+                if (std.posix.getenv("DEBUG_GRAPHRAG")) |_| {
+                    std.debug.print("[GRAPHRAG] Failed to mark file as indexed: {}\n", .{err});
+                }
+            };
+        }
+
+        // Show completion
+        const complete_msg = try self.allocator.dupe(u8, "✓ Indexing complete\n");
+        const complete_processed = try markdown.processMarkdown(self.allocator, complete_msg);
+        try self.messages.append(self.allocator, .{
+            .role = .system,
+            .content = complete_msg,
+            .processed_content = complete_processed,
+            .thinking_expanded = false,
+            .timestamp = std.time.milliTimestamp(),
+        });
+
+        // Final redraw
+        if (!self.user_scrolled_away) {
+            try self.maintainBottomAnchor();
+        }
+        _ = try message_renderer.redrawScreen(self);
+        if (!self.user_scrolled_away) {
+            self.updateCursorToBottom();
+        }
     }
 
     pub fn run(self: *App, app_tui: *ui.Tui) !void {
@@ -743,6 +1394,11 @@ pub const App = struct {
                             self.updateCursorToBottom();
                         }
 
+                        // NOTE: Do NOT process Graph RAG queue here!
+                        // Queue processing happens only when the entire conversation turn is done,
+                        // not between tool iterations. See line ~1492 where we process after
+                        // streaming completes with no tool calls.
+
                         try self.startStreaming(null);
                     },
 
@@ -803,6 +1459,12 @@ pub const App = struct {
 
                             // Free thread context and its data
                             if (self.stream_thread_ctx) |ctx| {
+                                // Free GraphRAG summaries that were allocated during compression
+                                for (ctx.graphrag_summaries) |summary| {
+                                    self.allocator.free(summary);
+                                }
+                                self.allocator.free(ctx.graphrag_summaries);
+
                                 // Note: msg.role and msg.content are NOT owned by the context
                                 // They are pointers to existing message data, so we only free the array
                                 self.allocator.free(ctx.messages);
@@ -861,6 +1523,28 @@ pub const App = struct {
                                 // Re-lock mutex before continuing
                                 self.stream_mutex.lock();
                             }
+                        } else {
+                            // No tool calls - response is complete
+                            // ==========================================
+                            // SECONDARY LOOP: Process Graph RAG queue
+                            // ==========================================
+                            // This is the ONLY place where Graph RAG indexing runs.
+                            // It processes all files queued by read_file tool during the main loop.
+                            // This ensures indexing happens AFTER the conversation turn is complete,
+                            // keeping the main loop responsive to the user.
+                            if (std.posix.getenv("DEBUG_GRAPHRAG")) |_| {
+                                std.debug.print("[GRAPHRAG] Main loop complete, starting secondary loop...\n", .{});
+                            }
+
+                            self.stream_mutex.unlock();
+
+                            self.processQueuedFiles() catch |err| {
+                                if (std.posix.getenv("DEBUG_GRAPHRAG")) |_| {
+                                    std.debug.print("[GRAPHRAG] Error in secondary loop: {}\n", .{err});
+                                }
+                            };
+
+                            self.stream_mutex.lock();
                         }
                     } else {
                         // Accumulate chunks
@@ -991,6 +1675,12 @@ pub const App = struct {
                 std.Thread.sleep(10 * std.time.ns_per_ms); // 10ms
             } else {
                 // Normal blocking mode when not streaming
+
+                // Process pending Graph RAG indexing during idle time (post-response)
+                if (self.state.hasPendingIndexing()) {
+                    try self.processPendingIndexing();
+                }
+
                 var should_redraw = false;
                 while (!should_redraw) {
                     // Check for resize signal before blocking on input

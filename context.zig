@@ -1,18 +1,20 @@
 // Application context for tool execution
-// Phase 1: Provides config and state access
-// Phase 2+: Will include graph RAG, vector store, embeddings, code parser
 const std = @import("std");
 const state_module = @import("state.zig");
 const config_module = @import("config.zig");
+const zvdb = @import("zvdb/src/zvdb.zig");
+const embeddings = @import("embeddings.zig");
+const ollama = @import("ollama.zig");
+const IndexingQueue = @import("graphrag/indexing_queue.zig").IndexingQueue;
 
 pub const AppContext = struct {
     allocator: std.mem.Allocator,
     config: *const config_module.Config,
     state: *state_module.AppState,
+    ollama_client: *ollama.OllamaClient,
 
-    // Future (Phase 2+): Graph RAG components
-    // graph: ?*ContextGraph = null,
-    // vector_store: ?*VectorStore = null,
-    // embedder: ?*EmbeddingsClient = null,
-    // parser: ?*CodeParser = null,
+    // Graph RAG components (optional - initialized if graph_rag_enabled)
+    vector_store: ?*zvdb.HNSW(f32) = null,
+    embedder: ?*embeddings.EmbeddingsClient = null,
+    indexing_queue: ?*IndexingQueue = null,
 };

@@ -2,6 +2,13 @@
 .zig-cache/
 zig-out/
 
+# ZVDB build artifacts
+zvdb/.zig-cache/
+zvdb/zig-out/
+zvdb/libzvdb.a
+zvdb/check_build
+zvdb/test_zon
+
 # Personal notes
 my_notes/
 
@@ -45,3 +52,16 @@ complete_example.zig
 ollama_client_example.zig
 http_example.zig
 http_post_example_0_15.zig
+
+# GraphRAG vector database file
+.zodollama/graphrag.zvdb
+
+# Test files
+test_insert.txt
+testingdoc.md
+package-lock.json
+
+# ZVDB build artifacts (already covered above but explicit here)
+zvdb/check_build
+zvdb/test_zon
+zvdb/libzvdb.a

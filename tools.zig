@@ -6,11 +6,15 @@ const context_module = @import("context.zig");
 
 // Import all tool modules
 const file_tree = @import("tools/file_tree.zig");
+const ls = @import("tools/ls.zig");
 const read_file = @import("tools/read_file.zig");
+const read_lines = @import("tools/read_lines.zig");
 const write_file = @import("tools/write_file.zig");
 const replace_lines = @import("tools/replace_lines.zig");
+const insert_lines = @import("tools/insert_lines.zig");
 const grep_search = @import("tools/grep_search.zig");
 const current_time = @import("tools/current_time.zig");
+const pwd = @import("tools/pwd.zig");
 const add_task = @import("tools/add_task.zig");
 const list_tasks = @import("tools/list_tasks.zig");
 const update_task = @import("tools/update_task.zig");
@@ -137,11 +141,11 @@ pub const ToolResult = struct {
         if (self.success) {
             try writer.writeAll("Status: ✅ SUCCESS\n");
             if (self.data) |d| {
-                // Truncate large outputs
-                const preview_len = @min(d.len, 500);
+                // Truncate large outputs (increased limit for tree/search results)
+                const preview_len = @min(d.len, 10000);
                 try writer.print("Result: {s}", .{d[0..preview_len]});
-                if (d.len > 500) {
-                    try writer.print("... ({d} more bytes)", .{d.len - 500});
+                if (d.len > 10000) {
+                    try writer.print("... ({d} more bytes)", .{d.len - 10000});
                 }
                 try writer.writeAll("\n");
             }
@@ -190,13 +194,17 @@ pub fn getAllToolDefinitions(allocator: std.mem.Allocator) ![]ToolDefinition {
 
     // File system tools
     try tools.append(allocator, try file_tree.getDefinition(allocator));
+    try tools.append(allocator, try ls.getDefinition(allocator));
     try tools.append(allocator, try read_file.getDefinition(allocator));
+    try tools.append(allocator, try read_lines.getDefinition(allocator));
     try tools.append(allocator, try write_file.getDefinition(allocator));
     try tools.append(allocator, try replace_lines.getDefinition(allocator));
+    try tools.append(allocator, try insert_lines.getDefinition(allocator));
     try tools.append(allocator, try grep_search.getDefinition(allocator));
 
     // System tools
     try tools.append(allocator, try current_time.getDefinition(allocator));
+    try tools.append(allocator, try pwd.getDefinition(allocator));
 
     // Task management tools (Phase 1)
     try tools.append(allocator, try add_task.getDefinition(allocator));

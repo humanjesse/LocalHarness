@@ -104,20 +104,25 @@ code here
 **Available tools:**
 
 #### File System
-- **get_file_tree**: List all files in project
-- **read_file**: Read specific file contents with line numbers
+- **get_file_tree**: List all files in project (recursive)
+- **ls**: List single directory with metadata (size, modified time, type) - supports sorting and filtering
+- **read_file**: Read full file contents with line numbers (triggers GraphRAG indexing)
+- **read_lines**: Read specific line ranges (fast, no indexing - use for quick checks)
 - **write_file**: Create or overwrite files with content
 - **replace_lines**: Replace specific line ranges in existing files
+- **insert_lines**: Insert new content before a specific line in existing files
+- **grep_search**: Search files for text patterns (supports wildcards, hidden dirs, gitignore bypass)
 
 #### System
 - **get_current_time**: Get current date/time
+- **get_working_directory**: Get current working directory path
 
 #### Task Management
 - **add_task**: Create a new task
 - **list_tasks**: View all tasks
 - **update_task**: Update task status
 
-**Example conversation:**
+**Example conversations:**
 ```
 You: "What files are in this project?"
 AI: [Automatically calls get_file_tree]
@@ -125,6 +130,29 @@ AI: [Automatically calls get_file_tree]
     - main.zig
     - ui.zig
     - ollama.zig
+    ...
+
+You: "What's in the tools directory?"
+AI: [Calls ls with path="tools", sort_by="size", reverse=true]
+    Directory: tools/
+    Total: 12 entries (11 files, 1 directory)
+
+    Type  Size     Modified              Name
+    FILE  15.2 KB  2025-10-24 10:15:30   grep_search.zig
+    FILE  4.8 KB   2025-10-24 09:20:15   read_file.zig
+    ...
+
+You: "Find all functions that contain 'init'"
+AI: [Calls grep_search with pattern "fn*init"]
+    Found 12 matches in 5 files:
+    - main.zig:45: pub fn init() !void {
+    - ui.zig:120: fn initColors() void {
+    ...
+
+You: "Search for database config, including hidden files"
+AI: [Calls grep_search with include_hidden=true]
+    Found in .config/settings.conf:
+    - database_config=localhost
     ...
 ```
 
@@ -384,19 +412,66 @@ All tools return JSON with:
 - No keypress needed to trigger execution
 - UI remains responsive
 
+### GraphRAG Context Compression
+
+**What it does:** Automatically builds knowledge graphs of files you read, then uses them to compress conversation history while preserving semantic meaning.
+
+**How it works:**
+
+**Two-loop architecture:**
+1. **Main loop** (fast): read_file returns immediately with full content, queues file for indexing
+2. **Secondary loop** (background): After response completes, LLM analyzes queued files to build knowledge graph
+
+**Knowledge graph construction:**
+- LLM runs 2-iteration agentic loop on each file:
+  - Iteration 1: Extract entities (functions, structs, sections, concepts)
+  - Iteration 2: Create relationships (calls, imports, references, relates_to)
+- Generates embeddings for semantic search
+- Stores in vector database (`.zodollama/graphrag.zvdb`)
+
+**Context compression in action:**
+```
+Without GraphRAG (344 lines of config.zig in history):
+  1→  pub const Config = struct {
+  2→      model: []const u8 = "llama3.2",
+  3→      ollama_host: []const u8 = "http://localhost:11434",
+  ...
+  344→  };
+
+With GraphRAG (5 compact entity summaries):
+  ### Config (struct) [public]
+  Application configuration with model, server settings
+  Relationships: imports ConfigFile, used_by loadConfigFromFile
+
+  ### loadConfigFromFile (function) [public]
+  Loads configuration from JSON file
+  Relationships: returns Config, calls parseJson
+  ...
+```
+
+**Benefits:**
+- Reduces token usage by 90%+ on repeat file references
+- Preserves semantic relationships between code entities
+- Enables longer conversations without hitting context limits
+- AI retains understanding of code structure
+
+**Configuration:**
+- Enable/disable: `graph_rag_enabled` in config
+- Embedding model: `embedding_model` (default: embeddinggemma:300m)
+- Indexing model: `indexing_model` (default: qwen3:30b)
+- Summary size: `max_chunks_in_history` (default: 5 entities)
+
+See [Configuration Guide](configuration.md#graphrag-settings) for details.
+
 ### Context Assembly
 
 **What it does:** AI receives relevant context automatically.
 
-**Current:**
+**Implemented:**
 - Tool results added to conversation history
 - Task list injected before each iteration
-- Model sees full conversation context
-
-**Future (Graph RAG):**
-- Code structure understanding
-- Semantic search
-- Smart context retrieval
+- GraphRAG compresses file content into knowledge graphs
+- Semantic retrieval of top-K relevant entities
 
 ## Performance
 
@@ -447,12 +522,6 @@ All tools return JSON with:
 - Only policies persist
 
 ### Planned Features
-
-**Graph RAG (In Development):**
-- Code graph construction
-- Semantic code search
-- Relationship understanding
-- Context-aware responses
 
 **Advanced File Operations:**
 - Create directories

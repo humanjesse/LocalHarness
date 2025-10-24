@@ -38,10 +38,31 @@ Model Processes Results → Final Answer
 ### File System Tools
 
 #### `get_file_tree`
-- **Description:** Generate file tree of current directory
+- **Description:** Generate file tree of current directory (recursive)
 - **Permission:** Auto-approved (safe, read-only)
 - **Returns:** JSON array of file paths
 - **Use Case:** Understanding project structure
+
+#### `ls`
+- **Description:** List contents of a single directory with detailed metadata
+- **Permission:** Auto-approved (low risk, read-only)
+- **Parameters:**
+  - `path` (string, optional): Directory to list (default: ".")
+  - `show_hidden` (boolean, optional): Include hidden files/directories (default: false)
+  - `sort_by` (string, optional): Sort by "name", "size", or "modified" (default: "name")
+  - `reverse` (boolean, optional): Reverse sort order (default: false)
+  - `max_entries` (integer, optional): Max entries to return (default: 500, max: 1000)
+- **Returns:** Formatted table with file type, size (human-readable), modified timestamp, and name
+- **Features:**
+  - Non-recursive (single directory only)
+  - Rich metadata: type (FILE/DIR/LINK), size in KB/MB/GB, timestamps
+  - Flexible sorting options
+  - Directories shown with trailing `/`
+  - Summary statistics (total files, dirs, total size)
+- **Error Types:** `not_found`, `validation_failed`, `io_error`
+- **Security:** Blocks absolute paths and directory traversal
+- **Use Case:** Quick directory inspection, finding large files, checking timestamps
+- **Example:** `{"path": "tools", "sort_by": "size", "reverse": true}`
 
 #### `read_file`
 - **Description:** Read file contents with line numbers (1-indexed)
@@ -76,6 +97,41 @@ Model Processes Results → Final Answer
 - **Workflow:** First call `read_file` to see line numbers, then call `replace_lines`
 - **Security:** Blocks absolute paths and directory traversal
 
+#### `insert_lines`
+- **Description:** Insert new content before a specific line in existing files using 1-indexed line numbers
+- **Permission:** Requires user approval (high risk)
+- **Parameters:**
+  - `path` (string): File path relative to project root
+  - `line_start` (integer): Line number to insert before (1-indexed). Use N+1 to append to end.
+  - `line_end` (integer): Must equal `line_start` (enforces single insertion point)
+  - `new_content` (string): Content to insert (can contain newlines for multiple lines)
+- **Returns:** Confirmation with insertion location
+- **Error Types:** `not_found`, `validation_failed`, `io_error`
+- **Workflow:** First call `read_file` to see line numbers, then call `insert_lines`
+- **Security:** Blocks absolute paths and directory traversal
+- **Preview:** Shows context lines before/after insertion point with diff-style formatting
+
+#### `grep_search`
+- **Description:** Search files for text patterns with flexible options
+- **Permission:** Ask once per session (low risk)
+- **Parameters:**
+  - `pattern` (string, required): Text to search for (supports `*` wildcards, e.g., `fn*init`)
+  - `file_filter` (string, optional): Limit to files matching glob (e.g., `*.zig`, `**/*.md`)
+  - `max_results` (integer, optional): Max results to return (default: 200, max: 1000)
+  - `include_hidden` (boolean, optional): Search hidden directories like `.config` (default: false, always skips `.git`)
+  - `ignore_gitignore` (boolean, optional): Search files normally excluded by `.gitignore` (default: false)
+- **Returns:** Formatted search results with file paths, line numbers, and matching lines
+- **Features:**
+  - Case-insensitive by default
+  - Wildcard matching as grep-like substring search
+  - Respects `.gitignore` by default (can be bypassed)
+  - Always skips `.git`, `.hg`, `.svn`, `.bzr` directories
+  - Binary file detection and skipping
+  - Output shows active flags: `[+hidden]`, `[+gitignored]`
+- **Error Types:** `validation_failed`, `io_error`, `parse_error`
+- **Use Case:** Finding code patterns, exploring unfamiliar codebases, locating specific functionality
+- **Example:** `{"pattern": "fn*init", "file_filter": "*.zig", "max_results": 50}`
+
 ### System Tools
 
 #### `get_current_time`
@@ -83,6 +139,12 @@ Model Processes Results → Final Answer
 - **Permission:** Auto-approved (safe)
 - **Returns:** ISO 8601 formatted timestamp
 - **Use Case:** Time-aware responses, timestamps
+
+#### `get_working_directory`
+- **Description:** Get current working directory path
+- **Permission:** Auto-approved (safe)
+- **Returns:** Absolute path of current working directory
+- **Use Case:** Understanding filesystem location, providing context for file operations
 
 ### Task Management Tools
 

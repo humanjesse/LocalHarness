@@ -21,6 +21,14 @@ pub const Config = struct {
     color_thinking_header: []const u8 = "\x1b[36m", // Cyan - "Thinking" header
     color_thinking_dim: []const u8 = "\x1b[2m", // Dim - Thinking content
     color_inline_code_bg: []const u8 = "\x1b[48;5;237m", // Grey background - Inline code
+    // Thinking mode
+    enable_thinking: bool = true, // Enable extended thinking mode for complex reasoning
+    // Graph RAG configuration
+    graph_rag_enabled: bool = false, // Enable Graph RAG for code context compression
+    embedding_model: []const u8 = "nomic-embed-text", // Ollama embedding model for vector search
+    indexing_model: []const u8 = "llama3.1:8b", // Model for analyzing files and building graphs (smaller/faster model with reliable tool calling)
+    max_chunks_in_history: usize = 5, // Max number of code chunks to include in compressed history
+    zvdb_path: []const u8 = ".zodollama/graphrag.zvdb", // Path to vector database file
 
     pub fn deinit(self: *Config, allocator: mem.Allocator) void {
         allocator.free(self.ollama_host);
@@ -36,6 +44,9 @@ pub const Config = struct {
         allocator.free(self.color_thinking_header);
         allocator.free(self.color_thinking_dim);
         allocator.free(self.color_inline_code_bg);
+        allocator.free(self.embedding_model);
+        allocator.free(self.indexing_model);
+        allocator.free(self.zvdb_path);
     }
 };
 
@@ -54,6 +65,12 @@ const ConfigFile = struct {
     color_thinking_header: ?[]const u8 = null,
     color_thinking_dim: ?[]const u8 = null,
     color_inline_code_bg: ?[]const u8 = null,
+    enable_thinking: ?bool = null,
+    graph_rag_enabled: ?bool = null,
+    embedding_model: ?[]const u8 = null,
+    indexing_model: ?[]const u8 = null,
+    max_chunks_in_history: ?usize = null,
+    zvdb_path: ?[]const u8 = null,
 };
 
 /// JSON-serializable policy structure
@@ -82,6 +99,11 @@ pub fn loadConfigFromFile(allocator: mem.Allocator) !Config {
         .color_thinking_header = try allocator.dupe(u8, "\x1b[36m"),
         .color_thinking_dim = try allocator.dupe(u8, "\x1b[2m"),
         .color_inline_code_bg = try allocator.dupe(u8, "\x1b[48;5;237m"),
+        .graph_rag_enabled = false,
+        .embedding_model = try allocator.dupe(u8, "embeddinggemma:300m"),
+        .indexing_model = try allocator.dupe(u8, "llama3.1:8b"),
+        .max_chunks_in_history = 5,
+        .zvdb_path = try allocator.dupe(u8, ".zodollama/graphrag.zvdb"),
     };
 
     // Try to get home directory
@@ -120,7 +142,12 @@ pub fn loadConfigFromFile(allocator: mem.Allocator) !Config {
                 \\  "color_link": "\u001b[36m",
                 \\  "color_thinking_header": "\u001b[36m",
                 \\  "color_thinking_dim": "\u001b[2m",
-                \\  "color_inline_code_bg": "\u001b[48;5;237m"
+                \\  "color_inline_code_bg": "\u001b[48;5;237m",
+                \\  "graph_rag_enabled": true,
+                \\  "embedding_model": "embeddinggemma:300m",
+                \\  "indexing_model": "qwen3-coder:30b",
+                \\  "max_chunks_in_history": 5,
+                \\  "zvdb_path": ".zodollama/graphrag.zvdb"
                 \\}
                 \\
             ;
@@ -206,6 +233,33 @@ pub fn loadConfigFromFile(allocator: mem.Allocator) !Config {
     if (parsed.value.color_inline_code_bg) |color_inline_code_bg| {
         allocator.free(config.color_inline_code_bg);
         config.color_inline_code_bg = try allocator.dupe(u8, color_inline_code_bg);
+    }
+
+    if (parsed.value.enable_thinking) |enable_thinking| {
+        config.enable_thinking = enable_thinking;
+    }
+
+    if (parsed.value.graph_rag_enabled) |graph_rag_enabled| {
+        config.graph_rag_enabled = graph_rag_enabled;
+    }
+
+    if (parsed.value.embedding_model) |embedding_model| {
+        allocator.free(config.embedding_model);
+        config.embedding_model = try allocator.dupe(u8, embedding_model);
+    }
+
+    if (parsed.value.indexing_model) |indexing_model| {
+        allocator.free(config.indexing_model);
+        config.indexing_model = try allocator.dupe(u8, indexing_model);
+    }
+
+    if (parsed.value.max_chunks_in_history) |max_chunks_in_history| {
+        config.max_chunks_in_history = max_chunks_in_history;
+    }
+
+    if (parsed.value.zvdb_path) |zvdb_path| {
+        allocator.free(config.zvdb_path);
+        config.zvdb_path = try allocator.dupe(u8, zvdb_path);
     }
 
     return config;

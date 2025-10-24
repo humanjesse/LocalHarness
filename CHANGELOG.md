@@ -2,7 +2,91 @@
 
 All notable changes to ZodoLlama will be documented in this file.
 
-## [Unreleased] - 2025-01-20
+## [Unreleased] - 2025-01-24
+
+### Added
+- **Read Lines Tool** - New `read_lines` tool for fast, targeted file inspection:
+  - **Parameters:**
+    - `path` (string): Relative file path
+    - `start_line` (integer): First line to read (1-indexed)
+    - `end_line` (integer): Last line to read (inclusive)
+  - **Features:**
+    - 500-line maximum range (prevents abuse)
+    - No GraphRAG indexing (instant response)
+    - Risk level: `.low` (read-only, no side effects)
+    - Same line-numbered format as `read_file`
+  - **Use Cases:**
+    - Quick edits when line numbers are known
+    - Following error messages to specific locations
+    - Checking specific functions without full file indexing
+    - Spot checks of file sections
+  - **Smart Errors:**
+    - Out-of-bounds detection: "Line 250 out of range (file has 100 lines)"
+    - Range limit: "Requested 800 lines. Maximum is 500. Use read_file for larger ranges."
+  - **Architecture:**
+    - Does NOT queue for GraphRAG (fast exploration vs full analysis)
+    - Does NOT mark file as "read" for edit_file (safety: require full context)
+    - Suggests `read_file` when appropriate (footer note in output)
+
+### Benefits
+- ✅ **Fast exploration** - Instant results without LLM overhead
+- ✅ **Clear separation** - `read_lines` = exploration, `read_file` = analysis
+- ✅ **Better UX** - Quicker iterations for simple edits
+- ✅ **Resource efficient** - Fewer GraphRAG indexing calls
+
+### Technical Details
+- Created `tools/read_lines.zig` (200 lines)
+- Updated `tools.zig` - Added import and registry entry
+- Follows existing tool patterns (validation, error handling, formatting)
+
+---
+
+## [Unreleased] - 2025-01-23
+
+### Enhanced
+- **Grep Search Tool** - Major improvements for LLM exploration flexibility:
+  - **New Parameters:**
+    - `max_results` (integer, 1-1000): Configurable result limit (default: 200, was 100)
+    - `include_hidden` (boolean): Search hidden directories like `.config`, `.cargo` (always skips `.git`)
+    - `ignore_gitignore` (boolean): Bypass `.gitignore` to search excluded files
+  - **Bug Fixes:**
+    - Fixed wildcard matching to work as grep-like substring search (e.g., `fn*init` now finds `function validateInit()` anywhere in line)
+    - Renamed `smart_case` to `case_insensitive` for clarity (always true)
+    - Fixed gitignore exact matching to avoid false positives (e.g., pattern `node` no longer matches `node_modules`)
+  - **UX Improvements:**
+    - Output header shows active flags: `[+hidden]`, `[+gitignored]`
+    - Better limit-reached feedback with actionable guidance
+    - Enhanced tool description explaining new capabilities
+  - **Permission Changes:**
+    - Risk level changed from `.safe` (auto-approved) to `.low` (ask once per session)
+    - Enhanced validator checks `max_results` range (1-1000)
+  - **VCS Protection:**
+    - Always skips `.git`, `.hg`, `.svn`, `.bzr` directories regardless of flags
+  - **Test Coverage:**
+    - Added comprehensive test suite (`tools/grep_search_test.zig`, 13 test cases)
+    - Tests cover wildcard matching, case insensitivity, gitignore handling, hidden dirs, file filtering, and limits
+
+### Benefits
+- ✅ **LLM Freedom** - Can progressively escalate search depth (normal → +hidden → +gitignore)
+- ✅ **Correctness** - Wildcard matching and gitignore behavior work as expected
+- ✅ **Safety** - User visibility through session approval, VCS dirs always protected
+- ✅ **Clarity** - Clear feedback about what's being searched and which flags are active
+
+### Technical Details
+- Modified `tools/grep_search.zig` (~150 lines changed/added):
+  - Lines 18-46: Updated tool definition and parameters
+  - Lines 66-79: Added new fields to SearchContext
+  - Lines 85-130: Enhanced argument parsing with validation
+  - Lines 206-236: Smart hidden directory handling
+  - Lines 256-316: Fixed wildcard matching logic
+  - Lines 363-376: Improved gitignore pattern matching
+  - Lines 460-520: Enhanced output formatting
+  - Lines 519-548: Enhanced validator with range checks
+- Created `tools/grep_search_test.zig` (300 lines, 13 test cases)
+
+---
+
+## [Previous Release] - 2025-01-20
 
 ### Refactored
 - **Tool Executor State Machine** - Extracted tool execution logic into dedicated state machine module:

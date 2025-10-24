@@ -28,7 +28,8 @@ zig build
 
 - **Real-time streaming** with responsive, non-blocking UI
 - **Markdown rendering** - Code blocks, tables, lists, and emoji
-- **Tool calling** - AI can read/write files, search code, and manage tasks
+- **Tool calling** - 13 tools: read/write/edit files, search code, navigate directories, manage tasks
+- **GraphRAG** - Automatic knowledge graphs compress context (experimental, optional)
 - **Permission system** - Control tool access with persistent policies
 - **Task management** - Track multi-step workflows
 - **Thinking blocks** - See AI reasoning (collapsible with mouse)
@@ -64,7 +65,7 @@ Policies persist in `~/.config/zodollama/policies.json`. Some tools like file tr
 
 Config: `~/.config/zodollama/config.json` (created on first run)
 
-Key options: `model`, `ollama_host`, `num_ctx` (context window), `num_predict` (max tokens), `editor`, `scroll_lines`, and color settings.
+Key options: `model`, `ollama_host`, `num_ctx` (context window), `num_predict` (max tokens), `graph_rag_enabled`, `embedding_model`, `indexing_model`, `editor`, `scroll_lines`, and color settings.
 
 CLI overrides available: `--model`, `--ollama-host`
 
@@ -89,7 +90,7 @@ MIT License
 - Multi-threaded streaming with thread-safe design
 - Flicker-free rendering with smart viewport management
 - Event-driven permission system with async tool execution
-- Modular codebase (~7k lines of Zig across 15 files)
+- Modular codebase (~8k lines of Zig across 17+ modules)
 
 **Markdown:** Headers, emphasis, links, lists, code blocks, tables, emoji
 

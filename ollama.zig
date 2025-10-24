@@ -94,6 +94,8 @@ pub const OllamaClient = struct {
         keep_alive: ?[]const u8,
         num_ctx: ?usize,
         num_predict: ?isize,
+        temperature: ?f32,
+        repeat_penalty: ?f32,
         context: anytype,
         callback: fn (ctx: @TypeOf(context), thinking_chunk: ?[]const u8, content_chunk: ?[]const u8, tool_calls_chunk: ?[]const ToolCall) void,
     ) !void {
@@ -219,7 +221,7 @@ pub const OllamaClient = struct {
         }
 
         // Add options object for context window and generation settings
-        if (num_ctx != null or num_predict != null) {
+        if (num_ctx != null or num_predict != null or temperature != null or repeat_penalty != null) {
             try payload_list.appendSlice(self.allocator, ",\"options\":{");
             var first = true;
 
@@ -237,6 +239,24 @@ pub const OllamaClient = struct {
                 const pred_str = try std.fmt.allocPrint(self.allocator, "{d}", .{pred});
                 defer self.allocator.free(pred_str);
                 try payload_list.appendSlice(self.allocator, pred_str);
+                first = false;
+            }
+
+            if (temperature) |temp| {
+                if (!first) try payload_list.append(self.allocator, ',');
+                try payload_list.appendSlice(self.allocator, "\"temperature\":");
+                const temp_str = try std.fmt.allocPrint(self.allocator, "{d:.2}", .{temp});
+                defer self.allocator.free(temp_str);
+                try payload_list.appendSlice(self.allocator, temp_str);
+                first = false;
+            }
+
+            if (repeat_penalty) |rp| {
+                if (!first) try payload_list.append(self.allocator, ',');
+                try payload_list.appendSlice(self.allocator, "\"repeat_penalty\":");
+                const rp_str = try std.fmt.allocPrint(self.allocator, "{d:.2}", .{rp});
+                defer self.allocator.free(rp_str);
+                try payload_list.appendSlice(self.allocator, rp_str);
             }
 
             try payload_list.append(self.allocator, '}');
@@ -248,7 +268,7 @@ pub const OllamaClient = struct {
         defer self.allocator.free(payload);
 
         // DEBUG: Print the actual request payload
-        if (std.posix.getenv("DEBUG_TOOLS")) |_| {
+        if (std.posix.getenv("DEBUG_TOOLS") != null or std.posix.getenv("DEBUG_GRAPHRAG") != null) {
             std.debug.print("\n=== DEBUG: Request Payload ===\n{s}\n=== END PAYLOAD ===\n\n", .{payload});
         }
 
@@ -294,35 +314,74 @@ pub const OllamaClient = struct {
         var buffer_pos: usize = 0;
         var buffer_end: usize = 0;
 
+        // Track timing for detecting hangs
+        var last_read_time = std.time.milliTimestamp();
+
         while (!stream_done) {
             // Refill buffer if empty
             if (buffer_pos >= buffer_end) {
+                // DEBUG: About to read from connection
+                const now = std.time.milliTimestamp();
+                const time_since_last_read = now - last_read_time;
+                if (std.posix.getenv("DEBUG_GRAPHRAG")) |_| {
+                    std.debug.print("[HTTP READ] Waiting for data from Ollama... (line_buffer.len={d}, time_since_last_read={d}ms)\n", .{line_buffer.items.len, time_since_last_read});
+                }
+
+                // Timeout protection: if we've been waiting more than 2 minutes, bail out
+                // (GraphRAG indexing can take 60-90 seconds for large files)
+                if (time_since_last_read > 120000) {
+                    if (std.posix.getenv("DEBUG_GRAPHRAG")) |_| {
+                        std.debug.print("[HTTP READ] TIMEOUT: No data received for {d}ms, aborting stream\n", .{time_since_last_read});
+                    }
+                    return error.StreamTimeout;
+                }
+
                 // Read directly from connection, bypassing buggy response.reader()
                 const conn_reader = req.connection.?.reader();
                 var read_vec = [_][]u8{&read_buffer};
                 buffer_end = conn_reader.*.readVec(&read_vec) catch break;
                 if (buffer_end == 0) break; // EOF
                 buffer_pos = 0;
+                last_read_time = std.time.milliTimestamp();
 
                 // DEBUG: Print bytes received
                 if (std.posix.getenv("DEBUG_TOOLS")) |_| {
                     std.debug.print("Received {} bytes from connection\n", .{buffer_end});
                 }
+                if (std.posix.getenv("DEBUG_GRAPHRAG")) |_| {
+                    std.debug.print("[HTTP READ] Received {d} bytes from Ollama (took {d}ms)\n", .{buffer_end, std.time.milliTimestamp() - last_read_time});
+                }
             }
 
             // Process bytes looking for newlines in the buffer
-            const current_slice = read_buffer[buffer_pos..buffer_end];
-            for (current_slice, 0..) |byte, i| {
-                if (byte == '\n') {
-                    // Found complete line - append what we have up to newline
-                    const absolute_pos = buffer_pos + i;
-                    if (buffer_pos < absolute_pos) {
-                        try line_buffer.appendSlice(self.allocator, read_buffer[buffer_pos..absolute_pos]);
+            // Use a while loop instead of for loop to avoid stale index issues when buffer_pos updates
+            while (buffer_pos < buffer_end) {
+                // Search for next newline from current position
+                var newline_pos: ?usize = null;
+                for (buffer_pos..buffer_end) |pos| {
+                    if (read_buffer[pos] == '\n') {
+                        newline_pos = pos;
+                        break;
                     }
-                    buffer_pos = absolute_pos + 1; // Skip the newline
+                }
+
+                if (newline_pos) |nl_pos| {
+                    // Found complete line - append what we have up to newline
+                    if (buffer_pos < nl_pos) {
+                        try line_buffer.appendSlice(self.allocator, read_buffer[buffer_pos..nl_pos]);
+                    }
+                    buffer_pos = nl_pos + 1; // Skip the newline
 
                     // Process the line if it's not empty
                     if (line_buffer.items.len > 0) {
+                        // DEBUG: Show line size before parsing
+                        if (std.posix.getenv("DEBUG_GRAPHRAG")) |_| {
+                            std.debug.print("[JSON PARSE] Processing JSON line: {d} bytes\n", .{line_buffer.items.len});
+                            // Show first 200 chars for context
+                            const preview_len = @min(200, line_buffer.items.len);
+                            std.debug.print("[JSON PARSE] Preview: {s}...\n", .{line_buffer.items[0..preview_len]});
+                        }
+
                         // Parse JSON line using the raw format
                         const parsed = json.parseFromSlice(
                             ChatResponseRaw,
@@ -382,47 +441,19 @@ pub const OllamaClient = struct {
                                         for (raw_calls) |raw_call| {
                                             const args_str = switch (raw_call.function.arguments) {
                                                 .string => |s| self.allocator.dupe(u8, s) catch continue,
-                                                .object => |obj| blk: {
-                                                    if (obj.count() == 0) {
-                                                        break :blk self.allocator.dupe(u8, "{}") catch continue;
-                                                    }
-                                                    var buf = std.ArrayListUnmanaged(u8){};
-                                                    buf.append(self.allocator, '{') catch continue;
-                                                    var iter = obj.iterator();
-                                                    var first = true;
-                                                    while (iter.next()) |entry| {
-                                                        if (!first) buf.appendSlice(self.allocator, ",") catch continue;
-                                                        first = false;
-                                                        buf.appendSlice(self.allocator, "\"") catch continue;
-                                                        buf.appendSlice(self.allocator, entry.key_ptr.*) catch continue;
-                                                        buf.appendSlice(self.allocator, "\":") catch continue;
-                                                        switch (entry.value_ptr.*) {
-                                                            .string => |v| {
-                                                                buf.appendSlice(self.allocator, "\"") catch continue;
-                                                                buf.appendSlice(self.allocator, v) catch continue;
-                                                                buf.appendSlice(self.allocator, "\"") catch continue;
-                                                            },
-                                                            .integer => |v| {
-                                                                const int_str = std.fmt.allocPrint(self.allocator, "{d}", .{v}) catch continue;
-                                                                defer self.allocator.free(int_str);
-                                                                buf.appendSlice(self.allocator, int_str) catch continue;
-                                                            },
-                                                            .number_string => |v| {
-                                                                buf.appendSlice(self.allocator, v) catch continue;
-                                                            },
-                                                            .bool => |v| {
-                                                                buf.appendSlice(self.allocator, if (v) "true" else "false") catch continue;
-                                                            },
-                                                            .null => {
-                                                                buf.appendSlice(self.allocator, "null") catch continue;
-                                                            },
-                                                            else => buf.appendSlice(self.allocator, "null") catch continue,
-                                                        }
-                                                    }
-                                                    buf.append(self.allocator, '}') catch continue;
-                                                    break :blk buf.toOwnedSlice(self.allocator) catch continue;
+                                                .object, .array => blk: {
+                                                    // Use std.io.Writer.Allocating for JSON serialization
+                                                    var aw: std.io.Writer.Allocating = .init(self.allocator);
+                                                    defer aw.deinit();
+
+                                                    json.Stringify.value(raw_call.function.arguments, .{}, &aw.writer) catch {
+                                                        // Fallback based on type
+                                                        const fallback = if (raw_call.function.arguments == .object) "{}" else "[]";
+                                                        break :blk self.allocator.dupe(u8, fallback) catch continue;
+                                                    };
+
+                                                    break :blk aw.toOwnedSlice() catch continue;
                                                 },
-                                                .array => |_| self.allocator.dupe(u8, "[]") catch continue,
                                                 else => self.allocator.dupe(u8, "{}") catch continue,
                                             };
 
@@ -499,6 +530,11 @@ pub const OllamaClient = struct {
                             // Convert raw tool calls to our format (stringify arguments)
                             var converted_tool_calls: ?[]ToolCall = null;
                             if (msg.tool_calls) |raw_calls| {
+                                // DEBUG: Show how many tool calls in this JSON chunk
+                                if (std.posix.getenv("DEBUG_GRAPHRAG")) |_| {
+                                    std.debug.print("[TOOL CALLS] Found {d} tool calls in this JSON line\n", .{raw_calls.len});
+                                }
+
                                 var calls_list = std.ArrayListUnmanaged(ToolCall){};
                                 defer {
                                     // Only free the list if we fail - on success, ownership transfers
@@ -518,36 +554,19 @@ pub const OllamaClient = struct {
                                     // Ollama sends `arguments: {}` for tools with no parameters
                                     const args_str = switch (raw_call.function.arguments) {
                                         .string => |s| self.allocator.dupe(u8, s) catch continue,
-                                        .object => |obj| blk: {
-                                            // Manually serialize the object to JSON
-                                            if (obj.count() == 0) {
-                                                break :blk self.allocator.dupe(u8, "{}") catch continue;
-                                            }
-                                            // For non-empty objects, build JSON string
-                                            var buf = std.ArrayListUnmanaged(u8){};
-                                            buf.append(self.allocator, '{') catch continue;
-                                            var iter = obj.iterator();
-                                            var first = true;
-                                            while (iter.next()) |entry| {
-                                                if (!first) buf.appendSlice(self.allocator, ",") catch continue;
-                                                first = false;
-                                                buf.appendSlice(self.allocator, "\"") catch continue;
-                                                buf.appendSlice(self.allocator, entry.key_ptr.*) catch continue;
-                                                buf.appendSlice(self.allocator, "\":") catch continue;
-                                                // For now, assume string values - extend if needed
-                                                switch (entry.value_ptr.*) {
-                                                    .string => |v| {
-                                                        buf.appendSlice(self.allocator, "\"") catch continue;
-                                                        buf.appendSlice(self.allocator, v) catch continue;
-                                                        buf.appendSlice(self.allocator, "\"") catch continue;
-                                                    },
-                                                    else => buf.appendSlice(self.allocator, "null") catch continue,
-                                                }
-                                            }
-                                            buf.append(self.allocator, '}') catch continue;
-                                            break :blk buf.toOwnedSlice(self.allocator) catch continue;
+                                        .object, .array => blk: {
+                                            // Use std.io.Writer.Allocating for JSON serialization
+                                            var aw: std.io.Writer.Allocating = .init(self.allocator);
+                                            defer aw.deinit();
+
+                                            json.Stringify.value(raw_call.function.arguments, .{}, &aw.writer) catch {
+                                                // Fallback based on type
+                                                const fallback = if (raw_call.function.arguments == .object) "{}" else "[]";
+                                                break :blk self.allocator.dupe(u8, fallback) catch continue;
+                                            };
+
+                                            break :blk aw.toOwnedSlice() catch continue;
                                         },
-                                        .array => |_| self.allocator.dupe(u8, "[]") catch continue,
                                         else => self.allocator.dupe(u8, "{}") catch continue,
                                     };
 
@@ -615,6 +634,21 @@ pub const OllamaClient = struct {
                     }
 
                     line_buffer.clearRetainingCapacity();
+                } else {
+                    // No newline found in remaining buffer - append and read more data
+                    // Append remaining buffer content to line_buffer for next iteration
+                    if (buffer_pos < buffer_end) {
+                        try line_buffer.appendSlice(self.allocator, read_buffer[buffer_pos..buffer_end]);
+                        buffer_pos = buffer_end;
+
+                        // DEBUG: Warn if line buffer is getting very large without newline
+                        if (std.posix.getenv("DEBUG_GRAPHRAG")) |_| {
+                            if (line_buffer.items.len > 5000) {
+                                std.debug.print("[HTTP READ] WARNING: Line buffer is {d} bytes and still no newline! Might be accumulating a huge tool call array.\n", .{line_buffer.items.len});
+                            }
+                        }
+                    }
+                    break;
                 }
             }
 

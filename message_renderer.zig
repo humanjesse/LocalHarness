@@ -665,6 +665,142 @@ pub fn drawMessage(
                 try all_lines.append(app.allocator, formatted_line);
                 line_num += 1;
             }
+        } else if (mem.eql(u8, perm_req.tool_call.function.name, "insert_lines")) {
+                // Special formatting for insert_lines to show insertion point and content preview
+                const InsertArgs = struct { path: []const u8, line_start: usize, line_end: usize, new_content: []const u8 };
+                const parsed = json.parseFromSlice(InsertArgs, app.allocator, perm_req.tool_call.function.arguments, .{}) catch {
+                    // Fallback to raw if parsing fails
+                    var args_line = std.ArrayListUnmanaged(u8){};
+                    try args_line.appendSlice(app.allocator, "\x1b[1mArguments:\x1b[0m ");
+                    try args_line.appendSlice(app.allocator, perm_req.tool_call.function.arguments);
+                    try all_lines.append(app.allocator, try args_line.toOwnedSlice(app.allocator));
+                    break :blk;
+                };
+                defer parsed.deinit();
+
+            // File path
+            var file_line = std.ArrayListUnmanaged(u8){};
+            try file_line.appendSlice(app.allocator, "\x1b[1mFile:\x1b[0m ");
+            try file_line.appendSlice(app.allocator, parsed.value.path);
+            try all_lines.append(app.allocator, try file_line.toOwnedSlice(app.allocator));
+
+            // Insertion point
+            const point_text = try std.fmt.allocPrint(app.allocator, "\x1b[1mInserting before line:\x1b[0m {d}", .{parsed.value.line_start});
+            defer app.allocator.free(point_text);
+            try all_lines.append(app.allocator, try app.allocator.dupe(u8, point_text));
+
+            try all_lines.append(app.allocator, try app.allocator.dupe(u8, ""));
+            try all_lines.append(app.allocator, try app.allocator.dupe(u8, "\x1b[1mChanges:\x1b[0m"));
+
+            // Read the file to show context
+            const context_result = blk2: {
+                const file = std.fs.cwd().openFile(parsed.value.path, .{}) catch |err| {
+                    const error_msg = try std.fmt.allocPrint(app.allocator, "\x1b[33m(Unable to read file: {s})\x1b[0m", .{@errorName(err)});
+                    break :blk2 error_msg;
+                };
+                defer file.close();
+
+                const content = file.readToEndAlloc(app.allocator, 10 * 1024 * 1024) catch |err| {
+                    const error_msg = try std.fmt.allocPrint(app.allocator, "\x1b[33m(Unable to read file: {s})\x1b[0m", .{@errorName(err)});
+                    break :blk2 error_msg;
+                };
+                defer app.allocator.free(content);
+
+                // Split content into lines
+                var lines = std.ArrayListUnmanaged([]const u8){};
+                defer lines.deinit(app.allocator);
+
+                var line_iter = mem.splitScalar(u8, content, '\n');
+                while (line_iter.next()) |line| {
+                    try lines.append(app.allocator, line);
+                }
+
+                // Check if line number is valid
+                if (parsed.value.line_start == 0 or parsed.value.line_start > lines.items.len + 1) {
+                    const error_msg = try std.fmt.allocPrint(app.allocator, "\x1b[33m(Line number out of range: file has {d} lines)\x1b[0m", .{lines.items.len});
+                    break :blk2 error_msg;
+                }
+
+                // Show context: 2 lines before insertion point (if available)
+                const insert_idx = parsed.value.line_start - 1; // Convert to 0-indexed
+                const context_start = if (insert_idx >= 2) insert_idx - 2 else 0;
+                const context_end = @min(insert_idx, lines.items.len);
+
+                if (context_start < context_end) {
+                    var line_num = context_start + 1;
+                    for (lines.items[context_start..context_end]) |line| {
+                        const formatted_line = try std.fmt.allocPrint(app.allocator, "\x1b[90m  {d}: {s}\x1b[0m", .{line_num, line});
+                        try all_lines.append(app.allocator, formatted_line);
+                        line_num += 1;
+                    }
+                }
+
+                break :blk2 try app.allocator.dupe(u8, ""); // Success marker (empty string)
+            };
+
+            // Check if there was an error reading the file
+            const had_error = context_result.len > 0 and mem.indexOf(u8, context_result, "Unable to read") != null;
+            if (had_error) {
+                try all_lines.append(app.allocator, try app.allocator.dupe(u8, context_result));
+            }
+            app.allocator.free(context_result);
+
+            // Empty line separator before new content
+            try all_lines.append(app.allocator, try app.allocator.dupe(u8, ""));
+
+            // Format new content with + prefix and line numbers
+            var new_line_iter = mem.splitScalar(u8, parsed.value.new_content, '\n');
+            var line_num: usize = parsed.value.line_start;
+            while (new_line_iter.next()) |line| {
+                // Skip empty trailing line if new_content ends with newline
+                if (new_line_iter.index == null and line.len == 0) break;
+
+                const formatted_line = try std.fmt.allocPrint(app.allocator, "\x1b[32m+ {d}: {s}\x1b[0m", .{line_num, line});
+                try all_lines.append(app.allocator, formatted_line);
+                line_num += 1;
+            }
+
+            // Show context: 2 lines after insertion point (if available)
+            blk2: {
+                const file = std.fs.cwd().openFile(parsed.value.path, .{}) catch break :blk2;
+                defer file.close();
+
+                const content = file.readToEndAlloc(app.allocator, 10 * 1024 * 1024) catch break :blk2;
+                defer app.allocator.free(content);
+
+                var lines = std.ArrayListUnmanaged([]const u8){};
+                defer lines.deinit(app.allocator);
+
+                var line_iter = mem.splitScalar(u8, content, '\n');
+                while (line_iter.next()) |line| {
+                    try lines.append(app.allocator, line);
+                }
+
+                const insert_idx = parsed.value.line_start - 1; // Convert to 0-indexed
+                if (insert_idx < lines.items.len) {
+                    try all_lines.append(app.allocator, try app.allocator.dupe(u8, ""));
+                    const context_start = insert_idx;
+                    const context_end = @min(insert_idx + 2, lines.items.len);
+
+                    // Calculate the line numbers after insertion
+                    const num_new_lines = blk3: {
+                        var count: usize = 0;
+                        var iter = mem.splitScalar(u8, parsed.value.new_content, '\n');
+                        while (iter.next()) |l| {
+                            if (iter.index == null and l.len == 0) break;
+                            count += 1;
+                        }
+                        break :blk3 count;
+                    };
+
+                    var display_line_num = parsed.value.line_start + num_new_lines;
+                    for (lines.items[context_start..context_end]) |line| {
+                        const formatted_line = try std.fmt.allocPrint(app.allocator, "\x1b[90m  {d}: {s}\x1b[0m", .{display_line_num, line});
+                        try all_lines.append(app.allocator, formatted_line);
+                        display_line_num += 1;
+                    }
+                }
+            }
         } else {
             // Default formatting for other tools
             const args_preview = if (perm_req.tool_call.function.arguments.len > 100)

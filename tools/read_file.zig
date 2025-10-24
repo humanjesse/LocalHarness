@@ -44,6 +44,10 @@ pub fn getDefinition(allocator: std.mem.Allocator) !ToolDefinition {
 fn execute(allocator: std.mem.Allocator, arguments: []const u8, context: *AppContext) !ToolResult {
     const start_time = std.time.milliTimestamp();
 
+    if (std.posix.getenv("DEBUG_GRAPHRAG")) |_| {
+        std.debug.print("[DEBUG] read_file execute started\n", .{});
+    }
+
     // Handle empty arguments "{}" gracefully
     if (arguments.len == 0 or std.mem.eql(u8, arguments, "{}")) {
         return ToolResult.err(allocator, .validation_failed, "read_file requires a 'path' argument", start_time);
@@ -54,6 +58,10 @@ fn execute(allocator: std.mem.Allocator, arguments: []const u8, context: *AppCon
         return ToolResult.err(allocator, .parse_error, "Invalid JSON arguments", start_time);
     };
     defer parsed.deinit();
+
+    if (std.posix.getenv("DEBUG_GRAPHRAG")) |_| {
+        std.debug.print("[DEBUG] Opening file: {s}\n", .{parsed.value.path});
+    }
 
     // Read the file
     const file = std.fs.cwd().openFile(parsed.value.path, .{}) catch {
@@ -69,6 +77,10 @@ fn execute(allocator: std.mem.Allocator, arguments: []const u8, context: *AppCon
         return ToolResult.err(allocator, .io_error, msg, start_time);
     };
     defer allocator.free(content);
+
+    if (std.posix.getenv("DEBUG_GRAPHRAG")) |_| {
+        std.debug.print("[DEBUG] File read, size: {d} bytes. Starting formatting...\n", .{content.len});
+    }
 
     // Format content with clear header, numbered lines, and footer notes
     var formatted_output = std.ArrayListUnmanaged(u8){};
@@ -105,13 +117,44 @@ fn execute(allocator: std.mem.Allocator, arguments: []const u8, context: *AppCon
 
     const formatted = try formatted_output.toOwnedSlice(allocator);
 
-    // Phase 2+: Trigger AST parsing here
-    // if (context.graph) |graph| {
-    //     _ = try context.parser.?.parseFile(parsed.value.path, content, graph, ...);
-    // }
+    if (std.posix.getenv("DEBUG_GRAPHRAG")) |_| {
+        std.debug.print("[DEBUG] Formatting complete. Checking if should queue for indexing...\n", .{});
+    }
+
+    // ==========================================
+    // Queue file for Graph RAG indexing (DEFERRED)
+    // ==========================================
+    // This only QUEUES the file - no indexing happens here!
+    // The file will be processed in the SECONDARY LOOP after the main
+    // conversation turn completes. See app.zig:~1496 processQueuedFiles()
+    if (context.config.graph_rag_enabled and
+        context.indexing_queue != null and
+        !context.state.wasFileIndexed(parsed.value.path))
+    {
+        const IndexingTask = @import("../graphrag/indexing_queue.zig").IndexingTask;
+
+        // Duplicate the file path and FORMATTED content for later processing
+        // Use formatted content (same as what the LLM sees in main loop) for consistency
+        const task = IndexingTask{
+            .file_path = try allocator.dupe(u8, parsed.value.path),
+            .content = try allocator.dupe(u8, formatted),
+            .allocator = allocator,
+        };
+
+        // Push to queue (non-blocking, instant)
+        try context.indexing_queue.?.push(task);
+
+        if (std.posix.getenv("DEBUG_GRAPHRAG")) |_| {
+            std.debug.print("[GRAPHRAG] Queued {s} for secondary loop processing\n", .{parsed.value.path});
+        }
+    }
 
     // Mark file as read for edit_file requirement
     try context.state.markFileAsRead(parsed.value.path);
+
+    if (std.posix.getenv("DEBUG_GRAPHRAG")) |_| {
+        std.debug.print("[DEBUG] read_file returning success\n", .{});
+    }
 
     return ToolResult.ok(allocator, formatted, start_time);
 }

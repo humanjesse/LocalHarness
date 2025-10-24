@@ -395,23 +395,36 @@ The master loop enables agentic behavior by iterating until task completion.
 - Max 15 tool calls per iteration
 - Resets on new user message
 
-## Future Architecture (Graph RAG)
+## GraphRAG Architecture (Implemented)
 
-Planned 5-layer architecture:
+**Secondary Agentic Loop for Context Compression**
+
+ZodoLlama implements a dual-loop architecture where GraphRAG operates as a background indexing system that compresses conversation history.
+
+### Two-Loop Design
 
 ```
-L5: Reasoning Agent (Master Loop)
-      ↓
-L4: Context Graph (Graph RAG)
-      ↓
-L3: Chat Memory
-      ↓
-L2: Indexer (Parser + Embedder)
-      ↓
-L1: Tool APIs
+MAIN LOOP (Primary - User-facing):
+User question → LLM → Tool calls → read_file → Response
+                                        ↓ (queue file)
+
+SECONDARY LOOP (Background - Knowledge building):
+Queued files → LLM Indexer → Knowledge Graph → Vector DB → Context Compression
 ```
 
-See [Master Loop & Graph RAG Plan](master-loop-graphrag.md) for details.
+**Key Benefits:**
+- Main loop stays fast and responsive
+- read_file returns immediately, queues for indexing
+- Later references use compressed graph summaries instead of full file content
+- Reduces token usage by 90%+ while preserving semantic meaning
+
+**Components:**
+- **LLM Indexer** (`graphrag/llm_indexer.zig`): 2-iteration agentic loop creates nodes/edges
+- **Vector Database** (`zvdb/`): HNSW-based storage with typed relationships
+- **Embeddings Client** (`embeddings.zig`): embeddinggemma:300m via Ollama
+- **Query Engine** (`graphrag/query.zig`): Retrieves top-K entities for context
+
+See [GraphRAG Documentation](graphrag.md) for implementation details.
 
 ## Configuration Architecture
 
