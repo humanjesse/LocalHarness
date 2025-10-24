@@ -90,7 +90,7 @@ MIT License
 - Multi-threaded streaming with thread-safe design
 - Flicker-free rendering with smart viewport management
 - Event-driven permission system with async tool execution
-- Modular codebase (~8k lines of Zig across 17+ modules)
+- Modular codebase (~12k lines of code, ~16k total with ZVDB integration)
 
 **Markdown:** Headers, emphasis, links, lists, code blocks, tables, emoji
 
