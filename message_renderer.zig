@@ -498,6 +498,7 @@ pub fn drawMessage(
     message: *Message,
     message_index: usize,
     absolute_y: *usize,
+    input_field_height: usize,
 ) !void {
     const left_padding = 2;
     const y_start = absolute_y.*;
@@ -543,16 +544,68 @@ pub fn drawMessage(
             try all_lines.append(app.allocator, try app.allocator.dupe(u8, "SEPARATOR"));
         } else {
             // Collapsed thinking: just show header
-            try all_lines.append(app.allocator, try app.allocator.dupe(u8, "\x1b[2m💭 Thinking (click to expand)\x1b[0m"));
+            try all_lines.append(app.allocator, try app.allocator.dupe(u8, "\x1b[2m💭 Thinking (Ctrl+O to expand)\x1b[0m"));
+            try all_lines.append(app.allocator, try app.allocator.dupe(u8, "SEPARATOR"));
+        }
+    }
+
+    // Add tool call section if present (for system messages showing tool results)
+    const has_tool_call = message.tool_name != null;
+    if (has_tool_call) {
+        if (message.tool_call_expanded) {
+            // Expanded tool call: add header + tool output + separator
+            var tool_header = std.ArrayListUnmanaged(u8){};
+            defer tool_header.deinit(app.allocator);
+            try tool_header.appendSlice(app.allocator, app.config.color_thinking_header);
+            try tool_header.print(app.allocator, "Tool: {s}\x1b[0m", .{message.tool_name.?});
+            try all_lines.append(app.allocator, try tool_header.toOwnedSlice(app.allocator));
+
+            var tool_lines = std.ArrayListUnmanaged([]const u8){};
+            defer tool_lines.deinit(app.allocator);
+
+            try renderItemsToLines(app, &message.processed_content, &tool_lines, 0, max_content_width);
+
+            // Add tool lines with dim styling (transfer ownership to all_lines)
+            for (tool_lines.items) |line| {
+                var styled_line = std.ArrayListUnmanaged(u8){};
+                try styled_line.appendSlice(app.allocator, app.config.color_thinking_dim);
+                try styled_line.appendSlice(app.allocator, line);
+                try styled_line.appendSlice(app.allocator, "\x1b[0m");
+                try all_lines.append(app.allocator, try styled_line.toOwnedSlice(app.allocator));
+                app.allocator.free(line);
+            }
+
+            // Add separator
+            try all_lines.append(app.allocator, try app.allocator.dupe(u8, "SEPARATOR"));
+        } else {
+            // Collapsed tool call: just show summary
+            const status_icon = if (message.tool_success orelse false) "✅" else "❌";
+            const status_text = if (message.tool_success orelse false) "SUCCESS" else "FAILED";
+
+            var summary = std.ArrayListUnmanaged(u8){};
+            defer summary.deinit(app.allocator);
+            try summary.print(
+                app.allocator,
+                "\x1b[2m🔧 Used tool: {s} ({s} {s})",
+                .{message.tool_name.?, status_icon, status_text}
+            );
+            if (message.tool_execution_time) |exec_time| {
+                try summary.print(app.allocator, ", {d}ms", .{exec_time});
+            }
+            try summary.appendSlice(app.allocator, " - Ctrl+O to expand\x1b[0m");
+            try all_lines.append(app.allocator, try summary.toOwnedSlice(app.allocator));
             try all_lines.append(app.allocator, try app.allocator.dupe(u8, "SEPARATOR"));
         }
     }
 
     // Add main content lines (transfer ownership to all_lines)
-    var content_lines = std.ArrayListUnmanaged([]const u8){};
-    defer content_lines.deinit(app.allocator); // Only deinit the ArrayList, not the strings
-    try renderItemsToLines(app, &message.processed_content, &content_lines, 0, max_content_width);
-    try all_lines.appendSlice(app.allocator, content_lines.items);
+    // Skip content for tool calls since we render it in the tool section above
+    if (!has_tool_call) {
+        var content_lines = std.ArrayListUnmanaged([]const u8){};
+        defer content_lines.deinit(app.allocator); // Only deinit the ArrayList, not the strings
+        try renderItemsToLines(app, &message.processed_content, &content_lines, 0, max_content_width);
+        try all_lines.appendSlice(app.allocator, content_lines.items);
+    }
 
     // Add permission prompt if present
     if (message.permission_request) |perm_req| {
@@ -844,12 +897,18 @@ pub fn drawMessage(
     // Now render the unified box with all lines
     const box_height = all_lines.items.len + 2; // +2 for top and bottom borders
 
+    // Calculate viewport height once (account for input field height + taskbar)
+    const viewport_height = if (app.terminal_size.height > input_field_height + 1)
+        app.terminal_size.height - input_field_height - 1
+    else
+        1;
+
     for (0..box_height) |line_idx| {
         const current_absolute_y = absolute_y.* + line_idx;
         try app.valid_cursor_positions.append(app.allocator, current_absolute_y);
 
         // Render only rows within viewport
-        if (current_absolute_y >= app.scroll_y and current_absolute_y - app.scroll_y <= app.terminal_size.height - 4) {
+        if (current_absolute_y >= app.scroll_y and current_absolute_y - app.scroll_y <= viewport_height) {
             const screen_y = (current_absolute_y - app.scroll_y) + 1;
 
             // Draw cursor
@@ -897,51 +956,144 @@ pub fn drawMessage(
 
     absolute_y.* += box_height;
 
-    // Register single clickable area for entire message
+    // Add spacing after each message for readability
+    // Clear the spacing line if it's in the viewport
+    const spacing_y = absolute_y.*;
+    if (spacing_y >= app.scroll_y and spacing_y - app.scroll_y <= viewport_height) {
+        const screen_y = (spacing_y - app.scroll_y) + 1;
+        try writer.print("\x1b[{d};1H\x1b[K", .{screen_y}); // Clear the spacing line
+    }
+    absolute_y.* += 1;
+
+    // Register single clickable area for entire message (excluding spacing)
     try app.clickable_areas.append(app.allocator, .{
         .y_start = y_start,
-        .y_end = absolute_y.* - 1,
+        .y_end = absolute_y.* - 2, // -2 to exclude the spacing line
         .x_start = 1,
         .x_end = app.terminal_size.width,
         .message = &app.messages.items[message_index],
     });
 }
 
+/// Calculate how many rows the input field will occupy (including top separator, input lines, and bottom border)
+pub fn calculateInputFieldHeight(app: *App) !usize {
+    const max_visible_lines = 7;
+
+    // If input buffer is empty, we still show one line
+    if (app.input_buffer.items.len == 0) {
+        return 3; // 1 top separator + 1 input line + 1 bottom border
+    }
+
+    // Guard against very small terminal widths
+    const width = app.terminal_size.width;
+    if (width < 10) {
+        // Terminal too narrow, return minimum
+        return 3; // 1 top separator + 1 input line + 1 bottom border
+    }
+
+    // Wrap the input buffer text to see how many lines it takes
+    const max_width = width - 3; // Account for "> " or "  " indent
+    var wrapped_lines = try render.wrapRawText(app.allocator, app.input_buffer.items, max_width);
+    defer {
+        for (wrapped_lines.items) |line| app.allocator.free(line);
+        wrapped_lines.deinit(app.allocator);
+    }
+
+    const total_lines = if (wrapped_lines.items.len == 0) 1 else wrapped_lines.items.len;
+    const num_visible_lines = @min(total_lines, max_visible_lines);
+
+    // Use saturating addition to prevent overflow
+    // +1 for top separator, +1 for bottom border
+    return num_visible_lines +| 2;
+}
+
 pub fn drawInputField(app: *App, writer: anytype) !void {
     const height = app.terminal_size.height;
     const width = app.terminal_size.width;
+    const max_visible_lines = 7;
 
-    // Input field occupies rows: height-3, height-2, height-1
-    // Row height-1 is status bar (handled by drawTaskbar)
-    // Row height-2 is input box
-    // Row height-3 is separator
-
-    const separator_row = height - 2;
-    const input_row = height - 1;
-
-    // Draw separator
-    try writer.print("\x1b[{d};1H", .{separator_row});
-    for (0..width) |_| try writer.writeAll("─");
-
-    // Draw input box
-    try writer.print("\x1b[{d};1H> ", .{input_row});
-
-    // Show input buffer content
-    const max_display = width - 3; // Account for "> " prompt
-    const buffer_text = if (app.input_buffer.items.len > max_display)
-        app.input_buffer.items[app.input_buffer.items.len - max_display..]
+    // Wrap the input buffer text
+    const max_width = if (width > 3) width - 3 else 1; // Account for "> " or "  " indent
+    var wrapped_lines = if (app.input_buffer.items.len > 0)
+        try render.wrapRawText(app.allocator, app.input_buffer.items, max_width)
     else
-        app.input_buffer.items;
-
-    try writer.writeAll(buffer_text);
-
-    // Show cursor at end of input
-    if (app.input_buffer.items.len < max_display) {
-        try writer.writeAll("_"); // Visual cursor
+        std.ArrayListUnmanaged([]const u8){};
+    defer {
+        for (wrapped_lines.items) |line| app.allocator.free(line);
+        wrapped_lines.deinit(app.allocator);
     }
 
-    // Clear to end of line (removes any leftover characters from previous input)
-    try writer.writeAll("\x1b[K");
+    // If buffer is empty, we still need at least one line for the prompt
+    const total_lines = if (wrapped_lines.items.len == 0) 1 else wrapped_lines.items.len;
+    const num_visible_lines = @min(total_lines, max_visible_lines);
+    const num_hidden_lines = if (total_lines > max_visible_lines) total_lines - max_visible_lines else 0;
+
+    // Calculate positions (from bottom up: taskbar, bottom border, input lines, separator)
+    const bottom_border_row = height - 1;
+    const last_input_row = height - 2;
+    const first_input_row = last_input_row - (num_visible_lines - 1);
+    const separator_row = first_input_row - 1;
+
+    // Draw separator with indicator if there are hidden lines
+    try writer.print("\x1b[{d};1H", .{separator_row});
+    if (num_hidden_lines > 0) {
+        // Show indicator for hidden lines
+        const indicator = try std.fmt.allocPrint(app.allocator, "──── ↑ {d} more line{s} ", .{
+            num_hidden_lines,
+            if (num_hidden_lines == 1) "" else "s",
+        });
+        defer app.allocator.free(indicator);
+
+        const indicator_len = ui.AnsiParser.getVisibleLength(indicator);
+        try writer.writeAll(indicator);
+
+        // Fill rest with separator
+        if (indicator_len < width) {
+            for (0..(width - indicator_len)) |_| try writer.writeAll("─");
+        }
+    } else {
+        // Normal separator
+        for (0..width) |_| try writer.writeAll("─");
+    }
+
+    // Determine which lines to show (last N lines if we have more than max_visible_lines)
+    const start_line_idx = if (num_hidden_lines > 0) num_hidden_lines else 0;
+
+    // Draw input lines
+    for (0..num_visible_lines) |i| {
+        const screen_row = first_input_row + i;
+        try writer.print("\x1b[{d};1H", .{screen_row});
+
+        if (wrapped_lines.items.len == 0) {
+            // Empty buffer - just show prompt
+            try writer.writeAll("> _");
+        } else {
+            const line_idx = start_line_idx + i;
+            const is_first_visible_line = (i == 0);
+
+            if (is_first_visible_line) {
+                try writer.writeAll("> ");
+            } else {
+                try writer.writeAll("  "); // Indent continuation lines
+            }
+
+            if (line_idx < wrapped_lines.items.len) {
+                try writer.writeAll(wrapped_lines.items[line_idx]);
+
+                // Show cursor on the last line
+                if (line_idx == wrapped_lines.items.len - 1) {
+                    try writer.writeAll("_");
+                }
+            }
+        }
+
+        // Clear to end of line
+        try writer.writeAll("\x1b[K");
+    }
+
+    // Draw bottom border after input lines (before taskbar)
+    try writer.print("\x1b[{d};1H", .{bottom_border_row});
+    for (0..width) |_| try writer.writeAll("─");
 }
 
 // Helper function to calculate total content height without rendering
@@ -951,6 +1103,9 @@ pub fn calculateContentHeight(self: *App) !usize {
     const max_content_width = if (self.terminal_size.width > 6) self.terminal_size.width - 6 else 0;
 
     for (self.messages.items) |*message| {
+        // Skip tool JSON if hidden by config
+        if (message.role == .tool and !self.config.show_tool_json) continue;
+
         // Build unified list of all lines (thinking + content + permission)
         var all_lines = std.ArrayListUnmanaged([]const u8){};
         defer {
@@ -985,16 +1140,43 @@ pub fn calculateContentHeight(self: *App) !usize {
             }
         }
 
-        // Add main content lines
-        var content_lines = std.ArrayListUnmanaged([]const u8){};
-        defer {
-            for (content_lines.items) |line| self.allocator.free(line);
-            content_lines.deinit(self.allocator);
+        // Add tool call section if present
+        const has_tool_call = message.tool_name != null;
+        if (has_tool_call) {
+            if (message.tool_call_expanded) {
+                try all_lines.append(self.allocator, try self.allocator.dupe(u8, "tool_header"));
+
+                var tool_lines = std.ArrayListUnmanaged([]const u8){};
+                defer {
+                    for (tool_lines.items) |line| self.allocator.free(line);
+                    tool_lines.deinit(self.allocator);
+                }
+
+                try renderItemsToLines(self, &message.processed_content, &tool_lines, 0, max_content_width);
+
+                for (tool_lines.items) |line| {
+                    try all_lines.append(self.allocator, try self.allocator.dupe(u8, line));
+                }
+
+                try all_lines.append(self.allocator, try self.allocator.dupe(u8, "SEPARATOR"));
+            } else {
+                try all_lines.append(self.allocator, try self.allocator.dupe(u8, "tool_collapsed"));
+                try all_lines.append(self.allocator, try self.allocator.dupe(u8, "SEPARATOR"));
+            }
         }
-        try renderItemsToLines(self, &message.processed_content, &content_lines, 0, max_content_width);
-        // Transfer ownership to all_lines by duping
-        for (content_lines.items) |line| {
-            try all_lines.append(self.allocator, try self.allocator.dupe(u8, line));
+
+        // Add main content lines (skip for tool calls)
+        if (!has_tool_call) {
+            var content_lines = std.ArrayListUnmanaged([]const u8){};
+            defer {
+                for (content_lines.items) |line| self.allocator.free(line);
+                content_lines.deinit(self.allocator);
+            }
+            try renderItemsToLines(self, &message.processed_content, &content_lines, 0, max_content_width);
+            // Transfer ownership to all_lines by duping
+            for (content_lines.items) |line| {
+                try all_lines.append(self.allocator, try self.allocator.dupe(u8, line));
+            }
         }
 
         // Add permission prompt if present
@@ -1008,6 +1190,9 @@ pub fn calculateContentHeight(self: *App) !usize {
 
         const box_height = all_lines.items.len + 2;
         absolute_y += box_height;
+
+        // Add spacing after each message (same as in drawMessage)
+        absolute_y += 1;
     }
 
     return absolute_y;
@@ -1021,6 +1206,9 @@ pub fn redrawScreen(self: *App) !usize {
     var buffered_writer = ui.BufferedStdoutWriter.init(&stdout_buffer);
     const writer = buffered_writer.writer();
 
+    // Calculate input field height once for this render
+    const input_field_height = try calculateInputFieldHeight(self);
+
     // Move cursor to home WITHOUT clearing - prevents flicker
     try writer.writeAll("\x1b[H");
     self.clickable_areas.clearRetainingCapacity();
@@ -1029,8 +1217,12 @@ pub fn redrawScreen(self: *App) !usize {
     var absolute_y: usize = 1;
     for (self.messages.items, 0..) |_, i| {
         const message = &self.messages.items[i];
+
+        // Skip tool JSON if hidden by config
+        if (message.role == .tool and !self.config.show_tool_json) continue;
+
         // Draw message (handles both thinking and content)
-        try drawMessage(self, writer, message, i, &absolute_y);
+        try drawMessage(self, writer, message, i, &absolute_y, input_field_height);
     }
 
     // Ensure cursor_y is always at a valid position
@@ -1055,7 +1247,12 @@ pub fn redrawScreen(self: *App) !usize {
         1;
 
     // Only clear if there's space between content and input field
-    if (screen_y_for_clear < self.terminal_size.height - 2) {
+    // input_field_height includes separator, +1 for taskbar
+    const input_area_start = if (self.terminal_size.height > input_field_height + 1)
+        self.terminal_size.height - input_field_height
+    else
+        1;
+    if (screen_y_for_clear < input_area_start) {
         try writer.print("\x1b[{d};1H\x1b[J", .{screen_y_for_clear});
     }
 

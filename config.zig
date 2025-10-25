@@ -23,6 +23,8 @@ pub const Config = struct {
     color_inline_code_bg: []const u8 = "\x1b[48;5;237m", // Grey background - Inline code
     // Thinking mode
     enable_thinking: bool = true, // Enable extended thinking mode for complex reasoning
+    // Tool call display
+    show_tool_json: bool = false, // Show raw JSON tool calls (for debugging, default hidden)
     // Graph RAG configuration
     graph_rag_enabled: bool = false, // Enable Graph RAG for code context compression
     embedding_model: []const u8 = "nomic-embed-text", // Ollama embedding model for vector search

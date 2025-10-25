@@ -45,6 +45,9 @@ http_test
 test_http_post_working
 test_http_simple_post
 
+# Main binary
+app
+
 # Development documentation and examples
 HTTP_CLIENT_GUIDE.md
 ZIG_0_15_HTTP_GUIDE.md

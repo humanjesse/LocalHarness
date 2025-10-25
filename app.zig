@@ -22,6 +22,7 @@ const IndexingQueue = @import("graphrag/indexing_queue.zig").IndexingQueue;
 // TODO: Re-implement with LLM-based indexing
 // const graphrag_indexer = @import("graphrag/indexer.zig");
 const graphrag_query = @import("graphrag/query.zig");
+const app_graphrag = @import("app_graphrag.zig");
 
 // Re-export types for convenience
 pub const Message = types.Message;
@@ -85,6 +86,13 @@ pub const App = struct {
     permission_manager: permission.PermissionManager,
     permission_pending: bool = false,
     permission_response: ?permission.PermissionMode = null, // Set by UI, consumed by tool_executor
+    // GraphRAG permission system
+    graphrag_choice_pending: bool = false,
+    graphrag_choice_response: ?types.GraphRagChoice = null,
+    line_input_pending: bool = false,
+    line_input_buffer: std.ArrayListUnmanaged(u8) = .{},
+    line_range_response: ?types.LineRange = null,
+    current_indexing_file: ?[]const u8 = null, // Track which file is being prompted for
     // Tool execution state machine
     tool_executor: tool_executor_module.ToolExecutor,
     // Phase 1: Task management state
@@ -251,12 +259,18 @@ pub const App = struct {
 
     // Pre-calculate and apply scroll position to keep viewport anchored at bottom
     // This should be called BEFORE redrawScreen() to avoid flashing
-    fn maintainBottomAnchor(self: *App) !void {
+    pub fn maintainBottomAnchor(self: *App) !void {
         if (self.valid_cursor_positions.items.len == 0) return;
 
         // Calculate total content height
         const total_content_height = try message_renderer.calculateContentHeight(self);
-        const view_height = self.terminal_size.height - 4;
+        // Calculate input field height dynamically (includes separator)
+        const input_field_height = try message_renderer.calculateInputFieldHeight(self);
+        // View height = terminal height - input field - taskbar
+        const view_height = if (self.terminal_size.height > input_field_height + 1)
+            self.terminal_size.height - input_field_height - 1
+        else
+            1;
 
         // Anchor viewport to bottom
         if (total_content_height > view_height) {
@@ -267,7 +281,7 @@ pub const App = struct {
     }
 
     // Update cursor to track bottom position after redraw
-    fn updateCursorToBottom(self: *App) void {
+    pub fn updateCursorToBottom(self: *App) void {
         if (self.valid_cursor_positions.items.len > 0) {
             self.cursor_y = self.valid_cursor_positions.items[self.valid_cursor_positions.items.len - 1];
         }
@@ -414,21 +428,6 @@ pub const App = struct {
         ctx.app.stream_chunks.append(ctx.allocator, done_chunk) catch return;
     }
 
-    // Helper to detect read_file tool results
-    fn isReadFileResult(content: []const u8) bool {
-        return mem.indexOf(u8, content, "File: ") != null and
-               mem.indexOf(u8, content, "Total lines:") != null;
-    }
-
-    // Helper to extract file path from read_file result
-    fn extractFilePathFromResult(content: []const u8) ?[]const u8 {
-        const file_prefix = "File: ";
-        const start_idx = mem.indexOf(u8, content, file_prefix) orelse return null;
-        const after_prefix = content[start_idx + file_prefix.len ..];
-
-        const end_idx = mem.indexOf(u8, after_prefix, "\n") orelse return null;
-        return after_prefix[0..end_idx];
-    }
 
     // Compress message history by replacing read_file results with Graph RAG summaries
     // Tracks allocated summaries in the provided list so caller can free them
@@ -447,9 +446,9 @@ pub const App = struct {
 
         for (messages) |msg| {
             // Check if this is a tool result from read_file
-            if (mem.eql(u8, msg.role, "tool") and isReadFileResult(msg.content)) {
+            if (mem.eql(u8, msg.role, "tool") and app_graphrag.isReadFileResult(msg.content)) {
                 // Extract file path from content
-                const file_path = extractFilePathFromResult(msg.content) orelse {
+                const file_path = app_graphrag.extractFilePathFromResult(msg.content) orelse {
                     // Can't extract path, keep original
                     try compressed.append(self.allocator, msg);
                     continue;
@@ -512,20 +511,15 @@ pub const App = struct {
         var allocated_summaries = std.ArrayListUnmanaged([]const u8){};
 
         for (self.messages.items) |msg| {
-            // Skip system messages when sending to API (they're for display only)
-            // Only include the initial system message if it exists and is first
-            if (msg.role == .system) {
-                // Allow system message only if it's the first message (initial prompt)
-                const is_first = self.messages.items.len > 0 and
-                                @intFromPtr(&self.messages.items[0]) == @intFromPtr(&msg);
-                if (!is_first) continue;
-            }
+            // Skip display_only_data messages - they're UI-only notifications
+            if (msg.role == .display_only_data) continue;
 
             const role_str = switch (msg.role) {
                 .user => "user",
                 .assistant => "assistant",
                 .system => "system",
                 .tool => "tool",
+                .display_only_data => unreachable, // Already filtered above
             };
             try ollama_messages.append(self.allocator, .{
                 .role = role_str,
@@ -673,7 +667,7 @@ pub const App = struct {
         };
 
         try self.messages.append(self.allocator, .{
-            .role = .system,
+            .role = .display_only_data,
             .content = prompt_text,
             .processed_content = prompt_processed,
             .thinking_expanded = false,
@@ -697,224 +691,23 @@ pub const App = struct {
 
     // Execute a tool call and return the result (Phase 1: passes AppContext)
     fn executeTool(self: *App, tool_call: ollama.ToolCall) !tools_module.ToolResult {
-        return try tools_module.executeToolCall(self.allocator, tool_call, &self.app_context);
-    }
-
-    // Process pending Graph RAG indexing in background (post-response)
-    // User can press any key to skip and continue chatting
-    fn processPendingIndexing(self: *App) !void {
-        const total_files = self.state.pending_index_files.items.len;
-        if (total_files == 0) return;
-
-        // Show initial status
-        const start_msg = try std.fmt.allocPrint(
-            self.allocator,
-            "📊 Indexing {d} pending file{s}... (press any key to skip)",
-            .{ total_files, if (total_files == 1) "" else "s" },
-        );
-        defer self.allocator.free(start_msg);
-
-        const start_processed = try markdown.processMarkdown(self.allocator, start_msg);
-        try self.messages.append(self.allocator, .{
-            .role = .system,
-            .content = try self.allocator.dupe(u8, start_msg),
-            .processed_content = start_processed,
-            .thinking_expanded = false,
-            .timestamp = std.time.milliTimestamp(),
-        });
-
-        // Redraw to show message
-        if (!self.user_scrolled_away) {
-            try self.maintainBottomAnchor();
-        }
-        _ = try message_renderer.redrawScreen(self);
-        if (!self.user_scrolled_away) {
-            self.updateCursorToBottom();
-        }
-
-        const indexed_count: usize = 0; // TODO: Will be used when LLM indexer is implemented
-        var skipped_count: usize = 0;
-
-        // Process each file in queue
-        while (self.state.popPendingIndexFile()) |pending| {
-            defer {
-                self.allocator.free(pending.path);
-                self.allocator.free(pending.content);
-            }
-
-            // Check for user input (non-blocking) - any key skips indexing
-            var read_buffer: [128]u8 = undefined;
-            const bytes_read = ui.c.read(ui.c.STDIN_FILENO, &read_buffer, read_buffer.len);
-            if (bytes_read > 0) {
-                // User pressed a key - stop indexing
-                const remaining = self.state.pending_index_files.items.len;
-
-                // Clear the queue
-                for (self.state.pending_index_files.items) |remaining_file| {
-                    self.allocator.free(remaining_file.path);
-                    self.allocator.free(remaining_file.content);
-                }
-                self.state.pending_index_files.clearRetainingCapacity();
-
-                const skip_msg = try std.fmt.allocPrint(
-                    self.allocator,
-                    "⏭️  Skipped indexing {d} remaining file{s}",
-                    .{ remaining + 1, if (remaining + 1 == 1) "" else "s" },
-                );
-                const skip_processed = try markdown.processMarkdown(self.allocator, skip_msg);
-                try self.messages.append(self.allocator, .{
-                    .role = .system,
-                    .content = skip_msg,
-                    .processed_content = skip_processed,
-                    .thinking_expanded = false,
-                    .timestamp = std.time.milliTimestamp(),
-                });
-
-                // Redraw and return
-                if (!self.user_scrolled_away) {
-                    try self.maintainBottomAnchor();
-                }
-                _ = try message_renderer.redrawScreen(self);
-                if (!self.user_scrolled_away) {
-                    self.updateCursorToBottom();
-                }
-
-                return;
-            }
-
-            // Show progress for current file
-            const progress_msg = try std.fmt.allocPrint(
-                self.allocator,
-                "  Indexing {s}...",
-                .{pending.path},
-            );
-            defer self.allocator.free(progress_msg);
-
-            const progress_processed = try markdown.processMarkdown(self.allocator, progress_msg);
-            try self.messages.append(self.allocator, .{
-                .role = .system,
-                .content = try self.allocator.dupe(u8, progress_msg),
-                .processed_content = progress_processed,
-                .thinking_expanded = false,
-                .timestamp = std.time.milliTimestamp(),
-            });
-
-            // Redraw to show progress
-            if (!self.user_scrolled_away) {
-                try self.maintainBottomAnchor();
-            }
-            _ = try message_renderer.redrawScreen(self);
-            if (!self.user_scrolled_away) {
-                self.updateCursorToBottom();
-            }
-
-            // TODO: Re-implement with LLM-based indexing
-            // Perform indexing
-            //if (self.vector_store != null and self.embedder != null) {
-            //    const num_chunks = graphrag_indexer.indexFile(
-            //        self.allocator,
-            //        self.vector_store.?,
-            //        self.embedder.?,
-            //        pending.path,
-            //        pending.content,
-            //        self.config.embedding_model,
-            //    ) catch |err| {
-            //        // Indexing failed - show error and skip
-            //        skipped_count += 1;
-            //
-            //        const error_msg = try std.fmt.allocPrint(
-            //            self.allocator,
-            //            "  ✗ Failed to index {s}: {}",
-            //            .{ pending.path, err },
-            //        );
-            //        const error_processed = try markdown.processMarkdown(self.allocator, error_msg);
-            //        try self.messages.append(self.allocator, .{
-            //            .role = .system,
-            //            .content = error_msg,
-            //            .processed_content = error_processed,
-            //            .thinking_expanded = false,
-            //            .timestamp = std.time.milliTimestamp(),
-            //        });
-            //
-            //        // Redraw and continue to next file
-            //        if (!self.user_scrolled_away) {
-            //            try self.maintainBottomAnchor();
-            //        }
-            //        _ = try message_renderer.redrawScreen(self);
-            //        if (!self.user_scrolled_away) {
-            //            self.updateCursorToBottom();
-            //        }
-            //
-            //        continue;
-            //    };
-            //
-            //    // Success - mark as indexed
-            //    try self.state.markFileAsIndexed(pending.path);
-            //    indexed_count += 1;
-            //
-            //    const success_msg = try std.fmt.allocPrint(
-            //        self.allocator,
-            //        "  ✓ Indexed {s} ({d} chunk{s})",
-            //        .{ pending.path, num_chunks, if (num_chunks == 1) "" else "s" },
-            //    );
-            //    const success_processed = try markdown.processMarkdown(self.allocator, success_msg);
-            //    try self.messages.append(self.allocator, .{
-            //        .role = .system,
-            //        .content = success_msg,
-            //        .processed_content = success_processed,
-            //        .thinking_expanded = false,
-            //        .timestamp = std.time.milliTimestamp(),
-            //    });
-            //
-            //    // Redraw to show success
-            //    if (!self.user_scrolled_away) {
-            //        try self.maintainBottomAnchor();
-            //    }
-            //    _ = try message_renderer.redrawScreen(self);
-            //    if (!self.user_scrolled_away) {
-            //        self.updateCursorToBottom();
-            //    }
-            //}
-            if (self.vector_store != null and self.embedder != null) {
-                // Temporary: skip indexing until LLM-based indexer is implemented
-                skipped_count += 1;
-            } else {
-                skipped_count += 1;
-            }
-        }
-
-        // Show completion summary
-        const summary_msg = if (skipped_count > 0)
-            try std.fmt.allocPrint(
-                self.allocator,
-                "✅ Indexing complete ({d} indexed, {d} skipped)",
-                .{ indexed_count, skipped_count },
-            )
+        // Populate conversation context for context-aware tools
+        // Extract last 5 messages (or fewer if conversation is shorter)
+        const start_idx = if (self.messages.items.len > 5)
+            self.messages.items.len - 5
         else
-            try std.fmt.allocPrint(
-                self.allocator,
-                "✅ Indexing complete ({d} file{s} indexed)",
-                .{ indexed_count, if (indexed_count == 1) "" else "s" },
-            );
+            0;
+        self.app_context.recent_messages = self.messages.items[start_idx..];
 
-        const summary_processed = try markdown.processMarkdown(self.allocator, summary_msg);
-        try self.messages.append(self.allocator, .{
-            .role = .system,
-            .content = summary_msg,
-            .processed_content = summary_processed,
-            .thinking_expanded = false,
-            .timestamp = std.time.milliTimestamp(),
-        });
+        // Execute tool with conversation context
+        const result = try tools_module.executeToolCall(self.allocator, tool_call, &self.app_context);
 
-        // Final redraw
-        if (!self.user_scrolled_away) {
-            try self.maintainBottomAnchor();
-        }
-        _ = try message_renderer.redrawScreen(self);
-        if (!self.user_scrolled_away) {
-            self.updateCursorToBottom();
-        }
+        // Clear conversation context after use (optional, for cleanliness)
+        self.app_context.recent_messages = null;
+
+        return result;
     }
+
 
     pub fn deinit(self: *App) void {
         // Clean up indexing queue
@@ -942,6 +735,12 @@ pub const App = struct {
             if (chunk.content) |c| self.allocator.free(c);
         }
         self.stream_chunks.deinit(self.allocator);
+
+        // Clean up GraphRAG permission state
+        self.line_input_buffer.deinit(self.allocator);
+        if (self.current_indexing_file) |file| {
+            self.allocator.free(file);
+        }
 
         for (self.messages.items) |*message| {
             self.allocator.free(message.content);
@@ -982,6 +781,11 @@ pub const App = struct {
                 self.allocator.free(perm_req.tool_call.function.name);
                 self.allocator.free(perm_req.tool_call.function.arguments);
                 self.allocator.free(perm_req.eval_result.reason);
+            }
+
+            // Clean up tool execution metadata
+            if (message.tool_name) |name| {
+                self.allocator.free(name);
             }
         }
         self.messages.deinit(self.allocator);
@@ -1035,219 +839,9 @@ pub const App = struct {
         }
     }
 
-    /// Progress callback context for GraphRAG indexing
-    const IndexingProgressContext = struct {
-        app: *App,
-        current_message_idx: ?usize = null, // Track which message to update
-        accumulated_content: std.ArrayListUnmanaged(u8) = .{},
-    };
 
-    /// Progress callback for GraphRAG indexing - updates UI with streaming content
-    fn indexingProgressCallback(user_data: *anyopaque, update_type: @import("graphrag/llm_indexer.zig").ProgressUpdateType, message: []const u8) void {
-        const ctx = @as(*IndexingProgressContext, @ptrCast(@alignCast(user_data)));
 
-        // Accumulate the message content
-        ctx.accumulated_content.appendSlice(ctx.app.allocator, message) catch return;
 
-        // Find or create the progress message
-        if (ctx.current_message_idx == null) {
-            // Create new system message for this indexing progress
-            const content = ctx.app.allocator.dupe(u8, ctx.accumulated_content.items) catch return;
-            const processed = markdown.processMarkdown(ctx.app.allocator, content) catch return;
-
-            ctx.app.messages.append(ctx.app.allocator, .{
-                .role = .system,
-                .content = content,
-                .processed_content = processed,
-                .thinking_expanded = false,
-                .timestamp = std.time.milliTimestamp(),
-            }) catch return;
-
-            ctx.current_message_idx = ctx.app.messages.items.len - 1;
-        } else {
-            // Update existing message
-            const idx = ctx.current_message_idx.?;
-            var msg = &ctx.app.messages.items[idx];
-
-            // Free old content
-            ctx.app.allocator.free(msg.content);
-            for (msg.processed_content.items) |*item| {
-                item.deinit(ctx.app.allocator);
-            }
-            msg.processed_content.deinit(ctx.app.allocator);
-
-            // Update with new content
-            msg.content = ctx.app.allocator.dupe(u8, ctx.accumulated_content.items) catch return;
-            msg.processed_content = markdown.processMarkdown(ctx.app.allocator, msg.content) catch return;
-        }
-
-        // Redraw screen to show progress
-        if (!ctx.app.user_scrolled_away) {
-            ctx.app.maintainBottomAnchor() catch return;
-        }
-        _ = message_renderer.redrawScreen(ctx.app) catch return;
-        if (!ctx.app.user_scrolled_away) {
-            ctx.app.updateCursorToBottom();
-        }
-
-        _ = update_type; // Unused for now, but available for future formatting
-    }
-
-    /// SECONDARY LOOP: Process all queued files for GraphRAG indexing
-    ///
-    /// This is the Graph RAG "secondary loop" that runs AFTER the main conversation
-    /// turn completes. It processes files queued by read_file during tool execution.
-    ///
-    /// Flow:
-    /// 1. Main loop: User asks question → LLM responds → Tools execute → read_file queues files
-    /// 2. Main loop: Response completes (no more tool calls)
-    /// 3. Secondary loop: THIS FUNCTION runs to process the queue
-    /// 4. For each file: LLM analyzes → Creates graph → Embeds → Stores in vector DB
-    /// 5. Return to idle state (waiting for next user message)
-    ///
-    /// This separation ensures:
-    /// - Main loop stays responsive (no blocking during conversation)
-    /// - Graph RAG processing is batched and efficient
-    /// - User sees clear progress updates during indexing
-    fn processQueuedFiles(self: *App) !void {
-        if (std.posix.getenv("DEBUG_GRAPHRAG")) |_| {
-            std.debug.print("[GRAPHRAG] processQueuedFiles called\n", .{});
-        }
-
-        const queue = self.indexing_queue orelse {
-            if (std.posix.getenv("DEBUG_GRAPHRAG")) |_| {
-                std.debug.print("[GRAPHRAG] No indexing queue available\n", .{});
-            }
-            return;
-        };
-
-        if (queue.isEmpty()) {
-            if (std.posix.getenv("DEBUG_GRAPHRAG")) |_| {
-                std.debug.print("[GRAPHRAG] Queue is empty\n", .{});
-            }
-            return; // Nothing to process
-        }
-
-        const count = queue.size();
-        const llm_indexer = @import("graphrag/llm_indexer.zig");
-
-        // Show user we're indexing
-        const indexing_msg = try std.fmt.allocPrint(
-            self.allocator,
-            "\n🔍 Indexing {d} file{s}...",
-            .{ count, if (count == 1) "" else "s" },
-        );
-        const indexing_processed = try markdown.processMarkdown(self.allocator, indexing_msg);
-        try self.messages.append(self.allocator, .{
-            .role = .system,
-            .content = indexing_msg,
-            .processed_content = indexing_processed,
-            .thinking_expanded = false,
-            .timestamp = std.time.milliTimestamp(),
-        });
-
-        // Redraw to show indexing message
-        if (!self.user_scrolled_away) {
-            try self.maintainBottomAnchor();
-        }
-        _ = try message_renderer.redrawScreen(self);
-        if (!self.user_scrolled_away) {
-            self.updateCursorToBottom();
-        }
-
-        // Drain all tasks from queue
-        const tasks = try queue.drainAll();
-        defer {
-            for (tasks) |*task| task.deinit();
-            self.allocator.free(tasks);
-        }
-
-        // Process each file with main model
-        for (tasks, 1..) |task, i| {
-            const progress_msg = try std.fmt.allocPrint(
-                self.allocator,
-                "  [{d}/{d}] {s}\n",
-                .{ i, tasks.len, task.file_path },
-            );
-            const progress_processed = try markdown.processMarkdown(self.allocator, progress_msg);
-            try self.messages.append(self.allocator, .{
-                .role = .system,
-                .content = progress_msg,
-                .processed_content = progress_processed,
-                .thinking_expanded = false,
-                .timestamp = std.time.milliTimestamp(),
-            });
-
-            // Redraw to show progress
-            if (!self.user_scrolled_away) {
-                try self.maintainBottomAnchor();
-            }
-            _ = try message_renderer.redrawScreen(self);
-            if (!self.user_scrolled_away) {
-                self.updateCursorToBottom();
-            }
-
-            // Set up progress context for streaming updates
-            var progress_ctx = IndexingProgressContext{
-                .app = self,
-            };
-            defer progress_ctx.accumulated_content.deinit(self.allocator);
-
-            // Use main model for indexing with progress callback
-            llm_indexer.indexFile(
-                self.allocator,
-                &self.ollama_client,
-                self.config.model, // Use main model, not indexing_model
-                &self.app_context,
-                task.file_path,
-                task.content,
-                indexingProgressCallback,
-                @ptrCast(&progress_ctx),
-            ) catch |err| {
-                const error_msg = try std.fmt.allocPrint(
-                    self.allocator,
-                    "    ⚠️  Indexing failed: {}",
-                    .{err},
-                );
-                const error_processed = try markdown.processMarkdown(self.allocator, error_msg);
-                try self.messages.append(self.allocator, .{
-                    .role = .system,
-                    .content = error_msg,
-                    .processed_content = error_processed,
-                    .thinking_expanded = false,
-                    .timestamp = std.time.milliTimestamp(),
-                });
-                continue;
-            };
-
-            // Mark file as indexed in state
-            self.state.markFileAsIndexed(task.file_path) catch |err| {
-                if (std.posix.getenv("DEBUG_GRAPHRAG")) |_| {
-                    std.debug.print("[GRAPHRAG] Failed to mark file as indexed: {}\n", .{err});
-                }
-            };
-        }
-
-        // Show completion
-        const complete_msg = try self.allocator.dupe(u8, "✓ Indexing complete\n");
-        const complete_processed = try markdown.processMarkdown(self.allocator, complete_msg);
-        try self.messages.append(self.allocator, .{
-            .role = .system,
-            .content = complete_msg,
-            .processed_content = complete_processed,
-            .thinking_expanded = false,
-            .timestamp = std.time.milliTimestamp(),
-        });
-
-        // Final redraw
-        if (!self.user_scrolled_away) {
-            try self.maintainBottomAnchor();
-        }
-        _ = try message_renderer.redrawScreen(self);
-        if (!self.user_scrolled_away) {
-            self.updateCursorToBottom();
-        }
-    }
 
     pub fn run(self: *App, app_tui: *ui.Tui) !void {
         _ = app_tui; // Will be used later for editor integration
@@ -1319,11 +913,16 @@ pub const App = struct {
                                 const display_processed = try markdown.processMarkdown(self.allocator, display_content);
 
                                 try self.messages.append(self.allocator, .{
-                                    .role = .system,
+                                    .role = .display_only_data,
                                     .content = display_content,
                                     .processed_content = display_processed,
                                     .thinking_expanded = false,
                                     .timestamp = std.time.milliTimestamp(),
+                                    // Tool execution metadata for collapsible display
+                                    .tool_call_expanded = false,
+                                    .tool_name = try self.allocator.dupe(u8, tool_call.function.name),
+                                    .tool_success = result.success,
+                                    .tool_execution_time = result.metadata.execution_time_ms,
                                 });
 
                                 // Receipt printer mode: auto-scroll to show tool results
@@ -1411,7 +1010,7 @@ pub const App = struct {
                         );
                         const processed = try markdown.processMarkdown(self.allocator, msg);
                         try self.messages.append(self.allocator, .{
-                            .role = .system,
+                            .role = .display_only_data,
                             .content = msg,
                             .processed_content = processed,
                             .thinking_expanded = false,
@@ -1426,6 +1025,20 @@ pub const App = struct {
                             self.updateCursorToBottom();
                         }
                     },
+                }
+            }
+
+            // Handle GraphRAG file processing
+            // This runs when user has made a choice or when there are files queued
+            if (!self.streaming_active and !self.tool_executor.hasPendingWork()) {
+                // Check if we have a pending GraphRAG operation or queued files
+                const has_graphrag_work = (self.graphrag_choice_pending or
+                    self.graphrag_choice_response != null or
+                    (self.indexing_queue != null and !self.indexing_queue.?.isEmpty()));
+
+                if (has_graphrag_work) {
+                    // Call processQueuedFiles to advance the state machine
+                    try app_graphrag.processQueuedFiles(self);
                 }
             }
 
@@ -1486,7 +1099,7 @@ pub const App = struct {
                                 const error_msg = try self.allocator.dupe(u8, "Error: Maximum tool call depth reached. Stopping to prevent infinite loop.");
                                 const error_processed = try markdown.processMarkdown(self.allocator, error_msg);
                                 try self.messages.append(self.allocator, .{
-                                    .role = .system,
+                                    .role = .display_only_data,
                                     .content = error_msg,
                                     .processed_content = error_processed,
                                     .thinking_expanded = false,
@@ -1538,7 +1151,7 @@ pub const App = struct {
 
                             self.stream_mutex.unlock();
 
-                            self.processQueuedFiles() catch |err| {
+                            app_graphrag.processQueuedFiles(self) catch |err| {
                                 if (std.posix.getenv("DEBUG_GRAPHRAG")) |_| {
                                     std.debug.print("[GRAPHRAG] Error in secondary loop: {}\n", .{err});
                                 }
@@ -1629,6 +1242,10 @@ pub const App = struct {
                 var stdout_buffer: [8192]u8 = undefined;
                 var buffered_writer = ui.BufferedStdoutWriter.init(&stdout_buffer);
                 const writer = buffered_writer.writer();
+
+                // Calculate input field height once for this render
+                const input_field_height = try message_renderer.calculateInputFieldHeight(self);
+
                 // Move cursor to home WITHOUT clearing - prevents flicker
                 try writer.writeAll("\x1b[H");
                 self.clickable_areas.clearRetainingCapacity();
@@ -1637,8 +1254,12 @@ pub const App = struct {
                 var absolute_y: usize = 1;
                 for (self.messages.items, 0..) |_, i| {
                     const message = &self.messages.items[i];
+
+                    // Skip tool JSON if hidden by config
+                    if (message.role == .tool and !self.config.show_tool_json) continue;
+
                     // Draw message (handles both thinking and content)
-                    try message_renderer.drawMessage(self, writer, message, i, &absolute_y);
+                    try message_renderer.drawMessage(self, writer, message, i, &absolute_y, input_field_height);
                 }
 
                 // Position cursor after last message content to clear any leftover content
@@ -1648,7 +1269,12 @@ pub const App = struct {
                     1;
 
                 // Only clear if there's space between content and input field
-                if (screen_y_for_clear < self.terminal_size.height - 2) {
+                // input_field_height includes separator, +1 for taskbar
+                const input_area_start = if (self.terminal_size.height > input_field_height + 1)
+                    self.terminal_size.height - input_field_height
+                else
+                    1;
+                if (screen_y_for_clear < input_area_start) {
                     try writer.print("\x1b[{d};1H\x1b[J", .{screen_y_for_clear});
                 }
 
@@ -1669,6 +1295,16 @@ pub const App = struct {
                     if (try ui.handleInput(self, input, &should_redraw)) {
                         return;
                     }
+                    // Check if we need to redraw (e.g., after toggling settings)
+                    if (should_redraw) {
+                        if (!self.user_scrolled_away) {
+                            try self.maintainBottomAnchor();
+                        }
+                        _ = try message_renderer.redrawScreen(self);
+                        if (!self.user_scrolled_away) {
+                            self.updateCursorToBottom();
+                        }
+                    }
                 }
                 // Continue main loop immediately to check for more chunks or execute next tool
                 // Small sleep to avoid busy-waiting and reduce CPU usage
@@ -1678,7 +1314,7 @@ pub const App = struct {
 
                 // Process pending Graph RAG indexing during idle time (post-response)
                 if (self.state.hasPendingIndexing()) {
-                    try self.processPendingIndexing();
+                    try app_graphrag.processPendingIndexing(self);
                 }
 
                 var should_redraw = false;
@@ -1723,9 +1359,13 @@ pub const App = struct {
                 }
             }
 
-            // View height accounts for input field + status bar: total height - 4 rows
+            // View height accounts for input field + status bar (dynamic based on input length)
             // Adjust viewport to keep cursor in view
-            const view_height = self.terminal_size.height - 4;
+            const input_field_height = message_renderer.calculateInputFieldHeight(self) catch 2; // fallback to minimum
+            const view_height = if (self.terminal_size.height > input_field_height + 1)
+                self.terminal_size.height - input_field_height - 1
+            else
+                1;
             if (self.cursor_y < self.scroll_y + 1) {
                 self.scroll_y = if (self.cursor_y > 0) self.cursor_y - 1 else 0;
             }

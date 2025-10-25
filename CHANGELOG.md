@@ -2,6 +2,50 @@
 
 All notable changes to ZodoLlama will be documented in this file.
 
+## [Unreleased] - 2025-01-25
+
+### Fixed
+- **Tool JSON Display Toggle** - Fixed `/toggle-toolcall-json` command bugs:
+  - **Bug #1**: Command didn't trigger immediate redraw during streaming/tool execution
+    - Added `should_redraw` check in streaming input handler (app.zig:1974-1983)
+    - Screen now redraws immediately when toggling visibility
+  - **Bug #2**: Tool JSON messages appeared after streaming ended despite being hidden
+    - Normal render path (line 1935-1939) lacked `show_tool_json` filtering
+    - Added same filtering logic as `redrawScreen()` function
+    - Tool messages now consistently respect visibility setting
+
+### Refactored
+- **GraphRAG Module Extraction** - Separated GraphRAG integration from core app logic:
+  - Created `app_graphrag.zig` (642 lines, 25KB) with all GraphRAG functionality
+  - Reduced `app.zig` from 2,057 lines (91KB) to 1,377 lines (63KB) - **33% smaller**
+  - **Extracted components:**
+    - Helper functions: `isReadFileResult()`, `extractFilePathFromResult()`
+    - Progress tracking: `IndexingProgressContext`, `indexingProgressCallback()`
+    - Message updates: `updateMessageWithLineRange()`, `updateMessageWithMetadata()`
+    - State machines: `processPendingIndexing()`, `processQueuedFiles()` (~460 lines)
+  - Made `maintainBottomAnchor()` and `updateCursorToBottom()` public for module access
+  - All GraphRAG functions now accessed via `app_graphrag.*` namespace
+
+### Benefits
+- ✅ **Cleaner separation** - GraphRAG features isolated in dedicated module
+- ✅ **Improved readability** - Core app loop 33% shorter, easier to understand
+- ✅ **Better maintainability** - GraphRAG changes won't clutter main app file
+- ✅ **Modular architecture** - GraphRAG feels like a clean plugin
+- ✅ **Consistent UX** - Tool JSON visibility toggle works correctly in all modes
+
+### Technical Details
+- Modified `app.zig` (2,057 → 1,377 lines):
+  - Removed 680 lines of GraphRAG code
+  - Added `app_graphrag` import
+  - Updated 4 call sites to use new module
+  - Made 2 functions public for module access
+- Created `app_graphrag.zig` (642 lines):
+  - 7 public functions for GraphRAG operations
+  - Operates on `*App` parameter (stateless module pattern)
+  - Full documentation comments preserved
+
+---
+
 ## [Unreleased] - 2025-01-24
 
 ### Added

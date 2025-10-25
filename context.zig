@@ -5,6 +5,7 @@ const config_module = @import("config.zig");
 const zvdb = @import("zvdb/src/zvdb.zig");
 const embeddings = @import("embeddings.zig");
 const ollama = @import("ollama.zig");
+const types = @import("types.zig");
 const IndexingQueue = @import("graphrag/indexing_queue.zig").IndexingQueue;
 
 pub const AppContext = struct {
@@ -17,4 +18,9 @@ pub const AppContext = struct {
     vector_store: ?*zvdb.HNSW(f32) = null,
     embedder: ?*embeddings.EmbeddingsClient = null,
     indexing_queue: ?*IndexingQueue = null,
+
+    // Recent conversation messages for context-aware tools
+    // Populated before tool execution, null otherwise
+    // Tools can use this to understand what the user is asking about
+    recent_messages: ?[]const types.Message = null,
 };

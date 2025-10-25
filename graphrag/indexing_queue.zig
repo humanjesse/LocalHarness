@@ -60,4 +60,20 @@ pub const IndexingQueue = struct {
         const items = try self.tasks.toOwnedSlice(self.allocator);
         return items;
     }
+
+    /// Peek at the front task without removing it
+    /// Returns null if queue is empty
+    pub fn peek(self: *IndexingQueue) ?IndexingTask {
+        if (self.tasks.items.len == 0) return null;
+        return self.tasks.items[0];
+    }
+
+    /// Remove and return the front task
+    /// Caller is responsible for deinit'ing the returned task
+    /// Returns null if queue is empty
+    pub fn pop(self: *IndexingQueue) !?IndexingTask {
+        if (self.tasks.items.len == 0) return null;
+        const task = self.tasks.orderedRemove(0);
+        return task;
+    }
 };

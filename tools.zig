@@ -8,6 +8,7 @@ const context_module = @import("context.zig");
 const file_tree = @import("tools/file_tree.zig");
 const ls = @import("tools/ls.zig");
 const read_file = @import("tools/read_file.zig");
+const read_file_curated = @import("tools/read_file_curated.zig");
 const read_lines = @import("tools/read_lines.zig");
 const write_file = @import("tools/write_file.zig");
 const replace_lines = @import("tools/replace_lines.zig");
@@ -196,6 +197,7 @@ pub fn getAllToolDefinitions(allocator: std.mem.Allocator) ![]ToolDefinition {
     try tools.append(allocator, try file_tree.getDefinition(allocator));
     try tools.append(allocator, try ls.getDefinition(allocator));
     try tools.append(allocator, try read_file.getDefinition(allocator));
+    try tools.append(allocator, try read_file_curated.getDefinition(allocator));
     try tools.append(allocator, try read_lines.getDefinition(allocator));
     try tools.append(allocator, try write_file.getDefinition(allocator));
     try tools.append(allocator, try replace_lines.getDefinition(allocator));

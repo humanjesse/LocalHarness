@@ -16,7 +16,7 @@ A fast, lightweight terminal chat interface for Ollama written in Zig. Chat with
 
 ```bash
 # Install and start Ollama
-ollama pull qwen3-coder:30b
+ollama pull qwen3:30b  # Tested with qwen3:30b
 ollama serve
 
 # Build and run ZodoLlama
@@ -29,11 +29,13 @@ zig build
 - **Real-time streaming** with responsive, non-blocking UI
 - **Markdown rendering** - Code blocks, tables, lists, and emoji
 - **Tool calling** - 13 tools: read/write/edit files, search code, navigate directories, manage tasks
+- **Experimental read file agent** - AI curates important file sections, reducing context
 - **GraphRAG** - Automatic knowledge graphs compress context (experimental, optional)
 - **Permission system** - Control tool access with persistent policies
 - **Task management** - Track multi-step workflows
-- **Thinking blocks** - See AI reasoning (collapsible with mouse)
-- **Mouse support** - Scroll and interact with messages
+- **Thinking blocks** - See AI reasoning (toggle with `Ctrl+O`)
+- **Mouse & keyboard controls** - Scroll, expand blocks, highlight text
+- **Debug tools** - Toggle raw tool JSON with `/toggle-toolcall-json`
 - **Configurable** - Customize model, host, and colors
 
 ## Usage
@@ -49,9 +51,11 @@ zig build
 |------------|----------|
 | `Enter` | Send message |
 | `Escape` | Clear input |
-| `/quit` + `Enter` | Quit |
+| `/quit` + `Enter` | Quit application |
+| `/toggle-toolcall-json` + `Enter` | Toggle raw tool JSON visibility |
 | Mouse wheel | Scroll messages (moves `>` cursor) |
-| `Ctrl+O` | Toggle thinking block at cursor position (`>`) |
+| `Ctrl+O` | Expand/collapse message block at cursor (`>`) |
+| `Shift+Click` | Highlight and copy text |
 
 ## Tool Permission System
 
@@ -91,6 +95,7 @@ MIT License
 - Flicker-free rendering with smart viewport management
 - Event-driven permission system with async tool execution
 - Modular codebase (~12k lines of code, ~16k total with ZVDB integration)
+- Separated concerns: Core app (1.4k lines), GraphRAG module (642 lines), rendering (1.2k lines)
 
 **Markdown:** Headers, emphasis, links, lists, code blocks, tables, emoji
 

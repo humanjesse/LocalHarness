@@ -13,7 +13,7 @@ pub const PermissionRequest = struct {
 
 /// Chat message with markdown rendering support
 pub const Message = struct {
-    role: enum { user, assistant, system, tool },
+    role: enum { user, assistant, system, tool, display_only_data },
     content: []const u8, // Raw markdown text
     processed_content: std.ArrayListUnmanaged(markdown.RenderableItem),
     thinking_content: ?[]const u8 = null, // Optional reasoning/thinking content
@@ -25,6 +25,11 @@ pub const Message = struct {
     tool_call_id: ?[]const u8 = null, // Required when role is "tool"
     // Permission request field
     permission_request: ?PermissionRequest = null, // Present when asking for permission
+    // Tool execution display fields (for system messages showing tool results)
+    tool_call_expanded: bool = false, // Controls tool result expansion (default collapsed)
+    tool_name: ?[]const u8 = null, // Name of executed tool
+    tool_success: ?bool = null, // Whether tool succeeded
+    tool_execution_time: ?i64 = null, // Execution time in milliseconds
 };
 
 /// Clickable area for mouse interaction (thinking blocks)
@@ -41,4 +46,17 @@ pub const StreamChunk = struct {
     thinking: ?[]const u8,
     content: ?[]const u8,
     done: bool,
+};
+
+/// User's choice for how to handle read_file output in GraphRAG secondary loop
+pub const GraphRagChoice = enum {
+    full_indexing,   // Run full GraphRAG indexing (default)
+    custom_lines,    // Save only specific line ranges
+    metadata_only,   // Save just tool call and filename
+};
+
+/// Line range specification for custom_lines choice
+pub const LineRange = struct {
+    start: usize,
+    end: usize,
 };

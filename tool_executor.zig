@@ -52,24 +52,9 @@ pub const ToolExecutor = struct {
     }
 
     pub fn deinit(self: *ToolExecutor) void {
-        // Clean up pending tool calls
-        if (self.pending_calls) |calls| {
-            for (calls) |call| {
-                if (call.id) |id| self.allocator.free(id);
-                if (call.type) |call_type| self.allocator.free(call_type);
-                self.allocator.free(call.function.name);
-                self.allocator.free(call.function.arguments);
-            }
-            self.allocator.free(calls);
-        }
-
-        // Clean up pending permission tool
-        if (self.pending_permission_tool) |call| {
-            if (call.id) |id| self.allocator.free(id);
-            if (call.type) |call_type| self.allocator.free(call_type);
-            self.allocator.free(call.function.name);
-            self.allocator.free(call.function.arguments);
-        }
+        // NOTE: pending_calls and pending_permission_tool are owned by messages
+        // They are just references here, so we don't free them
+        // The message cleanup in app.deinit() will handle freeing them
 
         // Clean up permission eval
         // Note: eval.reason is managed by PolicyEngine (usually a string literal)
