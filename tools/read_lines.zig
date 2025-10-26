@@ -122,7 +122,7 @@ fn execute(allocator: std.mem.Allocator, arguments: []const u8, context: *AppCon
             .{parsed.value.path},
         );
         defer allocator.free(msg);
-        return ToolResult.ok(allocator, msg, start_time);
+        return ToolResult.ok(allocator, msg, start_time, null);
     }
 
     // Validate line range is within file bounds
@@ -173,7 +173,7 @@ fn execute(allocator: std.mem.Allocator, arguments: []const u8, context: *AppCon
     // - NOT queuing for GraphRAG indexing (fast, exploration-focused)
     // - NOT marking file as "read" for edit_file (require full context for edits)
 
-    return ToolResult.ok(allocator, formatted, start_time);
+    return ToolResult.ok(allocator, formatted, start_time, null);
 }
 
 fn validate(allocator: std.mem.Allocator, arguments: []const u8) bool {

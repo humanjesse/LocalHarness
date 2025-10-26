@@ -7,6 +7,8 @@ const embeddings = @import("embeddings.zig");
 const ollama = @import("ollama.zig");
 const types = @import("types.zig");
 const IndexingQueue = @import("graphrag/indexing_queue.zig").IndexingQueue;
+const agents_module = @import("agents.zig");
+const ProgressUpdateType = agents_module.ProgressUpdateType;
 
 pub const AppContext = struct {
     allocator: std.mem.Allocator,
@@ -23,4 +25,10 @@ pub const AppContext = struct {
     // Populated before tool execution, null otherwise
     // Tools can use this to understand what the user is asking about
     recent_messages: ?[]const types.Message = null,
+
+    // Agent progress callback for real-time streaming
+    // Set by app.zig before executing agent-powered tools
+    // Allows sub-agents (like file curator) to stream progress to UI
+    agent_progress_callback: ?*const fn (?*anyopaque, ProgressUpdateType, []const u8) void = null,
+    agent_progress_user_data: ?*anyopaque = null,
 };

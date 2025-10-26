@@ -48,6 +48,111 @@ const StreamThreadContext = struct {
     graphrag_summaries: [][]const u8,
 };
 
+// Agent progress context for streaming sub-agent progress to UI
+const AgentProgressContext = struct {
+    app: *App,
+    current_message_idx: ?usize = null, // Which message to update
+    thinking_buffer: std.ArrayListUnmanaged(u8) = .{},
+    content_buffer: std.ArrayListUnmanaged(u8) = .{},
+};
+
+// Progress callback for sub-agents (e.g., file curator) - streams to UI in real-time
+fn agentProgressCallback(user_data: ?*anyopaque, update_type: @import("agents.zig").ProgressUpdateType, message: []const u8) void {
+    const ctx = @as(*AgentProgressContext, @ptrCast(@alignCast(user_data orelse return)));
+    const allocator = ctx.app.allocator;
+
+    // Accumulate the message content based on type
+    switch (update_type) {
+        .thinking => {
+            ctx.thinking_buffer.appendSlice(allocator, message) catch return;
+        },
+        .content => {
+            ctx.content_buffer.appendSlice(allocator, message) catch return;
+        },
+        .iteration, .tool_call, .complete => {
+            // Status updates - could log these or show in UI
+            // For now, just continue accumulating
+        },
+    }
+
+    // Find or create the progress message
+    if (ctx.current_message_idx == null) {
+        // Create new system message for this agent progress
+        const thinking_content = if (ctx.thinking_buffer.items.len > 0)
+            allocator.dupe(u8, ctx.thinking_buffer.items) catch return
+        else
+            null;
+        const regular_content = if (ctx.content_buffer.items.len > 0)
+            allocator.dupe(u8, ctx.content_buffer.items) catch return
+        else
+            allocator.dupe(u8, "🤔 Analyzing file...") catch return;
+
+        const thinking_processed = if (thinking_content) |tc|
+            markdown.processMarkdown(allocator, tc) catch return
+        else
+            null;
+        const content_processed = markdown.processMarkdown(allocator, regular_content) catch return;
+
+        ctx.app.messages.append(allocator, .{
+            .role = .display_only_data,
+            .content = regular_content,
+            .processed_content = content_processed,
+            .thinking_content = thinking_content,
+            .processed_thinking_content = thinking_processed,
+            .thinking_expanded = false,
+            .timestamp = std.time.milliTimestamp(),
+        }) catch return;
+
+        ctx.current_message_idx = ctx.app.messages.items.len - 1;
+    } else {
+        // Update existing message
+        const idx = ctx.current_message_idx.?;
+        var msg = &ctx.app.messages.items[idx];
+
+        // Free old content
+        allocator.free(msg.content);
+        for (msg.processed_content.items) |*item| {
+            item.deinit(allocator);
+        }
+        msg.processed_content.deinit(allocator);
+
+        if (msg.thinking_content) |tc| allocator.free(tc);
+        if (msg.processed_thinking_content) |*ptc| {
+            for (ptc.items) |*item| {
+                item.deinit(allocator);
+            }
+            ptc.deinit(allocator);
+        }
+
+        // Update with new accumulated content
+        const thinking_content = if (ctx.thinking_buffer.items.len > 0)
+            allocator.dupe(u8, ctx.thinking_buffer.items) catch return
+        else
+            null;
+        const regular_content = if (ctx.content_buffer.items.len > 0)
+            allocator.dupe(u8, ctx.content_buffer.items) catch return
+        else
+            allocator.dupe(u8, "🤔 Analyzing file...") catch return;
+
+        msg.content = regular_content;
+        msg.processed_content = markdown.processMarkdown(allocator, regular_content) catch return;
+        msg.thinking_content = thinking_content;
+        msg.processed_thinking_content = if (thinking_content) |tc|
+            markdown.processMarkdown(allocator, tc) catch null
+        else
+            null;
+    }
+
+    // Redraw screen to show progress
+    if (!ctx.app.user_scrolled_away) {
+        ctx.app.maintainBottomAnchor() catch return;
+    }
+    _ = message_renderer.redrawScreen(ctx.app) catch return;
+    if (!ctx.app.user_scrolled_away) {
+        ctx.app.updateCursorToBottom();
+    }
+}
+
 // Define available tools for the model
 fn createTools(allocator: mem.Allocator) ![]const ollama.Tool {
     return try tools_module.getOllamaTools(allocator);
@@ -699,11 +804,44 @@ pub const App = struct {
             0;
         self.app_context.recent_messages = self.messages.items[start_idx..];
 
-        // Execute tool with conversation context
+        // Set up agent progress streaming for sub-agents (like file curator)
+        var agent_progress_ctx = AgentProgressContext{
+            .app = self,
+        };
+        defer agent_progress_ctx.thinking_buffer.deinit(self.allocator);
+        defer agent_progress_ctx.content_buffer.deinit(self.allocator);
+
+        self.app_context.agent_progress_callback = agentProgressCallback;
+        self.app_context.agent_progress_user_data = &agent_progress_ctx;
+
+        // Execute tool with conversation context and progress streaming
         const result = try tools_module.executeToolCall(self.allocator, tool_call, &self.app_context);
 
-        // Clear conversation context after use (optional, for cleanliness)
+        // Clean up progress message if it was created
+        // The final tool result will be shown separately, so remove the streaming progress message
+        if (agent_progress_ctx.current_message_idx) |idx| {
+            var msg = &self.messages.items[idx];
+            // Free the progress message content
+            self.allocator.free(msg.content);
+            for (msg.processed_content.items) |*item| {
+                item.deinit(self.allocator);
+            }
+            msg.processed_content.deinit(self.allocator);
+            if (msg.thinking_content) |tc| self.allocator.free(tc);
+            if (msg.processed_thinking_content) |*ptc| {
+                for (ptc.items) |*item| {
+                    item.deinit(self.allocator);
+                }
+                ptc.deinit(self.allocator);
+            }
+            // Remove the progress message from the list
+            _ = self.messages.orderedRemove(idx);
+        }
+
+        // Clear conversation context and progress callback after use
         self.app_context.recent_messages = null;
+        self.app_context.agent_progress_callback = null;
+        self.app_context.agent_progress_user_data = null;
 
         return result;
     }
@@ -912,11 +1050,23 @@ pub const App = struct {
                                 );
                                 const display_processed = try markdown.processMarkdown(self.allocator, display_content);
 
+                                // Extract thinking from agent-powered tools (if available)
+                                const thinking_content = if (result.thinking) |t|
+                                    try self.allocator.dupe(u8, t)
+                                else
+                                    null;
+                                const thinking_processed = if (thinking_content) |tc|
+                                    try markdown.processMarkdown(self.allocator, tc)
+                                else
+                                    null;
+
                                 try self.messages.append(self.allocator, .{
                                     .role = .display_only_data,
                                     .content = display_content,
                                     .processed_content = display_processed,
-                                    .thinking_expanded = false,
+                                    .thinking_content = thinking_content,
+                                    .processed_thinking_content = thinking_processed,
+                                    .thinking_expanded = false,  // Collapsed by default
                                     .timestamp = std.time.milliTimestamp(),
                                     // Tool execution metadata for collapsible display
                                     .tool_call_expanded = false,

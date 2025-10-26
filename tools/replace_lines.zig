@@ -164,7 +164,7 @@ fn execute(allocator: std.mem.Allocator, arguments: []const u8, context: *AppCon
     );
     defer allocator.free(success_msg);
 
-    return ToolResult.ok(allocator, success_msg, start_time);
+    return ToolResult.ok(allocator, success_msg, start_time, null);
 }
 
 fn validate(allocator: std.mem.Allocator, arguments: []const u8) bool {

@@ -106,7 +106,7 @@ code here
 #### File System
 - **get_file_tree**: List all files in project (recursive)
 - **ls**: List single directory with metadata (size, modified time, type) - supports sorting and filtering
-- **read_file**: Read full file contents with line numbers (triggers GraphRAG indexing)
+- **read_file**: Smart file reading with auto-detection (small: full content, medium: curated, large: structure only) - shows agent thinking in real-time for medium/large files, triggers GraphRAG indexing
 - **read_lines**: Read specific line ranges (fast, no indexing - use for quick checks)
 - **write_file**: Create or overwrite files with content
 - **replace_lines**: Replace specific line ranges in existing files
@@ -322,6 +322,50 @@ then provide a categorized overview.
 **Configuration:**
 - Enabled by default for supported models
 - Automatically detected from model response
+
+### Agent Progress Streaming ✨ NEW
+
+**What it does:** See sub-agents' thinking and analysis in real-time as they work.
+
+**When it appears:**
+- During file curation (medium/large files, 100+ lines)
+- Shows live agent analysis and decision-making
+- Streams character-by-character like main assistant
+
+**Example:**
+```
+You: read app.zig
+
+[Appears immediately, streams in real-time]
+┌──────────────────────────────────────┐
+│ 🤔 File Curator Analyzing...         │
+├──────────────────────────────────────┤
+│ 💭 Thinking:                         │
+│ "Analyzing app.zig (1200 lines)...   │  ← Streams as agent thinks
+│ User needs file overview.            │
+│ Mode: STRUCTURE (large file)         │
+│ Extracting skeleton:                 │
+│ - Import statements                  │
+│ - Type definitions                   │
+│ - Function signatures..."            │
+└──────────────────────────────────────┘
+
+[After completion]
+Tool Result: read_file (✅ SUCCESS, 1200ms)
+💭 Agent Thinking (Ctrl+O to expand)
+📄 Curated Output (showing 140 of 1200 lines)
+```
+
+**Features:**
+- **Live updates** - See thinking as it generates
+- **Full transparency** - Understand agent's decisions
+- **Auto-cleanup** - Progress message removed when done
+- **Captured thinking** - Saved in tool result (Ctrl+O to review)
+
+**Benefits:**
+- No silent pauses - always know work is happening
+- Educational - learn how agents analyze code
+- Debugging - see why agent kept/omitted certain code
 
 ## UI Features
 

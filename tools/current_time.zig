@@ -67,5 +67,5 @@ fn execute(allocator: std.mem.Allocator, arguments: []const u8, context: *AppCon
     );
     defer allocator.free(result);
 
-    return ToolResult.ok(allocator, result, start_time);
+    return ToolResult.ok(allocator, result, start_time, null);
 }

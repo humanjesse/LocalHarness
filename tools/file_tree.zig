@@ -49,5 +49,5 @@ fn execute(allocator: std.mem.Allocator, arguments: []const u8, context: *AppCon
     };
     defer allocator.free(tree_json);
 
-    return ToolResult.ok(allocator, tree_json, start_time);
+    return ToolResult.ok(allocator, tree_json, start_time, null);
 }

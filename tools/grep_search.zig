@@ -73,6 +73,7 @@ const SearchContext = struct {
     ignore_gitignore: bool,
     gitignore_patterns: std.ArrayListUnmanaged([]const u8),
     results: std.ArrayListUnmanaged(SearchResult),
+    filename_matches: std.ArrayListUnmanaged([]const u8),
     files_searched: usize,
     files_skipped: usize,
     current_path: std.ArrayListUnmanaged(u8),
@@ -124,6 +125,7 @@ fn execute(allocator: std.mem.Allocator, arguments: []const u8, context: *AppCon
         .ignore_gitignore = ignore_gitignore,
         .gitignore_patterns = .{},
         .results = .{},
+        .filename_matches = .{},
         .files_searched = 0,
         .files_skipped = 0,
         .current_path = .{},
@@ -138,6 +140,10 @@ fn execute(allocator: std.mem.Allocator, arguments: []const u8, context: *AppCon
             allocator.free(result.line_content);
         }
         search_ctx.results.deinit(allocator);
+        for (search_ctx.filename_matches.items) |path| {
+            allocator.free(path);
+        }
+        search_ctx.filename_matches.deinit(allocator);
         search_ctx.current_path.deinit(allocator);
     }
 
@@ -156,7 +162,7 @@ fn execute(allocator: std.mem.Allocator, arguments: []const u8, context: *AppCon
 
     // Format results
     const formatted = try formatResults(&search_ctx, args);
-    return ToolResult.ok(allocator, formatted, start_time);
+    return ToolResult.ok(allocator, formatted, start_time, null);
 }
 
 fn loadGitignore(ctx: *SearchContext) !void {
@@ -243,7 +249,14 @@ fn searchDirectory(ctx: *SearchContext, dir: std.fs.Dir, rel_path: []const u8) !
                     }
                 }
 
-                // Search the file
+                // Check if filename matches the pattern
+                if (matchesFilename(ctx, entry.name)) {
+                    // Add to filename matches
+                    const matched_path = try ctx.allocator.dupe(u8, entry_path);
+                    try ctx.filename_matches.append(ctx.allocator, matched_path);
+                }
+
+                // Search the file content
                 try searchFile(ctx, dir, entry_path);
             },
             else => {}, // Skip other types (symlinks, etc.)
@@ -312,6 +325,12 @@ fn matchesPattern(ctx: *SearchContext, line: []const u8) bool {
             return std.mem.indexOf(u8, line, ctx.pattern) != null;
         }
     }
+}
+
+fn matchesFilename(ctx: *SearchContext, filename: []const u8) bool {
+    // Check if filename (basename only) matches the pattern
+    // Uses same logic as content matching: case-insensitive with wildcard support
+    return matchesPattern(ctx, filename);
 }
 
 fn matchesWildcard(text: []const u8, pattern: []const u8, case_insensitive: bool) bool {
@@ -474,9 +493,23 @@ fn formatResults(ctx: *SearchContext, args: anytype) ![]const u8 {
 
     try writer.writeAll("\n\n");
 
-    if (ctx.results.items.len == 0) {
-        try writer.writeAll("No matches found.\n");
-    } else {
+    // Show filename matches if any
+    if (ctx.filename_matches.items.len > 0) {
+        try writer.writeAll("=== Filename Matches ===\n");
+        for (ctx.filename_matches.items) |path| {
+            try writer.print("{s}\n", .{path});
+        }
+        if (ctx.results.items.len > 0) {
+            try writer.writeAll("\n");
+        }
+    }
+
+    // Show content matches if any
+    if (ctx.results.items.len > 0) {
+        if (ctx.filename_matches.items.len > 0) {
+            try writer.writeAll("=== Content Matches ===\n");
+        }
+
         // Group results by file
         var current_file: ?[]const u8 = null;
         for (ctx.results.items) |result| {
@@ -492,27 +525,51 @@ fn formatResults(ctx: *SearchContext, args: anytype) ![]const u8 {
         }
     }
 
-    // Summary
-    try writer.writeAll("\n");
-    try writer.print("Summary: {d} match", .{ctx.results.items.len});
-    if (ctx.results.items.len != 1) try writer.writeAll("es");
-
-    // Count unique files
-    var file_count: usize = 0;
-    var last_file: ?[]const u8 = null;
-    for (ctx.results.items) |result| {
-        if (last_file == null or !std.mem.eql(u8, last_file.?, result.file_path)) {
-            file_count += 1;
-            last_file = result.file_path;
-        }
+    // Show message if no matches at all
+    if (ctx.filename_matches.items.len == 0 and ctx.results.items.len == 0) {
+        try writer.writeAll("No matches found.\n");
     }
 
-    try writer.print(" in {d} file", .{file_count});
-    if (file_count != 1) try writer.writeAll("s");
+    // Summary
+    try writer.writeAll("\n");
+
+    // Show filename match count
+    if (ctx.filename_matches.items.len > 0) {
+        try writer.print("Summary: {d} filename match", .{ctx.filename_matches.items.len});
+        if (ctx.filename_matches.items.len != 1) try writer.writeAll("es");
+
+        if (ctx.results.items.len > 0) {
+            try writer.writeAll(", ");
+        }
+    } else {
+        try writer.writeAll("Summary: ");
+    }
+
+    // Show content match count
+    if (ctx.results.items.len > 0) {
+        try writer.print("{d} content match", .{ctx.results.items.len});
+        if (ctx.results.items.len != 1) try writer.writeAll("es");
+
+        // Count unique files with content matches
+        var file_count: usize = 0;
+        var last_file: ?[]const u8 = null;
+        for (ctx.results.items) |result| {
+            if (last_file == null or !std.mem.eql(u8, last_file.?, result.file_path)) {
+                file_count += 1;
+                last_file = result.file_path;
+            }
+        }
+
+        try writer.print(" in {d} file", .{file_count});
+        if (file_count != 1) try writer.writeAll("s");
+    } else if (ctx.filename_matches.items.len == 0) {
+        try writer.writeAll("No matches found");
+    }
 
     try writer.print(" (searched {d} files, skipped {d} ignored)", .{ ctx.files_searched, ctx.files_skipped });
 
-    if (ctx.results.items.len >= ctx.max_results) {
+    const total_matches = ctx.filename_matches.items.len + ctx.results.items.len;
+    if (total_matches >= ctx.max_results) {
         try writer.print(
             \\
             \\⚠️  Result limit ({d}) reached! Refine your pattern or use max_results parameter.

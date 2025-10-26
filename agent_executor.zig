@@ -141,6 +141,10 @@ pub const AgentExecutor = struct {
         const allowed_tools = try self.filterAllowedTools(available_tools);
         defer self.allocator.free(allowed_tools);
 
+        // Track thinking content across iterations (will contain final thinking)
+        var final_thinking: ?[]const u8 = null;
+        defer if (final_thinking) |t| self.allocator.free(t);
+
         // Main iteration loop
         while (self.iterations_used < self.capabilities.max_iterations) {
             self.iterations_used += 1;
@@ -166,7 +170,7 @@ pub const AgentExecutor = struct {
                 .callback_user_data = callback_user_data,
             };
             defer stream_ctx.content_buffer.deinit(self.allocator);
-            defer stream_ctx.thinking_buffer.deinit(self.allocator);
+            // Note: thinking_buffer is extracted before defer, so don't deinit here
 
             // Call LLM
             const model = context.capabilities.model_override orelse context.config.model;
@@ -202,9 +206,19 @@ pub const AgentExecutor = struct {
                 return try AgentResult.err(self.allocator, error_msg, stats);
             };
 
-            // Get response content
+            // Get response content and thinking
             const response_content = try stream_ctx.content_buffer.toOwnedSlice(self.allocator);
             defer self.allocator.free(response_content);
+
+            // Update final_thinking with latest iteration's thinking
+            // (Free previous thinking if it exists)
+            if (final_thinking) |old_thinking| {
+                self.allocator.free(old_thinking);
+            }
+            final_thinking = if (stream_ctx.thinking_buffer.items.len > 0)
+                try stream_ctx.thinking_buffer.toOwnedSlice(self.allocator)
+            else
+                null;
 
             // Add assistant message to history
             try self.message_history.append(self.allocator, .{
@@ -251,7 +265,7 @@ pub const AgentExecutor = struct {
                 .execution_time_ms = end_time - start_time,
             };
 
-            return try AgentResult.ok(self.allocator, response_content, stats);
+            return try AgentResult.ok(self.allocator, response_content, stats, final_thinking);
         }
 
         // Max iterations reached

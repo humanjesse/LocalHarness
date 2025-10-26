@@ -8,7 +8,6 @@ const context_module = @import("context.zig");
 const file_tree = @import("tools/file_tree.zig");
 const ls = @import("tools/ls.zig");
 const read_file = @import("tools/read_file.zig");
-const read_file_curated = @import("tools/read_file_curated.zig");
 const read_lines = @import("tools/read_lines.zig");
 const write_file = @import("tools/write_file.zig");
 const replace_lines = @import("tools/replace_lines.zig");
@@ -41,6 +40,7 @@ pub const ToolResult = struct {
     data: ?[]const u8,
     error_message: ?[]const u8,
     error_type: ToolErrorType,
+    thinking: ?[]const u8 = null,  // Optional thinking/reasoning from agents
     metadata: struct {
         execution_time_ms: i64,
         data_size_bytes: usize,
@@ -48,13 +48,14 @@ pub const ToolResult = struct {
     },
 
     // Helper to create success result
-    pub fn ok(allocator: std.mem.Allocator, data: []const u8, start_time: i64) !ToolResult {
+    pub fn ok(allocator: std.mem.Allocator, data: []const u8, start_time: i64, thinking_opt: ?[]const u8) !ToolResult {
         const end_time = std.time.milliTimestamp();
         return .{
             .success = true,
             .data = try allocator.dupe(u8, data),
             .error_message = null,
             .error_type = .none,
+            .thinking = if (thinking_opt) |t| try allocator.dupe(u8, t) else null,
             .metadata = .{
                 .execution_time_ms = end_time - start_time,
                 .data_size_bytes = data.len,
@@ -168,6 +169,7 @@ pub const ToolResult = struct {
     pub fn deinit(self: *ToolResult, allocator: std.mem.Allocator) void {
         if (self.data) |d| allocator.free(d);
         if (self.error_message) |e| allocator.free(e);
+        if (self.thinking) |t| allocator.free(t);
     }
 };
 
@@ -196,8 +198,7 @@ pub fn getAllToolDefinitions(allocator: std.mem.Allocator) ![]ToolDefinition {
     // File system tools
     try tools.append(allocator, try file_tree.getDefinition(allocator));
     try tools.append(allocator, try ls.getDefinition(allocator));
-    try tools.append(allocator, try read_file.getDefinition(allocator));
-    try tools.append(allocator, try read_file_curated.getDefinition(allocator));
+    try tools.append(allocator, try read_file.getDefinition(allocator)); // Now unified with smart auto-detection
     try tools.append(allocator, try read_lines.getDefinition(allocator));
     try tools.append(allocator, try write_file.getDefinition(allocator));
     try tools.append(allocator, try replace_lines.getDefinition(allocator));

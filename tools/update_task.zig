@@ -92,5 +92,5 @@ fn execute(allocator: std.mem.Allocator, arguments: []const u8, context: *AppCon
     // Return JSON confirmation with task_id and new status
     const result_msg = try std.fmt.allocPrint(allocator, "{{\"task_id\":\"{s}\",\"status\":\"{s}\"}}", .{ parsed.value.task_id, parsed.value.status });
     defer allocator.free(result_msg);
-    return ToolResult.ok(allocator, result_msg, start_time);
+    return ToolResult.ok(allocator, result_msg, start_time, null);
 }

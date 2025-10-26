@@ -59,5 +59,5 @@ fn execute(allocator: std.mem.Allocator, arguments: []const u8, context: *AppCon
     // Return JSON with string ID: {"task_id": "task_1"}
     const result_msg = try std.fmt.allocPrint(allocator, "{{\"task_id\": \"{s}\"}}", .{task_id});
     defer allocator.free(result_msg);
-    return ToolResult.ok(allocator, result_msg, start_time);
+    return ToolResult.ok(allocator, result_msg, start_time, null);
 }

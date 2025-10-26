@@ -80,15 +80,19 @@ pub const AgentResult = struct {
     /// Error message if success = false
     error_message: ?[]const u8 = null,
 
+    /// Agent's extended thinking/reasoning (if enabled)
+    thinking: ?[]const u8 = null,
+
     /// Execution statistics
     stats: AgentStats,
 
     /// Helper to create success result
-    pub fn ok(allocator: std.mem.Allocator, data: []const u8, stats: AgentStats) !AgentResult {
+    pub fn ok(allocator: std.mem.Allocator, data: []const u8, stats: AgentStats, thinking_opt: ?[]const u8) !AgentResult {
         return .{
             .success = true,
             .data = try allocator.dupe(u8, data),
             .error_message = null,
+            .thinking = if (thinking_opt) |t| try allocator.dupe(u8, t) else null,
             .stats = stats,
         };
     }
@@ -110,6 +114,9 @@ pub const AgentResult = struct {
         }
         if (self.error_message) |msg| {
             allocator.free(msg);
+        }
+        if (self.thinking) |thinking| {
+            allocator.free(thinking);
         }
         if (self.metadata) |_| {
             // metadata is a std.json.Value, we'll handle this in agent_executor

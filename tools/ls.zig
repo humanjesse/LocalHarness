@@ -194,7 +194,7 @@ fn execute(allocator: std.mem.Allocator, arguments: []const u8, context: *AppCon
 
     // Format output
     const formatted = try formatOutput(allocator, path, entries.items, total_size, file_count, dir_count, sort_by, reverse, max_entries);
-    return ToolResult.ok(allocator, formatted, start_time);
+    return ToolResult.ok(allocator, formatted, start_time, null);
 }
 
 fn formatOutput(

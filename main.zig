@@ -38,11 +38,8 @@ pub fn main() !void {
                 \\  Config file: ~/.config/zodollama/config.json
                 \\
                 \\Controls:
-                \\  Ctrl+C        Send message / Cancel input
-                \\  Ctrl+D        Exit application
-                \\  Ctrl+L        Clear chat history
-                \\  Arrow Keys    Navigate and scroll
-                \\  Mouse         Click to scroll and interact
+                \\  Scroll Wheel     Scroll through messages
+                \\  Shift+Click      Highlight and copy text
                 \\
             , .{});
             return;

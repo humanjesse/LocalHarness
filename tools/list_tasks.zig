@@ -45,7 +45,7 @@ fn execute(allocator: std.mem.Allocator, arguments: []const u8, context: *AppCon
         // Return empty JSON array
         const msg = try allocator.dupe(u8, "[]");
         defer allocator.free(msg);
-        return ToolResult.ok(allocator, msg, start_time);
+        return ToolResult.ok(allocator, msg, start_time, null);
     }
 
     // Build JSON array: [{"task_id": "task_1", "status": "pending", "content": "..."}, ...]
@@ -88,5 +88,5 @@ fn execute(allocator: std.mem.Allocator, arguments: []const u8, context: *AppCon
 
     const result_str = try result.toOwnedSlice(allocator);
     defer allocator.free(result_str);
-    return ToolResult.ok(allocator, result_str, start_time);
+    return ToolResult.ok(allocator, result_str, start_time, null);
 }

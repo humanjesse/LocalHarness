@@ -53,5 +53,5 @@ fn execute(allocator: std.mem.Allocator, arguments: []const u8, context: *AppCon
     const result = try std.fmt.allocPrint(allocator, "Current working directory: {s}", .{cwd_path});
     defer allocator.free(result);
 
-    return ToolResult.ok(allocator, result, start_time);
+    return ToolResult.ok(allocator, result, start_time, null);
 }
