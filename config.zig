@@ -32,8 +32,7 @@ pub const Config = struct {
     max_chunks_in_history: usize = 5, // Max number of code chunks to include in compressed history
     zvdb_path: []const u8 = ".zodollama/graphrag.zvdb", // Path to vector database file
     // File reading thresholds (smart auto-detection)
-    file_read_small_threshold: usize = 100, // Files < this: show full content (no agent overhead)
-    file_read_large_threshold: usize = 500, // Files > this: show structure only. Between: curated relevance
+    file_read_small_threshold: usize = 200, // Files <= this: show full content (no agent overhead). Files > this: use conversation-aware curation agent
 
     pub fn deinit(self: *Config, allocator: mem.Allocator) void {
         allocator.free(self.ollama_host);
@@ -77,7 +76,6 @@ const ConfigFile = struct {
     max_chunks_in_history: ?usize = null,
     zvdb_path: ?[]const u8 = null,
     file_read_small_threshold: ?usize = null,
-    file_read_large_threshold: ?usize = null,
 };
 
 /// JSON-serializable policy structure
@@ -271,10 +269,6 @@ pub fn loadConfigFromFile(allocator: mem.Allocator) !Config {
 
     if (parsed.value.file_read_small_threshold) |file_read_small_threshold| {
         config.file_read_small_threshold = file_read_small_threshold;
-    }
-
-    if (parsed.value.file_read_large_threshold) |file_read_large_threshold| {
-        config.file_read_large_threshold = file_read_large_threshold;
     }
 
     return config;

@@ -119,32 +119,33 @@ Adding new agents is straightforward:
 3. Define capabilities
 4. Use from tools or app logic
 
-## Data Flow Example: read_file_curated
+## Data Flow Example: read_file (with agent curation)
 
 ```
-User: "Read config.zig"
+User: "How does error handling work in config.zig?"
   ↓
-Main Loop: Calls read_file_curated tool
+Main Loop: Calls read_file tool
   ↓
 Tool: Reads file (1000 lines)
   ↓
-Tool: Invokes file_curator agent
+Tool: Detects file > 100 lines → invoke file_curator agent
   ↓
-Agent Executor: Runs isolated LLM session
-  ├─ Message history: [user task]
-  ├─ LLM analyzes file structure
-  ├─ LLM returns JSON: {"line_ranges": [...], "summary": "..."}
-  └─ Returns AgentResult with JSON
+Agent Executor: Runs isolated LLM session with conversation context
+  ├─ Message history: [user task + conversation context]
+  ├─ LLM sees: "User asked about error handling"
+  ├─ LLM filters to error-related code only
+  ├─ LLM returns JSON: {"line_ranges": [error types, handlers], "summary": "..."}
+  └─ Returns AgentResult with JSON and thinking
   ↓
 Tool: Parses curation JSON
   ↓
-Tool: Formats curated output (300 lines preserved)
+Tool: Formats curated output (200 lines preserved - error handling only!)
   ↓
 Tool: Queues FULL file (1000 lines) for GraphRAG
   ↓
-Main Loop: Receives curated view (300 lines)
+Main Loop: Receives curated view (200 relevant lines)
   ↓
-Main conversation context only has 300 lines, not 1000!
+Conversation context has only relevant sections, GraphRAG has full file!
 ```
 
 ## Variables/Functions Unified
@@ -187,11 +188,12 @@ Main conversation context only has 300 lines, not 1000!
 ## Current Agents
 
 ### file_curator
-- **Purpose**: Analyze files and identify important line ranges
-- **Input**: File path and content
-- **Output**: JSON with line ranges and summary
-- **Use case**: Reduce context usage while preserving searchability
+- **Purpose**: Analyze files and identify important line ranges based on conversation context
+- **Input**: File path, content, and recent conversation messages
+- **Output**: JSON with line ranges and summary (conversation-aware relevance filtering)
+- **Use case**: Reduce context usage while preserving searchability - adapts naturally to file size
 - **Capabilities**: No tools, 2 iterations max, temperature 0.3
+- **Smart behavior**: Filters by relevance when conversation context is available, falls back to structural curation otherwise
 
 ## Future Agent Ideas
 
@@ -280,24 +282,30 @@ const tool_result = try read_file_curated.execute(allocator, "{\"path\":\"test.z
 - **Amortized**: Cost is per-file, not per-message
 - **Benefit**: Reduces context for entire conversation
 
-### When to Skip Curation
-- Very small files (<50 lines): Use regular `read_file`
-- Critical files: Use regular `read_file` for full view
-- Debugging: Use regular `read_file` or `read_lines`
+### Smart Auto-Detection
+The read_file tool automatically detects the best approach:
+- **Small files (≤100 lines)**: Full content, instant (no agent overhead)
+- **Larger files (>100 lines)**: Conversation-aware curation via file_curator agent
+- **For surgical reads**: Use `read_lines` tool for specific line ranges
 
 ## Configuration
 
-Add to `config.zig` if you want user control:
+Current configuration in `config.zig`:
 
 ```zig
 pub const Config = struct {
     // ... existing fields ...
 
-    // Agent system settings
-    agent_file_curation_enabled: bool = true,
-    agent_default_model_override: ?[]const u8 = null,  // Use different model for agents
-    agent_max_iterations_default: usize = 5,
+    // File reading threshold (smart auto-detection)
+    file_read_small_threshold: usize = 100,  // Files <= this: full content. Files > this: curated
 };
+```
+
+Users can customize the threshold in `~/.config/zodollama/config.json`:
+```json
+{
+  "file_read_small_threshold": 100
+}
 ```
 
 ## Summary

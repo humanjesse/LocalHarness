@@ -30,6 +30,10 @@ pub const Message = struct {
     tool_name: ?[]const u8 = null, // Name of executed tool
     tool_success: ?bool = null, // Whether tool succeeded
     tool_execution_time: ?i64 = null, // Execution time in milliseconds
+    // Agent analysis fields (for sub-agent thinking display - file_curator, graphrag, etc.)
+    agent_analysis_name: ?[]const u8 = null, // e.g., "File Curator"
+    agent_analysis_expanded: bool = true, // Default expanded until user collapses
+    agent_analysis_completed: bool = false, // Whether agent finished (enables collapse)
 };
 
 /// Clickable area for mouse interaction (thinking blocks)

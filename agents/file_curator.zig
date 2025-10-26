@@ -52,59 +52,6 @@ const CURATOR_SYSTEM_PROMPT =
     \\}
 ;
 
-/// System prompt for structural extraction (overview mode for large files)
-const STRUCTURE_SYSTEM_PROMPT =
-    \\You are a code structure extractor providing high-level file overviews.
-    \\
-    \\Your goal: Extract ONLY the structural skeleton of the file, omitting all implementation details.
-    \\This gives the user a quick map of what the file contains without drowning in details.
-    \\
-    \\KEEP (structural elements only):
-    \\- Import statements (all @import lines)
-    \\- Type definitions: struct, enum, union SIGNATURES (first 1-3 lines only, not full body)
-    \\- Constant definitions: pub const declarations (especially string constants, configs)
-    \\- Function SIGNATURES: pub fn name(args) !ReturnType (omit function bodies!)
-    \\- Top-level documentation comments (///, //!)
-    \\- Exported APIs and public interfaces
-    \\
-    \\OMIT (implementation details):
-    \\- Function bodies (everything between { } after function signature)
-    \\- Private implementation functions (non-pub fn)
-    \\- Complex logic, loops, conditionals inside functions
-    \\- Verbose inline comments
-    \\- Test code, example code
-    \\- Error handling implementation (unless it's a type definition)
-    \\
-    \\STRATEGY:
-    \\1. Scan for structural keywords: @import, pub const, pub fn, struct, enum, union
-    \\2. Extract the declaration line + 1-2 lines of context (not entire bodies)
-    \\3. Create coherent ranges (group related imports, group related types)
-    \\4. Target: 10-15% of file, maximum ~150 lines total
-    \\5. Think "table of contents" not "full chapter"
-    \\
-    \\Example: A 500-line file with 20 functions
-    \\  → Keep: Imports (5 lines), type definitions (20 lines), function signatures (40 lines)
-    \\  → Omit: All function bodies (435 lines)
-    \\  → Result: ~65 lines (13%) showing structure
-    \\
-    \\RULES:
-    \\1. Each line range should be 3+ lines minimum
-    \\2. Line ranges are INCLUSIVE (start and end included)
-    \\3. Explain what structural elements each range contains
-    \\4. Be aggressive - structure only, no implementation
-    \\
-    \\RESPOND WITH ONLY VALID JSON (no markdown, no explanation):
-    \\{
-    \\  "line_ranges": [
-    \\    {"start": 1, "end": 8, "reason": "imports and module dependencies"},
-    \\    {"start": 12, "end": 25, "reason": "Config struct definition (public API)"},
-    \\    {"start": 45, "end": 48, "reason": "loadConfig function signature"},
-    \\    {"start": 78, "end": 81, "reason": "validateConfig function signature"}
-    \\  ],
-    \\  "summary": "Showing file structure only (imports, types, function signatures). Implementation details omitted - use read_lines for specific sections.",
-    \\  "preserved_percentage": 12
-    \\}
-;
 
 /// Get the agent definition
 pub fn getDefinition(allocator: std.mem.Allocator) !AgentDefinition {
@@ -200,7 +147,6 @@ pub fn formatCuratedFile(
     file_path: []const u8,
     full_content: []const u8,
     curation: CurationResult,
-    mode_label: []const u8, // "curated" or "structure"
 ) ![]const u8 {
     var output = std.ArrayListUnmanaged(u8){};
     defer output.deinit(allocator);
@@ -232,7 +178,7 @@ pub fn formatCuratedFile(
 
     // Write header with metadata
     try writer.writeAll("```\n");
-    try writer.print("File: {s} ({s})\n", .{ file_path, mode_label });
+    try writer.print("File: {s} (curated)\n", .{file_path});
     try writer.print("Total lines: {d} | Preserved: {d} ({d:.1}%)\n", .{
         total_lines,
         preserved_line_count,
@@ -283,8 +229,8 @@ pub fn formatCuratedFile(
 // Public API for read_file tool
 // ============================================================================
 
-/// Curate file for relevance to ongoing conversation (medium files, 100-500 lines)
-/// Uses conversation-aware CURATOR_SYSTEM_PROMPT
+/// Curate file for relevance to ongoing conversation (all files above small threshold)
+/// Uses conversation-aware CURATOR_SYSTEM_PROMPT which adapts to file size naturally
 pub fn curateForRelevance(
     allocator: std.mem.Allocator,
     context: AgentContext,
@@ -326,40 +272,6 @@ pub fn curateForRelevance(
     return runCuration(allocator, context, task, CURATOR_SYSTEM_PROMPT, progress_callback, callback_user_data);
 }
 
-/// Extract file structure only (large files, >500 lines)
-/// Uses structure-focused STRUCTURE_SYSTEM_PROMPT
-pub fn extractStructure(
-    allocator: std.mem.Allocator,
-    context: AgentContext,
-    file_content: []const u8,
-    progress_callback: ?ProgressCallback,
-    callback_user_data: ?*anyopaque,
-) !AgentResult {
-    // Format content with line numbers
-    var numbered_content = std.ArrayListUnmanaged(u8){};
-    defer numbered_content.deinit(allocator);
-    const writer = numbered_content.writer(allocator);
-
-    var line_iter = std.mem.splitScalar(u8, file_content, '\n');
-    var line_num: usize = 1;
-    while (line_iter.next()) |line| : (line_num += 1) {
-        try writer.print("{d}: {s}\n", .{ line_num, line });
-    }
-
-    const numbered = try numbered_content.toOwnedSlice(allocator);
-    defer allocator.free(numbered);
-
-    // Build task prompt for structure extraction
-    const task = try std.fmt.allocPrint(
-        allocator,
-        "Extract the structural skeleton of this file (imports, types, function signatures only):\n\n{s}",
-        .{numbered},
-    );
-    defer allocator.free(task);
-
-    // Run agent with structure mode
-    return runCuration(allocator, context, task, STRUCTURE_SYSTEM_PROMPT, progress_callback, callback_user_data);
-}
 
 /// Internal helper: Run curation agent with specified system prompt
 fn runCuration(

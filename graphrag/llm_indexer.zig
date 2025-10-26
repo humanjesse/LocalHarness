@@ -286,7 +286,7 @@ pub fn indexFile(
             if (tools.len > 0) tools else null,
             app_context.config.model_keep_alive,
             app_context.config.num_ctx,
-            8192, // Original limit - give model room to think and call tools naturally
+            10240, // Increased from 8192 - give model room to think and call tools naturally
             0.1, // temperature=0.1 - very focused, deterministic extraction
             1.3, // repeat_penalty=1.3 - penalize repetitive deliberation phrases (default: 1.1)
             &stream_ctx,

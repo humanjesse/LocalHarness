@@ -42,7 +42,7 @@ Problem: Turn 1 pays full 1000-line cost!
 
 ### Design Philosophy
 
-**One tool, three modes, automatic detection:**
+**One tool, two modes, automatic detection:**
 
 ```
 read_file(path) → intelligently adapts based on file size
@@ -50,7 +50,7 @@ read_file(path) → intelligently adapts based on file size
 
 - **No LLM decision required** - the tool chooses the right approach
 - **Always indexes full content** - GraphRAG gets complete files
-- **Progressive detail** - small files full, medium curated, large structural
+- **Smart filtering** - small files full, larger files conversation-aware curation
 
 ### Architecture
 
@@ -61,27 +61,33 @@ read_file(path) → intelligently adapts based on file size
 │  1. Read file                                  │
 │  2. Count lines                                │
 │  3. Auto-detect mode:                          │
-│     • < 100 lines   → FULL                     │
-│     • 100-500 lines → CURATED (agent)          │
-│     • > 500 lines   → STRUCTURE (agent)        │
+│     • ≤ 100 lines  → FULL (instant)            │
+│     • > 100 lines  → CURATED (agent)           │
 │  4. Queue FULL file for GraphRAG               │
 │  5. Return optimized view                      │
 └────────────────────────────────────────────────┘
 ```
 
-### The Three Modes
+### The Two Modes
 
-#### Mode 1: FULL (< 100 lines)
+#### Mode 1: FULL (≤ 100 lines)
 **Strategy:** Return complete file
 **Reason:** Small enough to not matter, no agent overhead
 **Context Cost:** 100% (but low absolute size)
-**Example:** config.json (45 lines) → 45 lines shown
+**Example:** config.json (45 lines) → 45 lines shown, instant response
 
-#### Mode 2: CURATED (100-500 lines)
+#### Mode 2: CURATED (> 100 lines)
 **Strategy:** Agent analyzes with conversation context, filters by relevance
 **Agent Used:** `file_curator.curateForRelevance()`
-**Context Cost:** 30-50% of original
-**Example:**
+**Context Cost:** 10-50% depending on relevance and file size (LLM adapts naturally)
+**Smart Behavior:**
+- With conversation context: Filters to exactly what user asked about
+- Without conversation context: Falls back to structural curation
+- Naturally more aggressive for larger files
+
+**Examples:**
+
+*Medium file with specific question:*
 ```
 User: "How does error handling work?"
 File: error_handler.zig (300 lines)
@@ -92,19 +98,25 @@ Agent keeps:
 Result: 110 lines shown (63% reduction)
 ```
 
-#### Mode 3: STRUCTURE (> 500 lines)
-**Strategy:** Extract skeleton only (imports, types, signatures)
-**Agent Used:** `file_curator.extractStructure()`
-**Context Cost:** 10-15% of original
-**Example:**
+*Large file with specific question:*
+```
+User: "How does the main loop work?"
+File: app.zig (1200 lines)
+Agent keeps:
+  - Main loop function and helpers (lines 450-580)
+  - Event handling (lines 200-250)
+  - Loop initialization (lines 100-120)
+Result: 150 lines shown (88% reduction)
+```
+
+*Large file without conversation context (cold start):*
 ```
 File: app.zig (1200 lines)
 Agent extracts:
   - Import statements (lines 1-15)
   - Type definitions (lines 20-45)
-  - Public function signatures (lines 100, 250, 400, etc.)
-  - Omits: All function bodies, private functions, implementation details
-Result: 140 lines shown (88% reduction)
+  - Public function signatures (not bodies)
+Result: 140 lines shown (88% reduction, structural overview)
 ```
 
 ---
@@ -114,35 +126,34 @@ Result: 140 lines shown (88% reduction)
 ### Files Changed
 
 #### 1. `agents/file_curator.zig`
-**Added:**
-- `STRUCTURE_SYSTEM_PROMPT` - guides LLM to extract file skeleton
-- `curateForRelevance()` - public API for conversation-aware curation
-- `extractStructure()` - public API for structural extraction
-- `formatCuratedFile()` - now accepts mode label parameter
+**Key Components:**
+- `CURATOR_SYSTEM_PROMPT` - guides LLM to filter by relevance (conversation-aware) or structure (fallback)
+- `curateForRelevance()` - public API for conversation-aware curation (works for all file sizes)
+- `formatCuratedFile()` - formats curated output with preserved line ranges
 
 **Key prompts:**
 
-**CURATOR_SYSTEM_PROMPT** (conversation-aware):
+**CURATOR_SYSTEM_PROMPT** (conversation-aware with structural fallback):
 ```
 PRIMARY STRATEGY (if conversation context provided):
 1. What is the user investigating?
 2. Keep ONLY code directly related to their questions
 3. Be AGGRESSIVE - omit unrelated code
-4. Target: 30-50% preservation
-```
+4. Target: 30-50% preservation for medium files, 10-20% for large files
 
-**STRUCTURE_SYSTEM_PROMPT** (skeleton extraction):
-```
-KEEP: Imports, type definitions, function SIGNATURES
-OMIT: Function bodies, private functions, implementation details
-Target: 10-15% preservation, maximum ~150 lines
-Think "table of contents" not "full chapter"
+FALLBACK STRATEGY (if no conversation context):
+1. Curate based on code structure
+2. KEEP: Imports, type definitions, function signatures, complex logic, public APIs
+3. OMIT: Verbose comments, boilerplate, simple getters, test data
+4. Target: 30-50% preservation
+
+The LLM naturally adapts its aggressiveness based on file size.
 ```
 
 #### 2. `tools/read_file.zig`
-**Complete rewrite with:**
-- Auto-detection logic using configurable thresholds
-- Integration with file_curator agent for both modes
+**Simplified two-mode logic:**
+- Auto-detection based on single threshold
+- Integration with file_curator agent for conversation-aware curation
 - Robust fallback to full file if agent fails
 - Always queues full file for GraphRAG indexing
 
@@ -150,14 +161,11 @@ Think "table of contents" not "full chapter"
 ```zig
 const total_lines = countLines(content);
 const small_threshold = context.config.file_read_small_threshold;
-const large_threshold = context.config.file_read_large_threshold;
 
-const formatted = if (total_lines < small_threshold)
-    formatFullFile(allocator, path, content, total_lines)
-else if (total_lines <= large_threshold)
-    formatWithCuration(allocator, context, path, content, total_lines, "curated")
+const formatted = if (total_lines <= small_threshold)
+    formatFullFile(allocator, path, content, total_lines)  // ≤100 lines: instant full content
 else
-    formatWithCuration(allocator, context, path, content, total_lines, "structure");
+    formatWithCuration(allocator, context, path, content, total_lines);  // >100 lines: curated
 ```
 
 #### 3. `tools/read_file_curated.zig`
@@ -170,20 +178,18 @@ else
 - Added comment: "Now unified with smart auto-detection"
 
 #### 5. `config.zig`
-**Added configuration:**
+**Simplified configuration:**
 ```zig
 pub const Config = struct {
     // ... existing fields ...
-    file_read_small_threshold: usize = 100,
-    file_read_large_threshold: usize = 500,
+    file_read_small_threshold: usize = 100,  // Files <= this: full, Files > this: curated
 };
 ```
 
 **JSON config support:**
 ```json
 {
-  "file_read_small_threshold": 100,
-  "file_read_large_threshold": 500
+  "file_read_small_threshold": 100
 }
 ```
 
@@ -198,8 +204,10 @@ pub const Config = struct {
 | 50 lines  | 50 (full)    | 50 (full)    | 0%      |
 | 150 lines | 150 (full)   | ~60 (curated)| **60%** |
 | 300 lines | 300 (full)   | ~120 (curated)| **60%** |
-| 700 lines | 700 (full)   | ~100 (structure)| **86%** |
-| 1200 lines| 1200 (full)  | ~150 (structure)| **88%** |
+| 700 lines | 700 (full)   | ~100 (curated)| **86%** |
+| 1200 lines| 1200 (full)  | ~150 (curated)| **88%** |
+
+Note: The curated mode naturally adapts - more aggressive for larger files, less aggressive for smaller files.
 
 ### Historical Context (Turn 2+)
 
@@ -212,7 +220,7 @@ GraphRAG compression applies to **all modes**:
 ```
 Turn 1: "What does app.zig do?" (1200 lines)
   Old: 1200 lines in context
-  New: 150 lines (structure mode)
+  New: 150 lines (curated mode - structural overview)
   Savings: 88%
 
 Turn 2: "How does the main loop work?"
@@ -276,16 +284,15 @@ The agent then filters to keep only authentication-related code.
 
 ## Configuration
 
-### Default Thresholds
+### Default Threshold
 
 ```zig
 file_read_small_threshold: usize = 100,
-file_read_large_threshold: usize = 500,
 ```
 
 **Rationale:**
 - **100 lines**: Small enough for full view, no agent overhead worth it
-- **500 lines**: Large enough that structure-only is valuable
+- **Above 100 lines**: Agent provides intelligent filtering based on conversation context
 
 ### User Customization
 
@@ -293,15 +300,14 @@ Users can tune in `~/.config/zodollama/config.json`:
 
 ```json
 {
-  "file_read_small_threshold": 150,
-  "file_read_large_threshold": 800
+  "file_read_small_threshold": 150
 }
 ```
 
 **Use cases:**
-- **Aggressive (50/300)**: Maximize context savings, use agents more
-- **Conservative (200/1000)**: Trust full content more, less aggressive
-- **Custom (100/500)**: Default balanced approach
+- **Aggressive (50)**: Use agent more often, maximize context savings
+- **Conservative (200)**: Prefer full content for more files, less agent overhead
+- **Default (100)**: Balanced approach (recommended)
 
 ---
 
@@ -316,15 +322,16 @@ read_file_curated: "Reads a file and returns a curated view showing only
 
 **After:**
 ```
-read_file: "Reads a file with smart context optimization. Automatically
-           adapts based on file size: small files (<100 lines) show full
-           content, medium files (100-500 lines) show conversation-relevant
-           sections, large files (>500 lines) show structural overview
-           (imports, types, signatures). All files are indexed in GraphRAG
-           for later queries. Use this as your primary file reading tool."
+read_file: "Reads a file with smart context optimization. Small files
+           (≤100 lines) show full content instantly. Larger files use an
+           intelligent agent that filters content based on conversation
+           context to show only relevant sections. All files are fully
+           indexed in GraphRAG for later queries. Use this as your primary
+           file reading tool. For surgical access to specific line ranges,
+           use read_lines instead."
 ```
 
-**Result:** LLM no longer needs to choose between tools - one tool does it all.
+**Result:** LLM no longer needs to choose between tools - one tool does it all. The agent naturally adapts to file size and conversation context.
 
 ---
 
@@ -336,19 +343,15 @@ read_file: "Reads a file with smart context optimization. Automatically
 |------|-------------|-----------------|
 | Full | No | Instant (~10ms) |
 | Curated | Yes | +1-3s (agent LLM call) |
-| Structure | Yes | +1-2s (simpler task) |
 
 ### Agent Cost
 
-**Curated mode:**
+**Curated mode (all files >100 lines):**
 - Model: Same as main app (configurable)
 - Temperature: 0.3 (deterministic)
 - Max iterations: 2
 - Context window: 16k tokens
-
-**Structure mode:**
-- Same parameters as curated
-- Typically completes in 1 iteration (simpler task)
+- Typically completes in 1 iteration
 
 ### Memory
 
@@ -534,12 +537,12 @@ Tool Result: read_file (✅ SUCCESS, 1200ms)
 **Before:**
 - 3 tools (read_file, read_file_curated, read_lines)
 - LLM confusion about when to use which
-- Duplicate agent logic
+- Multiple system prompts for different modes
 
 **After:**
 - 2 tools (read_file, read_lines)
-- Clear separation: read_file (main), read_lines (surgical)
-- Unified agent logic
+- Clear separation: read_file (smart auto-detection), read_lines (surgical)
+- Single agent mode that adapts naturally
 
 ---
 
@@ -564,28 +567,18 @@ Tool Result: read_file (✅ SUCCESS, 1200ms)
    - Keeps: imports, types, signatures, public APIs
    - Omits: verbose comments, boilerplate
 
-**Structure mode prompt strategies:**
+**Adaptive aggressiveness:**
 
-1. **Skeleton extraction:**
-   - Imports (all `@import` lines)
-   - Type definitions (struct/enum signatures, first 1-3 lines)
-   - Function signatures (`pub fn name(args) !ReturnType`)
-   - Top-level docs (`///`, `//!`)
+The single CURATOR_SYSTEM_PROMPT naturally adapts its filtering based on:
+1. **Conversation context presence:** More precise when it knows what user wants
+2. **File size:** Naturally more aggressive with larger files
+3. **Structural fallback:** When no conversation context, extracts skeleton (imports, types, signatures)
 
-2. **Omit implementation:**
-   - All function bodies
-   - Private functions
-   - Complex logic, loops, conditionals
-   - Test code, examples
-
-3. **Size target:**
-   - 10-15% of original file
-   - Maximum ~150 lines total
-   - "Table of contents" not "full chapter"
+This eliminates the need for separate prompts - the LLM adapts intelligently.
 
 ### JSON Response Validation
 
-Both modes return structured JSON:
+The curated mode returns structured JSON:
 
 ```json
 {
@@ -660,10 +653,11 @@ Both modes return structured JSON:
    - Automatic mode selection based on file size works better
    - Users can still override via config if needed
 
-2. **Agent reuse is powerful:**
-   - Same file_curator agent for two modes (curated, structure)
-   - Different system prompts = different behaviors
+2. **Single agent, adaptive behavior:**
+   - One file_curator agent adapts to all file sizes
+   - Single system prompt with fallback strategy
    - Centralized logic, consistent quality
+   - LLM naturally adjusts aggressiveness
 
 3. **Fallback is essential:**
    - Agents can fail (timeout, model issues, JSON errors)
@@ -671,9 +665,10 @@ Both modes return structured JSON:
    - Users never see failures, just slightly more content
 
 4. **Measure twice, optimize once:**
-   - Thresholds (100/500) chosen based on typical file sizes
-   - Aggressive defaults work well for most use cases
+   - Threshold (100 lines) chosen based on typical file sizes
+   - Single threshold simplifies configuration
    - Config allows users to tune per their needs
+   - Agent naturally adapts to file size without explicit thresholds
 
 ### Development Process
 
@@ -684,11 +679,16 @@ Both modes return structured JSON:
 
 **Unification phase:**
 - Merged curated functionality into read_file
-- Added structure mode for large files
-- Removed duplicate tool
+- Removed duplicate tool (read_file_curated)
+- Single agent mode with adaptive behavior
+
+**Simplification phase (2025):**
+- Removed structure mode (redundant with adaptive curated mode)
+- Single threshold configuration
+- Trusted LLM to adapt naturally to file size
 
 **Configuration phase:**
-- Made thresholds configurable
+- Made threshold configurable
 - Allowed per-user tuning
 - Maintained sensible defaults
 
@@ -719,6 +719,13 @@ Both modes return structured JSON:
 - Thinking shown in collapsible sections (Ctrl+O to expand)
 - Temporary progress message shows during execution, removed on completion
 - Full transparency into agent decision-making process
+
+**2025-10-26 - Simplification to Two Modes**
+- Removed structure mode (redundant with adaptive curated mode)
+- Simplified to single threshold configuration
+- Trust LLM to adapt naturally to all file sizes
+- Updated all documentation
+- Cleaner, more maintainable architecture
 
 **2025-10-25 - Initial Implementation**
 - Implemented unified read_file with three auto-detected modes

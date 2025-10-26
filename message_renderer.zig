@@ -549,6 +549,41 @@ pub fn drawMessage(
         }
     }
 
+    // Add agent analysis section if present (for sub-agent thinking - file_curator, graphrag, etc.)
+    const has_agent_analysis = message.agent_analysis_name != null;
+    if (has_agent_analysis) {
+        if (message.agent_analysis_completed and !message.agent_analysis_expanded) {
+            // COLLAPSED: Show one-liner summary
+            const agent_time = message.tool_execution_time orelse 0;
+            var summary = std.ArrayListUnmanaged(u8){};
+            defer summary.deinit(app.allocator);
+            try summary.print(
+                app.allocator,
+                "\x1b[2m🤔 {s} Analysis (✅ completed, {d}ms) - Ctrl+O to expand\x1b[0m",
+                .{message.agent_analysis_name.?, agent_time}
+            );
+            try all_lines.append(app.allocator, try summary.toOwnedSlice(app.allocator));
+            try all_lines.append(app.allocator, try app.allocator.dupe(u8, "SEPARATOR"));
+        } else {
+            // EXPANDED or STREAMING: Show full content
+            // Add hint if completed (can be collapsed)
+            if (message.agent_analysis_completed) {
+                try all_lines.append(app.allocator, try app.allocator.dupe(u8, "\x1b[2m(Ctrl+O to collapse)\x1b[0m"));
+            }
+
+            // Render agent analysis content
+            var content_lines = std.ArrayListUnmanaged([]const u8){};
+            defer content_lines.deinit(app.allocator);
+            try renderItemsToLines(app, &message.processed_content, &content_lines, 0, max_content_width);
+
+            for (content_lines.items) |line| {
+                try all_lines.append(app.allocator, line);
+            }
+
+            try all_lines.append(app.allocator, try app.allocator.dupe(u8, "SEPARATOR"));
+        }
+    }
+
     // Add tool call section if present (for system messages showing tool results)
     const has_tool_call = message.tool_name != null;
     if (has_tool_call) {
@@ -599,8 +634,8 @@ pub fn drawMessage(
     }
 
     // Add main content lines (transfer ownership to all_lines)
-    // Skip content for tool calls since we render it in the tool section above
-    if (!has_tool_call) {
+    // Skip content for tool calls and agent analysis since we render them above
+    if (!has_tool_call and !has_agent_analysis) {
         var content_lines = std.ArrayListUnmanaged([]const u8){};
         defer content_lines.deinit(app.allocator); // Only deinit the ArrayList, not the strings
         try renderItemsToLines(app, &message.processed_content, &content_lines, 0, max_content_width);
@@ -1140,6 +1175,37 @@ pub fn calculateContentHeight(self: *App) !usize {
             }
         }
 
+        // Add agent analysis section if present (for sub-agent thinking - file_curator, graphrag, etc.)
+        const has_agent_analysis = message.agent_analysis_name != null;
+        if (has_agent_analysis) {
+            if (message.agent_analysis_completed and !message.agent_analysis_expanded) {
+                // COLLAPSED: Show one-liner summary (1 line + separator)
+                try all_lines.append(self.allocator, try self.allocator.dupe(u8, "agent_collapsed"));
+                try all_lines.append(self.allocator, try self.allocator.dupe(u8, "SEPARATOR"));
+            } else {
+                // EXPANDED or STREAMING: Show full content
+                // Add hint if completed (1 line)
+                if (message.agent_analysis_completed) {
+                    try all_lines.append(self.allocator, try self.allocator.dupe(u8, "agent_hint"));
+                }
+
+                // Render agent analysis content
+                var agent_lines = std.ArrayListUnmanaged([]const u8){};
+                defer {
+                    for (agent_lines.items) |line| self.allocator.free(line);
+                    agent_lines.deinit(self.allocator);
+                }
+
+                try renderItemsToLines(self, &message.processed_content, &agent_lines, 0, max_content_width);
+
+                for (agent_lines.items) |line| {
+                    try all_lines.append(self.allocator, try self.allocator.dupe(u8, line));
+                }
+
+                try all_lines.append(self.allocator, try self.allocator.dupe(u8, "SEPARATOR"));
+            }
+        }
+
         // Add tool call section if present
         const has_tool_call = message.tool_name != null;
         if (has_tool_call) {
@@ -1165,8 +1231,8 @@ pub fn calculateContentHeight(self: *App) !usize {
             }
         }
 
-        // Add main content lines (skip for tool calls)
-        if (!has_tool_call) {
+        // Add main content lines (skip for tool calls and agent analysis)
+        if (!has_tool_call and !has_agent_analysis) {
             var content_lines = std.ArrayListUnmanaged([]const u8){};
             defer {
                 for (content_lines.items) |line| self.allocator.free(line);

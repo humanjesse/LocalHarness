@@ -591,15 +591,21 @@ pub fn handleInput(
                     should_redraw.* = true;
                 }
             },
-            0x0F => { // Ctrl+O - toggle thinking box or tool call at cursor position
+            0x0F => { // Ctrl+O - toggle thinking, tool call, or agent analysis at cursor position
                 if (findAreaAtCursor(app)) |area| {
+                    // Toggle agent analysis if present AND completed
+                    if (area.message.agent_analysis_name != null and
+                        area.message.agent_analysis_completed) {
+                        area.message.agent_analysis_expanded = !area.message.agent_analysis_expanded;
+                        should_redraw.* = true;
+                    }
                     // Toggle thinking if present
-                    if (area.message.thinking_content != null) {
+                    else if (area.message.thinking_content != null) {
                         area.message.thinking_expanded = !area.message.thinking_expanded;
                         should_redraw.* = true;
                     }
                     // Toggle tool call if present
-                    if (area.message.tool_name != null) {
+                    else if (area.message.tool_name != null) {
                         area.message.tool_call_expanded = !area.message.tool_call_expanded;
                         should_redraw.* = true;
                     }

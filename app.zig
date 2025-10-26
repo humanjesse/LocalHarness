@@ -54,7 +54,79 @@ const AgentProgressContext = struct {
     current_message_idx: ?usize = null, // Which message to update
     thinking_buffer: std.ArrayListUnmanaged(u8) = .{},
     content_buffer: std.ArrayListUnmanaged(u8) = .{},
+    finalized: bool = false,  // Track if we've formatted the final message
+    agent_name: []const u8 = "Agent",  // Name of the agent for display
+    start_time: i64 = 0,  // Track execution start time for display
 };
+
+// Finalize agent message with nice formatting when agent completes
+fn finalizeAgentMessage(ctx: *AgentProgressContext) !void {
+    const allocator = ctx.app.allocator;
+    const idx = ctx.current_message_idx orelse return;
+    var msg = &ctx.app.messages.items[idx];
+
+    // Calculate execution time
+    const end_time = std.time.milliTimestamp();
+    const execution_time = end_time - ctx.start_time;
+
+    // Free old content
+    allocator.free(msg.content);
+    for (msg.processed_content.items) |*item| {
+        item.deinit(allocator);
+    }
+    msg.processed_content.deinit(allocator);
+
+    if (msg.thinking_content) |tc| allocator.free(tc);
+    if (msg.processed_thinking_content) |*ptc| {
+        for (ptc.items) |*item| {
+            item.deinit(allocator);
+        }
+        ptc.deinit(allocator);
+    }
+
+    // Build final formatted message
+    var final_content = std.ArrayListUnmanaged(u8){};
+    defer final_content.deinit(allocator);
+    const writer = final_content.writer(allocator);
+
+    // Header with agent name
+    try writer.print("🤔 **{s} Analysis**\n", .{ctx.agent_name});
+    try writer.writeAll("─────────────────────────────────\n\n");
+
+    // Content
+    if (ctx.thinking_buffer.items.len > 0) {
+        try writer.writeAll(ctx.thinking_buffer.items);
+        if (ctx.content_buffer.items.len > 0) {
+            try writer.writeAll("\n\n");
+        }
+    }
+    if (ctx.content_buffer.items.len > 0) {
+        try writer.writeAll(ctx.content_buffer.items);
+    }
+
+    // Footer
+    try writer.writeAll("\n\n─────────────────────────────────");
+
+    const display_content = try final_content.toOwnedSlice(allocator);
+    msg.content = display_content;
+    msg.processed_content = try markdown.processMarkdown(allocator, display_content);
+    msg.thinking_content = null;
+    msg.processed_thinking_content = null;
+
+    // Mark agent analysis as completed and auto-collapse
+    msg.agent_analysis_completed = true;  // Enable collapse button
+    msg.agent_analysis_expanded = false;  // Auto-collapse to save space
+    msg.tool_execution_time = execution_time;  // Store execution time for display
+
+    // Redraw screen to show finalized message
+    if (!ctx.app.user_scrolled_away) {
+        try ctx.app.maintainBottomAnchor();
+    }
+    _ = try message_renderer.redrawScreen(ctx.app);
+    if (!ctx.app.user_scrolled_away) {
+        ctx.app.updateCursorToBottom();
+    }
+}
 
 // Progress callback for sub-agents (e.g., file curator) - streams to UI in real-time
 fn agentProgressCallback(user_data: ?*anyopaque, update_type: @import("agents.zig").ProgressUpdateType, message: []const u8) void {
@@ -69,7 +141,15 @@ fn agentProgressCallback(user_data: ?*anyopaque, update_type: @import("agents.zi
         .content => {
             ctx.content_buffer.appendSlice(allocator, message) catch return;
         },
-        .iteration, .tool_call, .complete => {
+        .complete => {
+            // Agent finished - finalize the message with nice formatting
+            if (!ctx.finalized and ctx.current_message_idx != null) {
+                ctx.finalized = true;
+                finalizeAgentMessage(ctx) catch return;
+                return;  // finalizeAgentMessage handles redraw
+            }
+        },
+        .iteration, .tool_call => {
             // Status updates - could log these or show in UI
             // For now, just continue accumulating
         },
@@ -77,35 +157,41 @@ fn agentProgressCallback(user_data: ?*anyopaque, update_type: @import("agents.zi
 
     // Find or create the progress message
     if (ctx.current_message_idx == null) {
-        // Create new system message for this agent progress
-        const thinking_content = if (ctx.thinking_buffer.items.len > 0)
-            allocator.dupe(u8, ctx.thinking_buffer.items) catch return
-        else
-            null;
-        const regular_content = if (ctx.content_buffer.items.len > 0)
-            allocator.dupe(u8, ctx.content_buffer.items) catch return
-        else
-            allocator.dupe(u8, "🤔 Analyzing file...") catch return;
+        // Capture start time if not already set
+        if (ctx.start_time == 0) {
+            ctx.start_time = std.time.milliTimestamp();
+        }
 
-        const thinking_processed = if (thinking_content) |tc|
-            markdown.processMarkdown(allocator, tc) catch return
-        else
-            null;
-        const content_processed = markdown.processMarkdown(allocator, regular_content) catch return;
+        // Create new system message for this agent progress
+        // Start with simple message, will be formatted nicely on completion
+        const display_content = allocator.dupe(u8, "🤔 Analyzing...") catch return;
+        const content_processed = markdown.processMarkdown(allocator, display_content) catch return;
+
+        // Duplicate agent name for message
+        const agent_name_copy = allocator.dupe(u8, ctx.agent_name) catch return;
 
         ctx.app.messages.append(allocator, .{
             .role = .display_only_data,
-            .content = regular_content,
+            .content = display_content,
             .processed_content = content_processed,
-            .thinking_content = thinking_content,
-            .processed_thinking_content = thinking_processed,
+            .thinking_content = null,
+            .processed_thinking_content = null,
             .thinking_expanded = false,
             .timestamp = std.time.milliTimestamp(),
+            // Agent analysis metadata (NEW - for streaming + collapsible display)
+            .agent_analysis_name = agent_name_copy,
+            .agent_analysis_expanded = true,  // Expanded during streaming (shows content)
+            .agent_analysis_completed = false,  // Not done yet (no collapse button)
+            // Keep tool_execution_time for display (but not using tool collapse)
+            .tool_call_expanded = false,
+            .tool_name = null,
+            .tool_success = null,
+            .tool_execution_time = null,  // Will be set on completion
         }) catch return;
 
         ctx.current_message_idx = ctx.app.messages.items.len - 1;
     } else {
-        // Update existing message
+        // Update existing message with streaming content
         const idx = ctx.current_message_idx.?;
         var msg = &ctx.app.messages.items[idx];
 
@@ -124,23 +210,29 @@ fn agentProgressCallback(user_data: ?*anyopaque, update_type: @import("agents.zi
             ptc.deinit(allocator);
         }
 
-        // Update with new accumulated content
-        const thinking_content = if (ctx.thinking_buffer.items.len > 0)
-            allocator.dupe(u8, ctx.thinking_buffer.items) catch return
-        else
-            null;
-        const regular_content = if (ctx.content_buffer.items.len > 0)
-            allocator.dupe(u8, ctx.content_buffer.items) catch return
-        else
-            allocator.dupe(u8, "🤔 Analyzing file...") catch return;
+        // During streaming, just show raw accumulated content (thinking + content)
+        var combined = std.ArrayListUnmanaged(u8){};
+        defer combined.deinit(allocator);
 
-        msg.content = regular_content;
-        msg.processed_content = markdown.processMarkdown(allocator, regular_content) catch return;
-        msg.thinking_content = thinking_content;
-        msg.processed_thinking_content = if (thinking_content) |tc|
-            markdown.processMarkdown(allocator, tc) catch null
+        if (ctx.thinking_buffer.items.len > 0) {
+            combined.appendSlice(allocator, ctx.thinking_buffer.items) catch return;
+            if (ctx.content_buffer.items.len > 0) {
+                combined.appendSlice(allocator, "\n\n") catch return;
+            }
+        }
+        if (ctx.content_buffer.items.len > 0) {
+            combined.appendSlice(allocator, ctx.content_buffer.items) catch return;
+        }
+
+        const display_content = if (combined.items.len > 0)
+            allocator.dupe(u8, combined.items) catch return
         else
-            null;
+            allocator.dupe(u8, "🤔 Analyzing...") catch return;
+
+        msg.content = display_content;
+        msg.processed_content = markdown.processMarkdown(allocator, display_content) catch return;
+        msg.thinking_content = null;
+        msg.processed_thinking_content = null;
     }
 
     // Redraw screen to show progress
@@ -807,6 +899,8 @@ pub const App = struct {
         // Set up agent progress streaming for sub-agents (like file curator)
         var agent_progress_ctx = AgentProgressContext{
             .app = self,
+            .agent_name = "File Curator",  // Default agent name (could be passed from tool)
+            .start_time = std.time.milliTimestamp(),  // Start tracking execution time
         };
         defer agent_progress_ctx.thinking_buffer.deinit(self.allocator);
         defer agent_progress_ctx.content_buffer.deinit(self.allocator);
@@ -817,26 +911,8 @@ pub const App = struct {
         // Execute tool with conversation context and progress streaming
         const result = try tools_module.executeToolCall(self.allocator, tool_call, &self.app_context);
 
-        // Clean up progress message if it was created
-        // The final tool result will be shown separately, so remove the streaming progress message
-        if (agent_progress_ctx.current_message_idx) |idx| {
-            var msg = &self.messages.items[idx];
-            // Free the progress message content
-            self.allocator.free(msg.content);
-            for (msg.processed_content.items) |*item| {
-                item.deinit(self.allocator);
-            }
-            msg.processed_content.deinit(self.allocator);
-            if (msg.thinking_content) |tc| self.allocator.free(tc);
-            if (msg.processed_thinking_content) |*ptc| {
-                for (ptc.items) |*item| {
-                    item.deinit(self.allocator);
-                }
-                ptc.deinit(self.allocator);
-            }
-            // Remove the progress message from the list
-            _ = self.messages.orderedRemove(idx);
-        }
+        // Note: Progress message is kept as permanent "Agent Analysis" message
+        // It was already finalized by the progress callback when agent completed
 
         // Clear conversation context and progress callback after use
         self.app_context.recent_messages = null;
@@ -923,6 +999,11 @@ pub const App = struct {
 
             // Clean up tool execution metadata
             if (message.tool_name) |name| {
+                self.allocator.free(name);
+            }
+
+            // Clean up agent analysis metadata
+            if (message.agent_analysis_name) |name| {
                 self.allocator.free(name);
             }
         }
@@ -1050,23 +1131,16 @@ pub const App = struct {
                                 );
                                 const display_processed = try markdown.processMarkdown(self.allocator, display_content);
 
-                                // Extract thinking from agent-powered tools (if available)
-                                const thinking_content = if (result.thinking) |t|
-                                    try self.allocator.dupe(u8, t)
-                                else
-                                    null;
-                                const thinking_processed = if (thinking_content) |tc|
-                                    try markdown.processMarkdown(self.allocator, tc)
-                                else
-                                    null;
+                                // Note: Agent thinking is shown in separate "Agent Analysis" message above
+                                // No need to duplicate it in tool result
 
                                 try self.messages.append(self.allocator, .{
                                     .role = .display_only_data,
                                     .content = display_content,
                                     .processed_content = display_processed,
-                                    .thinking_content = thinking_content,
-                                    .processed_thinking_content = thinking_processed,
-                                    .thinking_expanded = false,  // Collapsed by default
+                                    .thinking_content = null,  // Thinking shown separately
+                                    .processed_thinking_content = null,
+                                    .thinking_expanded = false,
                                     .timestamp = std.time.milliTimestamp(),
                                     // Tool execution metadata for collapsible display
                                     .tool_call_expanded = false,

@@ -24,7 +24,7 @@ pub fn getDefinition(allocator: std.mem.Allocator) !ToolDefinition {
             .type = "function",
             .function = .{
                 .name = try allocator.dupe(u8, "read_file"),
-                .description = try allocator.dupe(u8, "Reads a file with smart context optimization. Automatically adapts based on file size: small files (<100 lines) show full content, medium files (100-500 lines) show conversation-relevant sections, large files (>500 lines) show structural overview (imports, types, signatures). All files are indexed in GraphRAG for later queries. Use this as your primary file reading tool. For surgical access to specific line ranges, use read_lines instead."),
+                .description = try allocator.dupe(u8, "Reads a file with smart context optimization. Small files (<100 lines) show full content instantly. Larger files use an intelligent agent that filters content based on conversation context to show only relevant sections. All files are fully indexed in GraphRAG for later queries. Use this as your primary file reading tool. For surgical access to specific line ranges, use read_lines instead."),
                 .parameters = try allocator.dupe(u8,
                     \\{
                     \\  "type": "object",
@@ -90,26 +90,25 @@ fn execute(allocator: std.mem.Allocator, arguments: []const u8, context: *AppCon
     // Count lines
     const total_lines = countLines(content);
 
-    // Get thresholds from config
+    // Get threshold from config
     const small_threshold = context.config.file_read_small_threshold;
-    const large_threshold = context.config.file_read_large_threshold;
 
     if (std.posix.getenv("DEBUG_GRAPHRAG")) |_| {
-        std.debug.print("[DEBUG] File has {d} lines. Thresholds: small={d}, large={d}\n", .{ total_lines, small_threshold, large_threshold });
+        std.debug.print("[DEBUG] File has {d} lines. Threshold: small={d}\n", .{ total_lines, small_threshold });
     }
 
     // Smart auto-detection based on file size
     var thinking: ?[]const u8 = null;
-    const formatted = if (total_lines < small_threshold) blk: {
+    const formatted = if (total_lines <= small_threshold) blk: {
         // SMALL FILES: Return full content (no agent overhead)
         break :blk try formatFullFile(allocator, parsed.value.path, content, total_lines);
     } else blk: {
-        // MEDIUM/LARGE FILES: Use agent for curation/structure extraction
-        const mode = if (total_lines <= large_threshold) "curated" else "structure";
-        const output = try formatWithCuration(allocator, context, parsed.value.path, content, total_lines, mode);
+        // LARGER FILES: Use agent for conversation-aware curation
+        const output = try formatWithCuration(allocator, context, parsed.value.path, content, total_lines);
         thinking = output.thinking;  // Capture thinking for ToolResult
         break :blk output.content;
     };
+    defer allocator.free(formatted);  // Free after ToolResult.ok() dups it
     defer if (thinking) |t| allocator.free(t);
 
     // Queue FULL file for GraphRAG indexing (always full content, not curated!)
@@ -208,17 +207,16 @@ fn formatFullFile(
     return try output.toOwnedSlice(allocator);
 }
 
-/// Format file with agent curation (medium/large files)
+/// Format file with agent curation (all files above small threshold)
 fn formatWithCuration(
     allocator: std.mem.Allocator,
     context: *AppContext,
     file_path: []const u8,
     content: []const u8,
     total_lines: usize,
-    mode: []const u8, // "curated" or "structure"
 ) !CurationOutput {
     if (std.posix.getenv("DEBUG_GRAPHRAG")) |_| {
-        std.debug.print("[DEBUG] Invoking file_curator agent ({s} mode)...\n", .{mode});
+        std.debug.print("[DEBUG] Invoking file_curator agent (curated mode)...\n", .{});
     }
 
     // Build conversation context if available
@@ -269,7 +267,7 @@ fn formatWithCuration(
             .temperature = 0.3,
             .num_ctx = 16384,
             .num_predict = 2000,
-            .enable_thinking = false,
+            .enable_thinking = true,  // Enable to show agent's reasoning process to user
             .model_override = null,
         },
         .recent_messages = context.recent_messages,
@@ -279,13 +277,15 @@ fn formatWithCuration(
     const progress_callback = context.agent_progress_callback;
     const callback_user_data = context.agent_progress_user_data;
 
-    // Invoke appropriate agent function with progress streaming
-    const agent_result = if (std.mem.eql(u8, mode, "structure"))
-        file_curator.extractStructure(allocator, agent_context, content, progress_callback, callback_user_data)
-    else
-        file_curator.curateForRelevance(allocator, agent_context, content, conv_ctx_slice, progress_callback, callback_user_data);
-
-    var result = agent_result catch |err| {
+    // Invoke agent with conversation-aware curation
+    var result = file_curator.curateForRelevance(
+        allocator,
+        agent_context,
+        content,
+        conv_ctx_slice,
+        progress_callback,
+        callback_user_data,
+    ) catch |err| {
         if (std.posix.getenv("DEBUG_GRAPHRAG")) |_| {
             std.debug.print("[DEBUG] Agent execution failed: {}, falling back to full file\n", .{err});
         }
@@ -332,7 +332,6 @@ fn formatWithCuration(
         file_path,
         content,
         curation.value,
-        mode,
     );
 
     // Return both content and thinking
