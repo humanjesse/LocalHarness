@@ -463,21 +463,23 @@ Tool Result: read_file (✅ SUCCESS, 1200ms)
 ### Implementation
 
 **Data flow:**
-1. `app.zig` creates `AgentProgressContext` before tool execution
+1. `app.zig` creates `ProgressDisplayContext` before tool execution *(unified with GraphRAG)*
 2. Sets `app_context.agent_progress_callback = agentProgressCallback`
 3. `read_file` extracts callback and passes to `file_curator` agent
 4. Agent executor streams chunks via callback (`.thinking`, `.content`)
 5. Callback creates/updates temporary message in UI
 6. `redrawScreen()` called after each chunk for live updates
-7. On completion, temporary message removed
-8. Final tool result shown with full captured thinking
+7. On completion, `finalizeProgressMessage()` creates beautiful formatted display *(Phase 2)*
+8. Message auto-collapses with execution time and statistics shown
 
 **Technical details:**
+- **Unified Progress System** (Phase 2): `ProgressDisplayContext` replaces old `AgentProgressContext`
 - Thinking captured in `AgentResult.thinking` field
 - Passed through `ToolResult.thinking` to app layer
+- Finalization via `message_renderer.finalizeProgressMessage()` *(shared with GraphRAG)*
 - Displayed in collapsible section (Ctrl+O to toggle)
-- Progress streaming uses `ProgressCallback` infrastructure
-- Same pattern used by GraphRAG indexing
+- Progress streaming uses `ProgressCallback` infrastructure from `agents.zig`
+- Same display format used by GraphRAG indexing, future agents
 
 **Benefits:**
 - ✅ Full transparency - see agent's decision-making

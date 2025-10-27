@@ -11,11 +11,7 @@ pub fn main() !void {
     const allocator = gpa.allocator();
 
     var config = try config_module.loadConfigFromFile(allocator);
-    defer config.deinit(allocator);
-
-    // Initialize color configuration for markdown and UI
-    markdown.initColors(config.color_inline_code_bg);
-    ui.initUIColors(config.color_status);
+    // Note: Config ownership is transferred to App - App.deinit() will free it
 
     var args = try std.process.argsWithAllocator(allocator);
     defer args.deinit();
@@ -69,6 +65,12 @@ pub fn main() !void {
     // CRITICAL: Fix context pointers after app is in final location
     app.fixContextPointers();
     defer app.deinit();
+
+    // Initialize color configuration for markdown and UI AFTER app is created
+    // This ensures the global pointers point to app.config (which lives for the entire program)
+    // instead of the stack-allocated config variable (which would be freed by app.deinit)
+    markdown.initColors(app.config.color_inline_code_bg);
+    ui.initUIColors(app.config.color_status);
 
     var app_tui = ui.Tui{ .orig_termios = undefined };
     try app_tui.enableRawMode();

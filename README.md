@@ -1,6 +1,6 @@
 # ZodoLlama
 
-A fast, lightweight terminal chat interface for Ollama written in Zig. Chat with local LLMs in your terminal with real-time markdown rendering.
+A fast, lightweight terminal chat interface for local LLMs written in Zig. Supports Ollama and LM Studio with real-time markdown rendering.
 
 ![ZodoLlama Demo](zodollamademo.gif)
 
@@ -9,15 +9,18 @@ A fast, lightweight terminal chat interface for Ollama written in Zig. Chat with
 ### Prerequisites
 
 - **Zig** (0.15.2 or later)
-- **Ollama** running locally
+- **LLM Provider**: Either **Ollama** or **LM Studio** running locally
 - Any ANSI-compatible terminal
 
 ### Installation
 
 ```bash
-# Install and start Ollama
+# Option 1: Using Ollama (default)
 ollama pull qwen3:30b  # Tested with qwen3:30b
 ollama serve
+
+# Option 2: Using LM Studio
+# Start LM Studio GUI and load a model on port 1234
 
 # Build and run ZodoLlama
 zig build
@@ -34,6 +37,7 @@ zig build
 - **Permission system** - Control tool access with persistent policies
 - **Task management** - Track multi-step workflows
 - **Thinking blocks** - See AI reasoning (toggle with `Ctrl+O`)
+- **Interactive config editor** - Visual TUI for settings (type `/config`)
 - **Mouse & keyboard controls** - Scroll, expand blocks, highlight text
 - **Debug tools** - Toggle raw tool JSON with `/toggle-toolcall-json`
 - **Configurable** - Customize model, host, and colors
@@ -51,6 +55,7 @@ zig build
 |------------|----------|
 | `Enter` | Send message |
 | `Escape` | Clear input |
+| `/config` + `Enter` | Open interactive config editor |
 | `/quit` + `Enter` | Quit application |
 | `/toggle-toolcall-json` + `Enter` | Toggle raw tool JSON visibility |
 | Mouse wheel | Scroll messages (moves `>` cursor) |
@@ -69,9 +74,21 @@ Policies persist in `~/.config/zodollama/policies.json`. Some tools like file tr
 
 Config: `~/.config/zodollama/config.json` (created on first run)
 
-Key options: `model`, `ollama_host`, `num_ctx` (context window), `num_predict` (max tokens), `graph_rag_enabled`, `embedding_model`, `indexing_model`, `editor`, `scroll_lines`, and color settings.
+**Provider Selection:**
+```json
+{
+  "provider": "ollama",           // "ollama" or "lmstudio"
+  "ollama_host": "http://localhost:11434",
+  "lmstudio_host": "http://localhost:1234",
+  "model": "qwen3-coder:30b"
+}
+```
 
-CLI overrides available: `--model`, `--ollama-host`
+**Key options:** `provider`, `model`, `ollama_host`, `lmstudio_host`, `num_ctx` (context window), `num_predict` (max tokens), `graph_rag_enabled`, `embedding_model`, `indexing_model`, `editor`, `scroll_lines`, and color settings.
+
+**CLI overrides:** `--model`, `--ollama-host`
+
+**Note:** Provider-specific features (Ollama's `think` mode, `keep_alive`) are gracefully handled - unsupported features are ignored by other providers.
 
 ## Platform Support
 
@@ -92,10 +109,11 @@ MIT License
 
 **Architecture:**
 - Multi-threaded streaming with thread-safe design
+- Provider abstraction layer supporting multiple LLM backends (Ollama, LM Studio)
 - Flicker-free rendering with smart viewport management
 - Event-driven permission system with async tool execution
 - Modular codebase (~12k lines of code, ~16k total with ZVDB integration)
-- Separated concerns: Core app (1.4k lines), GraphRAG module (642 lines), rendering (1.2k lines)
+- Separated concerns: Core app (1.4k lines), GraphRAG module (642 lines), rendering (1.2k lines), provider layer (700 lines)
 
 **Markdown:** Headers, emphasis, links, lists, code blocks, tables, emoji
 

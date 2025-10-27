@@ -259,7 +259,7 @@ fn formatWithCuration(
     // Build agent context
     const agent_context = AgentContext{
         .allocator = allocator,
-        .ollama_client = context.ollama_client,
+        .llm_provider = context.llm_provider,
         .config = context.config,
         .capabilities = .{
             .allowed_tools = &.{},

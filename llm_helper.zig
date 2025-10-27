@@ -1,6 +1,7 @@
 // LLM Helper - Unified patterns for LLM invocation across app and agents
 const std = @import("std");
 const ollama = @import("ollama.zig");
+const llm_provider_module = @import("llm_provider.zig");
 
 /// Request parameters for LLM invocation (unified across app and agents)
 pub const LLMRequest = struct {
@@ -40,8 +41,9 @@ pub const LLMRequest = struct {
 
 /// Helper for streaming LLM chat with consistent error handling
 pub fn chatStream(
-    client: *ollama.OllamaClient,
+    provider: *llm_provider_module.LLMProvider,
     request: LLMRequest,
+    allocator: std.mem.Allocator,
     context: anytype,
     callback: fn (
         ctx: @TypeOf(context),
@@ -53,27 +55,36 @@ pub fn chatStream(
     // Build message array (prepend system prompt if provided)
     var messages_to_send: []const ollama.ChatMessage = undefined;
     var messages_with_system: std.ArrayListUnmanaged(ollama.ChatMessage) = .{};
-    defer messages_with_system.deinit(client.allocator);
+    defer messages_with_system.deinit(allocator);
 
     if (request.system_prompt) |sys_prompt| {
-        try messages_with_system.append(client.allocator, .{
+        try messages_with_system.append(allocator, .{
             .role = "system",
             .content = sys_prompt,
         });
-        try messages_with_system.appendSlice(client.allocator, request.messages);
+        try messages_with_system.appendSlice(allocator, request.messages);
         messages_to_send = messages_with_system.items;
     } else {
         messages_to_send = request.messages;
     }
 
-    // Call ollama chatStream with unified parameters
-    try client.chatStream(
+    // Get provider capabilities to check what's supported
+    const caps = provider.getCapabilities();
+
+    // Only enable thinking if both request and provider support it
+    const enable_thinking = request.think and caps.supports_thinking;
+
+    // Only pass keep_alive if provider supports it
+    const keep_alive = if (caps.supports_keep_alive) request.keep_alive else null;
+
+    // Call provider chatStream with unified parameters (capability-aware)
+    try provider.chatStream(
         request.model,
         messages_to_send,
-        request.think,
+        enable_thinking,
         request.format,
         request.tools,
-        request.keep_alive,
+        keep_alive,
         request.num_ctx,
         request.num_predict,
         request.temperature,

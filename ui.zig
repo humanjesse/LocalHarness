@@ -6,6 +6,7 @@ const app_module = @import("app.zig");
 const types_module = @import("types.zig");
 const tree = @import("tools/tree.zig");
 const markdown = @import("markdown.zig");
+const config_editor_state = @import("config_editor_state.zig");
 
 // --- START: Merged from c_api.zig ---
 pub const c = @cImport({
@@ -563,6 +564,17 @@ pub fn handleInput(
                             .timestamp = std.time.milliTimestamp(),
                         });
 
+                        return false;
+                    }
+
+                    // Check for /config command
+                    if (mem.eql(u8, app.input_buffer.items, "/config")) {
+                        app.config_editor = try config_editor_state.ConfigEditorState.init(
+                            app.allocator,
+                            &app.config,
+                        );
+                        app.input_buffer.clearRetainingCapacity();
+                        should_redraw.* = true;
                         return false;
                     }
 

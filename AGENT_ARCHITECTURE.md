@@ -308,6 +308,69 @@ Users can customize the threshold in `~/.config/zodollama/config.json`:
 }
 ```
 
+## Unified Progress Display System
+
+**Added**: 2025-10-26 (Phase 2)
+
+All LLM sub-tasks (agents, GraphRAG indexing, future tasks) now share a unified progress display system:
+
+### Core Components
+
+**`ProgressDisplayContext`** (agents.zig:34-52)
+- Replaces both `AgentProgressContext` and `IndexingProgressContext`
+- Separate thinking/content buffers for better UX
+- Task metadata support (file path, nodes created, edges created, embeddings)
+- Tracks task name, icon, start time, finalization state
+
+**`ProgressUpdateType`** (agents.zig:13-22)
+- Unified enum: `.thinking`, `.content`, `.tool_call`, `.iteration`, `.complete`
+- GraphRAG-specific: `.embedding`, `.storage`
+- Single source of truth for all progress events
+
+**`finalizeProgressMessage()`** (message_renderer.zig:17-101)
+- Unified finalization with beautiful formatting
+- Header with task icon and name
+- Statistics display for task metadata
+- Auto-collapse with execution time
+- Consistent across all task types
+
+### Files Unified
+
+1. **app.zig** - Agent progress callbacks use `ProgressDisplayContext`
+2. **app_graphrag.zig** - GraphRAG indexing uses same system
+3. **graphrag/llm_indexer.zig** - Removed duplicate types, emits `.complete`
+4. **message_renderer.zig** - Single finalization function for all tasks
+
+### Benefits
+
+✅ **Consistent UX** - All progress messages look identical
+✅ **Code Reduction** - ~100 lines of duplication eliminated
+✅ **Single Source of Truth** - All types defined in agents.zig
+✅ **Extensible** - Easy to add new task types
+✅ **Professional Polish** - Execution stats, collapse/expand, beautiful formatting
+
+### Display Format
+
+```
+📊 GraphRAG Indexing Analysis [COMPLETED] (2.3s)
+[Press Ctrl+O to expand]
+
+--- When expanded ---
+📊 GraphRAG Indexing Analysis
+─────────────────────────────────
+
+[LLM thinking and content here...]
+
+**Statistics:**
+- File: file.zig
+- Nodes created: 15
+- Edges created: 8
+- Embeddings: 47
+
+─────────────────────────────────
+[Press Ctrl+O to collapse]
+```
+
 ## Summary
 
 The agent architecture provides:
@@ -319,5 +382,6 @@ The agent architecture provides:
 ✅ **Easy extensibility** for future agents
 ✅ **GraphRAG integration** via shared context
 ✅ **First concrete agent** (file_curator) already working
+✅ **Unified progress display** for all LLM sub-tasks *(NEW)*
 
 This sets a solid foundation for building more sophisticated agent-based features while maintaining code quality and architectural clarity.

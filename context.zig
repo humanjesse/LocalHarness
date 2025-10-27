@@ -5,6 +5,7 @@ const config_module = @import("config.zig");
 const zvdb = @import("zvdb/src/zvdb.zig");
 const embeddings = @import("embeddings.zig");
 const ollama = @import("ollama.zig");
+const llm_provider_module = @import("llm_provider.zig");
 const types = @import("types.zig");
 const IndexingQueue = @import("graphrag/indexing_queue.zig").IndexingQueue;
 const agents_module = @import("agents.zig");
@@ -14,7 +15,7 @@ pub const AppContext = struct {
     allocator: std.mem.Allocator,
     config: *const config_module.Config,
     state: *state_module.AppState,
-    ollama_client: *ollama.OllamaClient,
+    llm_provider: *llm_provider_module.LLMProvider,
 
     // Graph RAG components (optional - initialized if graph_rag_enabled)
     vector_store: ?*zvdb.HNSW(f32) = null,

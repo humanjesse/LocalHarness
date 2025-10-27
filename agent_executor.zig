@@ -186,8 +186,9 @@ pub const AgentExecutor = struct {
             };
 
             llm_helper.chatStream(
-                context.ollama_client,
+                context.llm_provider,
                 request,
+                self.allocator,
                 &stream_ctx,
                 streamCallback,
             ) catch |err| {
@@ -335,7 +336,7 @@ pub const AgentExecutor = struct {
             .allocator = self.allocator,
             .config = agent_context.config,
             .state = undefined, // Agents don't have state - tools that need state won't work
-            .ollama_client = agent_context.ollama_client,
+            .llm_provider = agent_context.llm_provider,
             .vector_store = agent_context.vector_store,
             .embedder = agent_context.embedder,
             .indexing_queue = null, // Agents don't queue for indexing

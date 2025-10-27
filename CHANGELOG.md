@@ -2,9 +2,103 @@
 
 All notable changes to ZodoLlama will be documented in this file.
 
+## [Unreleased] - 2025-10-27
+
+### Added
+- **Provider Registry System** - Centralized provider capabilities and metadata:
+  - **ProviderRegistry** - Single source of truth for all provider capabilities
+  - **Config validation** - Automatically validates provider compatibility and settings
+  - **Runtime capability checks** - Features only enabled if provider supports them
+  - **Dynamic config editor** - Provider list and warnings auto-generated from registry
+  - **Provider-specific warnings** - Context size notes for LM Studio shown in UI
+  - Benefits:
+    - Add new providers by updating one file (`llm_provider.zig`)
+    - Validation shows helpful warnings for incompatible settings
+    - No hardcoded provider checks scattered in codebase
+    - UI automatically adapts to provider capabilities
+
+- **LM Studio Support** - Multiple LLM backend support via provider abstraction:
+  - **New provider system** with tagged union architecture (`llm_provider.zig`)
+  - **LM Studio client** with OpenAI-compatible API support (`lmstudio.zig`)
+  - **Provider capabilities detection** - Each provider reports supported features
+  - **Graceful feature handling** - Unsupported features (e.g., Ollama's `think` mode on LM Studio) are silently ignored
+  - **Configuration:**
+    ```json
+    {
+      "provider": "ollama",  // or "lmstudio"
+      "ollama_host": "http://localhost:11434",
+      "lmstudio_host": "http://localhost:1234"
+    }
+    ```
+  - **Supported features:**
+    - Chat streaming with SSE (Server-Sent Events) parsing
+    - Tool/function calling (same format as Ollama)
+    - Embeddings (single and batch)
+    - All existing tools work with both providers
+    - GraphRAG indexing works with both providers
+    - Agent system works with both providers
+
+### Changed
+- **Provider abstraction layer** - All LLM interactions now go through unified interface:
+  - `app.zig`: Uses `LLMProvider` instead of `OllamaClient`
+  - `context.zig`: `AppContext` now holds `LLMProvider`
+  - `agents.zig`: `AgentContext` updated for provider abstraction
+  - `agent_executor.zig`: Tool execution uses provider interface
+  - `llm_helper.zig`: Helper functions now provider-agnostic
+  - `graphrag/llm_indexer.zig`: Indexing uses provider interface
+  - `tools/read_file.zig`: File curator agent uses provider
+
+### Technical Details
+- **New files:**
+  - `llm_provider.zig` (370 lines) - Provider abstraction and factory
+  - `lmstudio.zig` (630 lines) - LM Studio OpenAI-compatible client
+- **Modified files:**
+  - `config.zig` (+30 lines) - Provider selection and LM Studio host
+  - `app.zig` (~50 lines changed) - Provider initialization and usage
+  - `context.zig` (5 lines) - Context struct update
+  - `agents.zig` (5 lines) - Agent context update
+  - `agent_executor.zig` (10 lines) - Provider usage
+  - `llm_helper.zig` (5 lines) - Generic provider parameter
+  - `graphrag/llm_indexer.zig` (10 lines) - Provider interface
+  - `tools/read_file.zig` (5 lines) - Provider usage
+  - `app_graphrag.zig` (5 lines) - Provider usage
+- **Architecture:**
+  - Tagged union pattern (`union(enum)`) for zero-cost abstraction
+  - Type-safe provider dispatch via Zig's compile-time `switch`
+  - Provider-specific implementations isolated in separate files
+  - Capability system allows runtime feature detection
+  - Factory pattern for provider instantiation
+
+### Benefits
+- ✅ **Multi-backend support** - Choose between Ollama and LM Studio
+- ✅ **Performance testing** - Easy to compare providers on different hardware
+- ✅ **Future-proof** - Easy to add OpenAI, Anthropic, or other providers
+- ✅ **Zero overhead** - Tagged union compiles to direct calls, no vtable
+- ✅ **Type safety** - Compiler enforces all providers implement full interface
+- ✅ **Clean separation** - Provider-specific code isolated from app logic
+
+### Use Cases
+- **AMD GPU users**: LM Studio may provide better performance/compatibility
+- **Model experimentation**: Easy switching between provider ecosystems
+- **Redundancy**: Fallback if one provider is unavailable
+- **Feature comparison**: Test same conversation on different backends
+
+---
+
 ## [Unreleased] - 2025-10-26
 
 ### Added
+- **Unified Progress Display System (Phase 2)** - All LLM sub-tasks now share a consistent progress display:
+  - **`ProgressDisplayContext`** replaces both `AgentProgressContext` and `IndexingProgressContext`
+  - **Extended `ProgressUpdateType`** enum with GraphRAG-specific events (`.embedding`, `.storage`)
+  - **`finalizeProgressMessage()`** provides unified finalization with beautiful formatting
+  - GraphRAG indexing now displays with same polish as agent messages
+  - Execution time, statistics (nodes/edges/embeddings), and collapse/expand support
+  - Auto-collapse on completion to save screen space
+  - ~100 lines of duplication eliminated across app.zig, app_graphrag.zig, and llm_indexer.zig
+  - Files modified: agents.zig, message_renderer.zig, app.zig, app_graphrag.zig, graphrag/llm_indexer.zig
+  - See `AGENT_ARCHITECTURE.md` for detailed documentation
+
 - **Real-Time Agent Progress Streaming** - File curator agent now streams thinking and analysis in real-time:
   - See agent's thinking as it analyzes files (character-by-character streaming)
   - Live updates showing curation decisions and reasoning

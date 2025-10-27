@@ -1,6 +1,7 @@
 // Agent System - Core abstractions for isolated LLM sub-tasks
 const std = @import("std");
 const ollama = @import("ollama.zig");
+const llm_provider_module = @import("llm_provider.zig");
 const config_module = @import("config.zig");
 const tools_module = @import("tools.zig");
 const zvdb = @import("zvdb/src/zvdb.zig");
@@ -9,13 +10,46 @@ const embeddings_module = @import("embeddings.zig");
 /// Progress update callback function type (shared with GraphRAG)
 pub const ProgressCallback = *const fn (user_data: ?*anyopaque, update_type: ProgressUpdateType, message: []const u8) void;
 
-/// Types of progress updates during agent execution
+/// Types of progress updates during agent execution (shared with GraphRAG)
 pub const ProgressUpdateType = enum {
-    thinking,   // Agent LLM is thinking
-    content,    // Agent LLM produced text content
-    tool_call,  // Agent made a tool call
-    iteration,  // Agent starting new iteration
-    complete,   // Agent finished
+    thinking,   // LLM is thinking
+    content,    // LLM produced text content
+    tool_call,  // Made a tool call
+    iteration,  // Starting new iteration
+    complete,   // Task finished
+    // GraphRAG-specific types (backward compatible)
+    embedding,  // Creating embeddings (GraphRAG only)
+    storage,    // Storing in vector DB (GraphRAG only)
+};
+
+/// Task-specific metadata for progress display (GraphRAG stats, etc.)
+pub const TaskMetadata = struct {
+    file_path: ?[]const u8 = null,
+    nodes_created: usize = 0,
+    edges_created: usize = 0,
+    embeddings_created: usize = 0,
+};
+
+/// Shared context for streaming progress to UI (agents + GraphRAG + future tasks)
+/// This unified type replaces both AgentProgressContext and IndexingProgressContext
+pub const ProgressDisplayContext = struct {
+    app: *@import("app.zig").App,
+    current_message_idx: ?usize = null,
+
+    // Separate buffers for thinking vs content (better UX than single buffer)
+    thinking_buffer: std.ArrayListUnmanaged(u8) = .{},
+    content_buffer: std.ArrayListUnmanaged(u8) = .{},
+
+    // Finalization tracking
+    finalized: bool = false,
+
+    // Display metadata
+    task_name: []const u8 = "Task",  // e.g., "File Curator", "GraphRAG Indexing"
+    task_icon: []const u8 = "🤔",    // Custom icon per task type
+    start_time: i64 = 0,             // For execution time tracking
+
+    // Optional task-specific metadata (for GraphRAG stats, etc.)
+    metadata: ?TaskMetadata = null,
 };
 
 /// Agent capability and resource limits
@@ -45,7 +79,7 @@ pub const AgentCapabilities = struct {
 /// Execution context provided to agents (controlled subset of AppContext)
 pub const AgentContext = struct {
     allocator: std.mem.Allocator,
-    ollama_client: *ollama.OllamaClient,
+    llm_provider: *llm_provider_module.LLMProvider,
     config: *const config_module.Config,
     capabilities: AgentCapabilities,
 

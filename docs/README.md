@@ -12,8 +12,9 @@ Welcome to the ZodoLlama documentation. This guide will help you understand, use
 New to ZodoLlama? Start here:
 
 - [Installation](user-guide/installation.md) - Building from source and setup
-- [Configuration](user-guide/configuration.md) - Customizing ZodoLlama
 - [Features](user-guide/features.md) - Complete feature guide
+- [Commands](user-guide/commands.md) - **NEW** Quick reference for all commands
+- [Configuration](user-guide/configuration.md) - Config file and `/config` editor
 
 ## Development
 
@@ -28,9 +29,11 @@ Contributing to ZodoLlama:
 Understanding how ZodoLlama works:
 
 - [Overview](architecture/overview.md) - High-level architecture
+- [Config Editor](architecture/config-editor.md) - **NEW** Full-screen TUI config editor architecture
+- [Config Editor Data Flow](architecture/config-editor-flow.md) - **NEW** Detailed flow examples
 - [Tool Calling System](architecture/tool-calling.md) - How tool calling works
-- [Task Management](architecture/task-management.md) - Scratch space and task tracking
-- [Master Loop & Graph RAG](architecture/master-loop-graphrag.md) - Agentic behavior and future plans
+- [GraphRAG](architecture/graphrag.md) - Context compression system
+- [Unified Read File](architecture/unified-read-file.md) - Smart file reading with agent curation
 
 ## Archive
 

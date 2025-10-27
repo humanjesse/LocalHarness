@@ -1,6 +1,7 @@
 // LLM-based file indexer - Uses tool calling to build knowledge graphs
 const std = @import("std");
 const ollama = @import("../ollama.zig");
+const llm_provider_module = @import("../llm_provider.zig");
 const context_module = @import("../context.zig");
 const indexing_tools = @import("indexing_tools.zig");
 const indexing_tool_registry = @import("indexing_tool_registry.zig");
@@ -55,17 +56,10 @@ const INDEXING_SYSTEM_PROMPT =
     \\Work quickly: scan file, call tools immediately. Short summaries only.
 ;
 
-/// Progress update callback function type
-pub const ProgressCallback = *const fn (user_data: *anyopaque, update_type: ProgressUpdateType, message: []const u8) void;
-
-/// Types of progress updates during indexing
-pub const ProgressUpdateType = enum {
-    thinking, // LLM is thinking
-    content,  // LLM produced text content
-    tool_call, // LLM made a tool call
-    embedding, // Creating embeddings
-    storage,   // Storing in vector DB
-};
+// Use unified types from agents module (no duplication!)
+const agents = @import("../agents.zig");
+const ProgressCallback = agents.ProgressCallback;
+const ProgressUpdateType = agents.ProgressUpdateType;
 
 /// Context for streaming callback
 const StreamContext = struct {
@@ -150,7 +144,7 @@ fn streamCallback(
 /// Simple approach: just like the main loop
 pub fn indexFile(
     allocator: std.mem.Allocator,
-    ollama_client: *ollama.OllamaClient,
+    llm_provider: *llm_provider_module.LLMProvider,
     indexing_model: []const u8,
     app_context: *const AppContext,
     file_path: []const u8,
@@ -278,13 +272,22 @@ pub fn indexFile(
             std.debug.print("[INDEXER] ===== END CALL INFO =====\n\n", .{});
         }
 
-        ollama_client.chatStream(
+        // Get provider capabilities to check what's supported
+        const caps = llm_provider.getCapabilities();
+
+        // Enable thinking if provider supports it (beneficial for entity extraction reasoning)
+        const enable_thinking = caps.supports_thinking;
+
+        // Only pass keep_alive if provider supports it
+        const keep_alive = if (caps.supports_keep_alive) app_context.config.model_keep_alive else null;
+
+        llm_provider.chatStream(
             indexing_model,
             messages.items,
-            true, // ENABLE thinking - model can reason about entity extraction
+            enable_thinking, // Capability-aware thinking mode
             null,
             if (tools.len > 0) tools else null,
-            app_context.config.model_keep_alive,
+            keep_alive, // Capability-aware keep_alive
             app_context.config.num_ctx,
             10240, // Increased from 8192 - give model room to think and call tools naturally
             0.1, // temperature=0.1 - very focused, deterministic extraction
@@ -514,6 +517,11 @@ pub fn indexFile(
             indexing_ctx.stats.edges_created,
             current_iteration,
         });
+    }
+
+    // Emit completion event for UI finalization (unified with agent system)
+    if (progress_callback) |callback| {
+        callback(progress_user_data.?, .complete, "");
     }
 }
 

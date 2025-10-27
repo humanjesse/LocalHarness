@@ -1,53 +1,178 @@
 # Configuration Guide
 
-ZodoLlama can be customized through configuration files and command-line arguments.
+ZodoLlama can be configured in three ways:
+
+1. **Interactive Editor** (`/config` command) - Recommended for most users
+2. **JSON File** (`~/.config/zodollama/config.json`) - For advanced users and automation
+3. **CLI Arguments** (`--model`, `--ollama-host`) - For quick overrides
+
+---
+
+## Interactive Config Editor
+
+**The easiest way to configure ZodoLlama.**
+
+### Quick Start
+
+1. Start ZodoLlama: `./zodollama`
+2. Type: `/config`
+3. Navigate with Tab, edit with Enter
+4. Press Ctrl+S to save
+
+### Features
+
+- ✅ Visual editing (no JSON syntax)
+- ✅ Field validation
+- ✅ Help text for each setting
+- ✅ Provider-specific warnings
+- ✅ Cancel changes safely (Esc)
+
+**See [Features Guide](features.md#interactive-configuration-editor) for detailed usage.**
+
+---
 
 ## Configuration File
 
 Config file location: `~/.config/zodollama/config.json`
 
-This file is automatically created on first run with default values.
+This file is automatically created on first run with default values. You can edit it directly or use the `/config` command for a visual editor.
 
 ## Default Configuration
 
 ```json
 {
-  "model": "llama3.2",
+  "provider": "ollama",
   "ollama_host": "http://localhost:11434",
+  "ollama_endpoint": "/api/chat",
+  "lmstudio_host": "http://localhost:1234",
+  "model": "qwen3-coder:30b",
+  "model_keep_alive": "15m",
+  "num_ctx": 128000,
+  "num_predict": 8192,
+  "enable_thinking": true,
+  "show_tool_json": false,
+  "graph_rag_enabled": false,
+  "embedding_model": "nomic-embed-text",
+  "indexing_model": "qwen3-coder:30b",
+  "max_chunks_in_history": 5,
+  "zvdb_path": ".zodollama/graphrag.zvdb",
+  "file_read_small_threshold": 200,
   "editor": ["nvim"],
   "scroll_lines": 3,
   "color_status": "\u001b[33m",
   "color_link": "\u001b[36m",
   "color_thinking_header": "\u001b[36m",
   "color_thinking_dim": "\u001b[2m",
-  "color_inline_code_bg": "\u001b[48;5;237m",
-  "graph_rag_enabled": false,
-  "embedding_model": "embeddinggemma:300m",
-  "indexing_model": "qwen3:30b",
-  "max_chunks_in_history": 5,
-  "zvdb_path": ".zodollama/graphrag.zvdb"
+  "color_inline_code_bg": "\u001b[48;5;237m"
 }
 ```
 
 ## Configuration Options
 
+### Provider Selection
+
+ZodoLlama supports multiple LLM backends. Choose based on your hardware, preferences, and available models.
+
+#### Ollama (Default)
+
+**Best for:** NVIDIA GPUs, ease of use, quick setup, extended thinking mode
+
+**Configuration:**
+```json
+{
+  "provider": "ollama",
+  "ollama_host": "http://localhost:11434",
+  "model": "qwen3-coder:30b"
+}
+```
+
+**Setup:**
+```bash
+# Install and start Ollama
+ollama pull qwen3-coder:30b
+ollama serve
+```
+
+**Ollama-Specific Features:**
+- ✅ Extended thinking mode (`enable_thinking: true`)
+- ✅ Model lifecycle control (`model_keep_alive: "15m"`)
+- ✅ API-controlled context size (`num_ctx`)
+- ✅ All standard features
+
+**Supported Models:**
+- `qwen3-coder:30b` - Recommended (coding-focused)
+- `llama3.2` - Balanced performance
+- `llama3.2:70b` - Higher quality
+- Any model from [Ollama Library](https://ollama.com/library)
+
+#### LM Studio
+
+**Best for:** AMD GPUs, visual model management, model experimentation
+
+**Configuration:**
+```json
+{
+  "provider": "lmstudio",
+  "lmstudio_host": "http://localhost:1234",
+  "model": "qwen2.5-coder-7b"
+}
+```
+
+**Setup:**
+1. Download [LM Studio](https://lmstudio.ai/)
+2. Load a model in the UI
+3. Start the server (Local Server tab)
+4. Verify running on port 1234
+
+**Important Notes:**
+- ⚠️ **Context size** must be set in LM Studio UI (not in config file)
+- ⚠️ **Extended thinking mode** is not supported
+- ⚠️ **`model_keep_alive`** parameter is ignored
+- ✅ All tools work (file operations, GraphRAG, etc.)
+- ✅ Embeddings supported
+- ✅ Function/tool calling supported
+
+#### Switching Providers
+
+**Using Config Editor (Recommended):**
+1. Type `/config`
+2. Navigate to "Provider" field
+3. Press `←` or `→` to change
+4. Press Ctrl+S to save
+
+**Manual Edit:**
+```bash
+# Edit config file
+$EDITOR ~/.config/zodollama/config.json
+
+# Change provider field
+{
+  "provider": "lmstudio",  # ← Change this
+  ...
+}
+
+# Restart ZodoLlama
+```
+
+---
+
 ### Model Settings
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `model` | string | `"llama3.2"` | Ollama model to use |
+| `provider` | string | `"ollama"` | LLM backend: `"ollama"` or `"lmstudio"` |
+| `model` | string | `"qwen3-coder:30b"` | Model name/identifier |
 | `ollama_host` | string | `"http://localhost:11434"` | Ollama server URL |
+| `lmstudio_host` | string | `"http://localhost:1234"` | LM Studio server URL |
+| `model_keep_alive` | string | `"15m"` | Keep model in memory (Ollama only) |
+| `num_ctx` | number | `128000` | Context window size in tokens |
+| `num_predict` | number | `8192` | Max tokens to generate (-1 = unlimited) |
 
-**Supported Models:**
-- `llama3.2` - Default, balanced performance
-- `llama3.2:1b` - Faster, lower resource usage
-- `llama3.2:70b` - Higher quality, requires more resources
-- Any model available in your Ollama instance
-
-**Example:**
+**Example - Switch to LM Studio:**
 ```json
 {
-  "model": "qwen2.5:14b",
+  "provider": "lmstudio",
+  "model": "qwen2.5-coder-7b",
   "ollama_host": "http://192.168.1.100:11434"
 }
 ```

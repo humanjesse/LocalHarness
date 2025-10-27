@@ -1,15 +1,15 @@
-// Application state management (Phase 1: Task tracking for master loop)
+// Application state management (Phase 1: Todo tracking for master loop)
 const std = @import("std");
 const mem = std.mem;
 
-/// Task status enum for tracking progress
-pub const TaskStatus = enum { pending, in_progress, completed };
+/// Todo status enum for tracking progress
+pub const TodoStatus = enum { pending, in_progress, completed };
 
-/// Individual task with ID, content, and status
-pub const Task = struct {
-    id: []const u8, // String ID like "task_1", "task_2", etc.
+/// Individual todo with ID, content, and status
+pub const Todo = struct {
+    id: []const u8, // String ID like "todo_1", "todo_2", etc.
     content: []const u8,
-    status: TaskStatus,
+    status: TodoStatus,
 };
 
 /// Pending file to be indexed by Graph RAG
@@ -21,8 +21,8 @@ pub const PendingIndexFile = struct {
 /// Session-ephemeral application state
 pub const AppState = struct {
     allocator: mem.Allocator,
-    tasks: std.ArrayListUnmanaged(Task),
-    next_task_id: usize,
+    todos: std.ArrayListUnmanaged(Todo),
+    next_todo_id: usize,
     session_start: i64,
     iteration_count: usize,
     read_files: std.StringHashMapUnmanaged(void), // Track files read in this session
@@ -32,8 +32,8 @@ pub const AppState = struct {
     pub fn init(allocator: mem.Allocator) AppState {
         return .{
             .allocator = allocator,
-            .tasks = .{},
-            .next_task_id = 1,
+            .todos = .{},
+            .next_todo_id = 1,
             .session_start = std.time.milliTimestamp(),
             .iteration_count = 0,
             .read_files = .{},
@@ -42,37 +42,37 @@ pub const AppState = struct {
         };
     }
 
-    pub fn addTask(self: *AppState, content: []const u8) ![]const u8 {
-        // Generate string ID like "task_1", "task_2", etc.
-        const task_id = try std.fmt.allocPrint(self.allocator, "task_{d}", .{self.next_task_id});
-        errdefer self.allocator.free(task_id);
+    pub fn addTodo(self: *AppState, content: []const u8) ![]const u8 {
+        // Generate string ID like "todo_1", "todo_2", etc.
+        const todo_id = try std.fmt.allocPrint(self.allocator, "todo_{d}", .{self.next_todo_id});
+        errdefer self.allocator.free(todo_id);
 
-        self.next_task_id += 1;
+        self.next_todo_id += 1;
 
         const owned_content = try self.allocator.dupe(u8, content);
         errdefer self.allocator.free(owned_content);
 
-        try self.tasks.append(self.allocator, .{
-            .id = task_id,
+        try self.todos.append(self.allocator, .{
+            .id = todo_id,
             .content = owned_content,
             .status = .pending,
         });
 
-        return task_id;
+        return todo_id;
     }
 
-    pub fn updateTask(self: *AppState, task_id: []const u8, new_status: TaskStatus) !void {
-        for (self.tasks.items) |*task| {
-            if (mem.eql(u8, task.id, task_id)) {
-                task.status = new_status;
+    pub fn updateTodo(self: *AppState, todo_id: []const u8, new_status: TodoStatus) !void {
+        for (self.todos.items) |*todo| {
+            if (mem.eql(u8, todo.id, todo_id)) {
+                todo.status = new_status;
                 return;
             }
         }
-        return error.TaskNotFound;
+        return error.TodoNotFound;
     }
 
-    pub fn getTasks(self: *AppState) []const Task {
-        return self.tasks.items;
+    pub fn getTodos(self: *AppState) []const Todo {
+        return self.todos.items;
     }
 
     pub fn markFileAsRead(self: *AppState, path: []const u8) !void {
@@ -133,11 +133,11 @@ pub const AppState = struct {
     }
 
     pub fn deinit(self: *AppState) void {
-        for (self.tasks.items) |task| {
-            self.allocator.free(task.id);
-            self.allocator.free(task.content);
+        for (self.todos.items) |todo| {
+            self.allocator.free(todo.id);
+            self.allocator.free(todo.content);
         }
-        self.tasks.deinit(self.allocator);
+        self.todos.deinit(self.allocator);
 
         // Free read_files hashmap
         var iter = self.read_files.keyIterator();

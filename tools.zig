@@ -15,9 +15,9 @@ const insert_lines = @import("tools/insert_lines.zig");
 const grep_search = @import("tools/grep_search.zig");
 const current_time = @import("tools/current_time.zig");
 const pwd = @import("tools/pwd.zig");
-const add_task = @import("tools/add_task.zig");
-const list_tasks = @import("tools/list_tasks.zig");
-const update_task = @import("tools/update_task.zig");
+const add_todo = @import("tools/add_todo.zig");
+const list_todos = @import("tools/list_todos.zig");
+const update_todo = @import("tools/update_todo.zig");
 
 const AppContext = context_module.AppContext;
 
@@ -209,10 +209,10 @@ pub fn getAllToolDefinitions(allocator: std.mem.Allocator) ![]ToolDefinition {
     try tools.append(allocator, try current_time.getDefinition(allocator));
     try tools.append(allocator, try pwd.getDefinition(allocator));
 
-    // Task management tools (Phase 1)
-    try tools.append(allocator, try add_task.getDefinition(allocator));
-    try tools.append(allocator, try list_tasks.getDefinition(allocator));
-    try tools.append(allocator, try update_task.getDefinition(allocator));
+    // Todo management tools (Phase 1)
+    try tools.append(allocator, try add_todo.getDefinition(allocator));
+    try tools.append(allocator, try list_todos.getDefinition(allocator));
+    try tools.append(allocator, try update_todo.getDefinition(allocator));
 
     return try tools.toOwnedSlice(allocator);
 }

@@ -7,6 +7,7 @@ const process = std.process;
 const ui = @import("ui.zig");
 const markdown = @import("markdown.zig");
 const ollama = @import("ollama.zig");
+const llm_provider_module = @import("llm_provider.zig");
 const permission = @import("permission.zig");
 const tools_module = @import("tools.zig");
 const types = @import("types.zig");
@@ -18,11 +19,15 @@ const message_renderer = @import("message_renderer.zig");
 const tool_executor_module = @import("tool_executor.zig");
 const zvdb = @import("zvdb/src/zvdb.zig");
 const embeddings_module = @import("embeddings.zig");
+const agents_module = @import("agents.zig");
 const IndexingQueue = @import("graphrag/indexing_queue.zig").IndexingQueue;
 // TODO: Re-implement with LLM-based indexing
 // const graphrag_indexer = @import("graphrag/indexer.zig");
 const graphrag_query = @import("graphrag/query.zig");
 const app_graphrag = @import("app_graphrag.zig");
+const config_editor_state = @import("config_editor_state.zig");
+const config_editor_renderer = @import("config_editor_renderer.zig");
+const config_editor_input = @import("config_editor_input.zig");
 
 // Re-export types for convenience
 pub const Message = types.Message;
@@ -36,7 +41,7 @@ pub const AppContext = context_module.AppContext;
 const StreamThreadContext = struct {
     allocator: mem.Allocator,
     app: *App,
-    ollama_client: *ollama.OllamaClient,
+    llm_provider: *llm_provider_module.LLMProvider,
     model: []const u8,
     messages: []ollama.ChatMessage,
     format: ?[]const u8,
@@ -49,88 +54,18 @@ const StreamThreadContext = struct {
 };
 
 // Agent progress context for streaming sub-agent progress to UI
-const AgentProgressContext = struct {
-    app: *App,
-    current_message_idx: ?usize = null, // Which message to update
-    thinking_buffer: std.ArrayListUnmanaged(u8) = .{},
-    content_buffer: std.ArrayListUnmanaged(u8) = .{},
-    finalized: bool = false,  // Track if we've formatted the final message
-    agent_name: []const u8 = "Agent",  // Name of the agent for display
-    start_time: i64 = 0,  // Track execution start time for display
-};
+// Now uses unified ProgressDisplayContext from agents.zig
+const ProgressDisplayContext = agents_module.ProgressDisplayContext;
 
 // Finalize agent message with nice formatting when agent completes
-fn finalizeAgentMessage(ctx: *AgentProgressContext) !void {
-    const allocator = ctx.app.allocator;
-    const idx = ctx.current_message_idx orelse return;
-    var msg = &ctx.app.messages.items[idx];
-
-    // Calculate execution time
-    const end_time = std.time.milliTimestamp();
-    const execution_time = end_time - ctx.start_time;
-
-    // Free old content
-    allocator.free(msg.content);
-    for (msg.processed_content.items) |*item| {
-        item.deinit(allocator);
-    }
-    msg.processed_content.deinit(allocator);
-
-    if (msg.thinking_content) |tc| allocator.free(tc);
-    if (msg.processed_thinking_content) |*ptc| {
-        for (ptc.items) |*item| {
-            item.deinit(allocator);
-        }
-        ptc.deinit(allocator);
-    }
-
-    // Build final formatted message
-    var final_content = std.ArrayListUnmanaged(u8){};
-    defer final_content.deinit(allocator);
-    const writer = final_content.writer(allocator);
-
-    // Header with agent name
-    try writer.print("🤔 **{s} Analysis**\n", .{ctx.agent_name});
-    try writer.writeAll("─────────────────────────────────\n\n");
-
-    // Content
-    if (ctx.thinking_buffer.items.len > 0) {
-        try writer.writeAll(ctx.thinking_buffer.items);
-        if (ctx.content_buffer.items.len > 0) {
-            try writer.writeAll("\n\n");
-        }
-    }
-    if (ctx.content_buffer.items.len > 0) {
-        try writer.writeAll(ctx.content_buffer.items);
-    }
-
-    // Footer
-    try writer.writeAll("\n\n─────────────────────────────────");
-
-    const display_content = try final_content.toOwnedSlice(allocator);
-    msg.content = display_content;
-    msg.processed_content = try markdown.processMarkdown(allocator, display_content);
-    msg.thinking_content = null;
-    msg.processed_thinking_content = null;
-
-    // Mark agent analysis as completed and auto-collapse
-    msg.agent_analysis_completed = true;  // Enable collapse button
-    msg.agent_analysis_expanded = false;  // Auto-collapse to save space
-    msg.tool_execution_time = execution_time;  // Store execution time for display
-
-    // Redraw screen to show finalized message
-    if (!ctx.app.user_scrolled_away) {
-        try ctx.app.maintainBottomAnchor();
-    }
-    _ = try message_renderer.redrawScreen(ctx.app);
-    if (!ctx.app.user_scrolled_away) {
-        ctx.app.updateCursorToBottom();
-    }
+// Now uses unified finalization from message_renderer
+fn finalizeAgentMessage(ctx: *ProgressDisplayContext) !void {
+    return message_renderer.finalizeProgressMessage(ctx);
 }
 
 // Progress callback for sub-agents (e.g., file curator) - streams to UI in real-time
 fn agentProgressCallback(user_data: ?*anyopaque, update_type: @import("agents.zig").ProgressUpdateType, message: []const u8) void {
-    const ctx = @as(*AgentProgressContext, @ptrCast(@alignCast(user_data orelse return)));
+    const ctx = @as(*ProgressDisplayContext, @ptrCast(@alignCast(user_data orelse return)));
     const allocator = ctx.app.allocator;
 
     // Accumulate the message content based on type
@@ -153,6 +88,10 @@ fn agentProgressCallback(user_data: ?*anyopaque, update_type: @import("agents.zi
             // Status updates - could log these or show in UI
             // For now, just continue accumulating
         },
+        .embedding, .storage => {
+            // GraphRAG-specific updates (agents don't use these)
+            // Just ignore for agent callbacks
+        },
     }
 
     // Find or create the progress message
@@ -167,8 +106,8 @@ fn agentProgressCallback(user_data: ?*anyopaque, update_type: @import("agents.zi
         const display_content = allocator.dupe(u8, "🤔 Analyzing...") catch return;
         const content_processed = markdown.processMarkdown(allocator, display_content) catch return;
 
-        // Duplicate agent name for message
-        const agent_name_copy = allocator.dupe(u8, ctx.agent_name) catch return;
+        // Duplicate task name for message
+        const task_name_copy = allocator.dupe(u8, ctx.task_name) catch return;
 
         ctx.app.messages.append(allocator, .{
             .role = .display_only_data,
@@ -179,7 +118,7 @@ fn agentProgressCallback(user_data: ?*anyopaque, update_type: @import("agents.zi
             .thinking_expanded = false,
             .timestamp = std.time.milliTimestamp(),
             // Agent analysis metadata (NEW - for streaming + collapsible display)
-            .agent_analysis_name = agent_name_copy,
+            .agent_analysis_name = task_name_copy,
             .agent_analysis_expanded = true,  // Expanded during streaming (shows content)
             .agent_analysis_completed = false,  // Not done yet (no collapse button)
             // Keep tool_execution_time for display (but not using tool collapse)
@@ -256,7 +195,7 @@ pub const App = struct {
     allocator: mem.Allocator,
     config: Config,
     messages: std.ArrayListUnmanaged(Message),
-    ollama_client: ollama.OllamaClient,
+    llm_provider: llm_provider_module.LLMProvider,
     input_buffer: std.ArrayListUnmanaged(u8),
     clickable_areas: std.ArrayListUnmanaged(ClickableArea),
     scroll_y: usize = 0,
@@ -302,6 +241,8 @@ pub const App = struct {
     vector_store: ?*zvdb.HNSW(f32) = null,
     embedder: ?*embeddings_module.EmbeddingsClient = null,
     indexing_queue: ?*IndexingQueue = null,
+    // Config editor state (modal mode)
+    config_editor: ?config_editor_state.ConfigEditorState = null,
 
     pub fn init(allocator: mem.Allocator, config: Config) !App {
         const tools = try createTools(allocator);
@@ -394,11 +335,14 @@ pub const App = struct {
         }
 
 
+        // Create LLM provider based on config
+        const provider = try llm_provider_module.createProvider(config.provider, allocator, config);
+
         var app = App{
             .allocator = allocator,
             .config = config,
             .messages = .{},
-            .ollama_client = ollama.OllamaClient.init(allocator, config.ollama_host, config.ollama_endpoint),
+            .llm_provider = provider,
             .input_buffer = .{},
             .clickable_areas = .{},
             .terminal_size = try ui.Tui.getTerminalSize(),
@@ -436,7 +380,7 @@ pub const App = struct {
             .allocator = self.allocator,
             .config = &self.config,
             .state = &self.state,
-            .ollama_client = &self.ollama_client,
+            .llm_provider = &self.llm_provider,
             .vector_store = self.vector_store,
             .embedder = self.embedder,
             .indexing_queue = self.indexing_queue,
@@ -542,14 +486,23 @@ pub const App = struct {
             }
         };
 
+        // Get provider capabilities to check what's supported
+        const caps = ctx.llm_provider.getCapabilities();
+
+        // Only enable thinking if both config and provider support it
+        const enable_thinking = ctx.app.config.enable_thinking and caps.supports_thinking;
+
+        // Only pass keep_alive if provider supports it
+        const keep_alive = if (caps.supports_keep_alive) ctx.keep_alive else null;
+
         // Run the streaming with retry logic for stale connections
-        ctx.ollama_client.chatStream(
+        ctx.llm_provider.chatStream(
             ctx.model,
             ctx.messages,
-            ctx.app.config.enable_thinking, // Use config setting
+            enable_thinking, // Capability-aware thinking mode
             ctx.format,
             if (ctx.tools.len > 0) ctx.tools else null, // Pass tools to model
-            ctx.keep_alive,
+            keep_alive, // Capability-aware keep_alive
             ctx.num_ctx,
             ctx.num_predict,
             null, // temperature - use model default for main chat
@@ -570,21 +523,20 @@ pub const App = struct {
                 ctx.app.stream_chunks.append(ctx.allocator, retry_chunk) catch {};
                 ctx.app.stream_mutex.unlock();
 
-                // Recreate HTTP client to clear stale connection pool
-                ctx.ollama_client.client.deinit();
-                ctx.ollama_client.client = std.http.Client{ .allocator = ctx.allocator };
+                // Note: Provider-level retry not implemented yet
+                // Different providers may have different retry strategies
 
                 // Small delay before retry
                 std.Thread.sleep(100 * std.time.ns_per_ms);
 
-                // Retry the request
-                ctx.ollama_client.chatStream(
+                // Retry the request (reuse capability checks from above)
+                ctx.llm_provider.chatStream(
                     ctx.model,
                     ctx.messages,
-                    true,
+                    enable_thinking, // Use capability-aware value
                     ctx.format,
                     if (ctx.tools.len > 0) ctx.tools else null,
-                    ctx.keep_alive,
+                    keep_alive, // Use capability-aware value
                     ctx.num_ctx,
                     ctx.num_predict,
                     null, // temperature - use model default for main chat
@@ -787,7 +739,7 @@ pub const App = struct {
         thread_ctx.* = .{
             .allocator = self.allocator,
             .app = self,
-            .ollama_client = &self.ollama_client,
+            .llm_provider = &self.llm_provider,
             .model = self.config.model,
             .messages = messages_slice,
             .format = format,
@@ -897,10 +849,11 @@ pub const App = struct {
         self.app_context.recent_messages = self.messages.items[start_idx..];
 
         // Set up agent progress streaming for sub-agents (like file curator)
-        var agent_progress_ctx = AgentProgressContext{
+        var agent_progress_ctx = ProgressDisplayContext{
             .app = self,
-            .agent_name = "File Curator",  // Default agent name (could be passed from tool)
-            .start_time = std.time.milliTimestamp(),  // Start tracking execution time
+            .task_name = "File Curator", // Default agent name (could be passed from tool)
+            .task_icon = "🤔", // Default icon for file analysis
+            .start_time = std.time.milliTimestamp(), // Start tracking execution time
         };
         defer agent_progress_ctx.thinking_buffer.deinit(self.allocator);
         defer agent_progress_ctx.content_buffer.deinit(self.allocator);
@@ -1008,7 +961,7 @@ pub const App = struct {
             }
         }
         self.messages.deinit(self.allocator);
-        self.ollama_client.deinit();
+        self.llm_provider.deinit();
         self.input_buffer.deinit(self.allocator);
         self.clickable_areas.deinit(self.allocator);
         self.valid_cursor_positions.deinit(self.allocator);
@@ -1056,6 +1009,9 @@ pub const App = struct {
             emb.deinit();
             self.allocator.destroy(emb);
         }
+
+        // Clean up config (App owns it)
+        self.config.deinit(self.allocator);
     }
 
 
@@ -1072,6 +1028,84 @@ pub const App = struct {
         defer content_accumulator.deinit(self.allocator);
 
         while (true) {
+            // CONFIG EDITOR MODE (modal - takes priority over normal app)
+            if (self.config_editor) |*editor| {
+                // Render editor (renderer will clear screen)
+                var stdout_buffer: [8192]u8 = undefined;
+                var buffered_writer = ui.BufferedStdoutWriter.init(&stdout_buffer);
+                const writer = buffered_writer.writer();
+
+                try config_editor_renderer.render(
+                    editor,
+                    writer,
+                    self.terminal_size.width,
+                    self.terminal_size.height,
+                );
+                try buffered_writer.flush();
+
+                // Wait for input (blocking)
+                var read_buffer: [128]u8 = undefined;
+                const bytes_read = ui.c.read(ui.c.STDIN_FILENO, &read_buffer, read_buffer.len);
+
+                if (bytes_read > 0) {
+                    const input = read_buffer[0..@intCast(bytes_read)];
+                    const result = try config_editor_input.handleInput(editor, input);
+
+                    switch (result) {
+                        .save_and_close => {
+                            // Validate config before saving
+                            editor.temp_config.validate() catch |err| {
+                                std.debug.print("\n⚠ Config validation warning: {s}\n", .{@errorName(err)});
+                                std.debug.print("   Saving anyway, but please review your settings.\n\n", .{});
+                            };
+
+                            // Save config to disk
+                            try config_module.saveConfigToFile(self.allocator, editor.temp_config);
+
+                            // Apply changes to running config (transfer ownership)
+                            self.config.deinit(self.allocator);
+                            self.config = editor.temp_config;
+
+                            // Re-initialize markdown and UI colors with new config
+                            // CRITICAL: This must be done after config is replaced, since the old
+                            // config strings were just freed and markdown.COLOR_INLINE_CODE_BG
+                            // would be a dangling pointer otherwise
+                            markdown.initColors(self.config.color_inline_code_bg);
+                            ui.initUIColors(self.config.color_status);
+
+                            // Recreate LLM provider with new config
+                            self.llm_provider.deinit();
+                            self.llm_provider = try llm_provider_module.createProvider(
+                                self.config.provider,
+                                self.allocator,
+                                self.config,
+                            );
+
+                            // Close editor (but DON'T deinit temp_config - we transferred it to app.config!)
+                            // Manually free only the editor's sections and fields
+                            for (editor.sections) |section| {
+                                for (section.fields) |field| {
+                                    if (field.edit_buffer) |buffer| {
+                                        self.allocator.free(buffer);
+                                    }
+                                }
+                                self.allocator.free(section.fields);
+                            }
+                            self.allocator.free(editor.sections);
+                            self.config_editor = null;
+                        },
+                        .cancel => {
+                            // Discard changes and close editor
+                            editor.deinit();
+                            self.config_editor = null;
+                        },
+                        .redraw, .@"continue" => {},
+                    }
+                }
+
+                continue; // Skip normal app logic - editor owns the screen
+            }
+
             // Handle pending tool executions using state machine (async - doesn't block input)
             if (self.tool_executor.hasPendingWork()) {
                 // Forward permission response from App to tool_executor if available
@@ -1420,7 +1454,57 @@ pub const App = struct {
                             last_message.processed_content.deinit(self.allocator);
 
                             last_message.content = try self.allocator.dupe(u8, content_accumulator.items);
+
+                            // DEBUG: Check content encoding
+                            if (std.posix.getenv("DEBUG_LMSTUDIO") != null and last_message.content.len > 0) {
+                                const preview_len = @min(100, last_message.content.len);
+                                std.debug.print("\nDEBUG APP: Raw content ({d} bytes): {s}\n", .{last_message.content.len, last_message.content[0..preview_len]});
+
+                                // Show hex dump of raw content
+                                const hex_len = @min(100, last_message.content.len);
+                                std.debug.print("DEBUG APP: Raw content hex: ", .{});
+                                for (last_message.content[0..hex_len]) |byte| {
+                                    std.debug.print("{x:0>2} ", .{byte});
+                                }
+                                std.debug.print("\n", .{});
+
+                                // Check for ANSI escape codes
+                                if (std.mem.indexOf(u8, last_message.content, "\x1b")) |idx| {
+                                    std.debug.print("WARNING: Found ANSI escape code at position {d}!\n", .{idx});
+                                }
+
+                                // Check for high bytes (> 127) that might be problematic
+                                for (last_message.content[0..@min(100, last_message.content.len)], 0..) |byte, i| {
+                                    if (byte >= 128) {
+                                        std.debug.print("DEBUG: High byte 0x{x:0>2} at position {d}\n", .{byte, i});
+                                    }
+                                }
+                            }
+
                             last_message.processed_content = try markdown.processMarkdown(self.allocator, last_message.content);
+
+                            // DEBUG: Check if markdown processing worked
+                            if (std.posix.getenv("DEBUG_LMSTUDIO") != null) {
+                                std.debug.print("DEBUG APP: Processed markdown - got {d} items\n", .{last_message.processed_content.items.len});
+                                if (last_message.processed_content.items.len > 0) {
+                                    std.debug.print("DEBUG APP: First item type: {s}\n", .{@tagName(last_message.processed_content.items[0].tag)});
+
+                                    // Check what's in the styled_text
+                                    if (last_message.processed_content.items[0].tag == .styled_text) {
+                                        const styled = last_message.processed_content.items[0].payload.styled_text;
+                                        if (styled.len < 100) {
+                                            std.debug.print("DEBUG APP: Styled text content: {s}\n", .{styled});
+                                            // Show hex of first 50 bytes
+                                            const hex_len = @min(50, styled.len);
+                                            std.debug.print("DEBUG APP: Hex: ", .{});
+                                            for (styled[0..hex_len]) |byte| {
+                                                std.debug.print("{x:0>2} ", .{byte});
+                                            }
+                                            std.debug.print("\n", .{});
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
 

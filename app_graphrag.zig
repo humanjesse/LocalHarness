@@ -37,52 +37,119 @@ pub fn extractFilePathFromResult(content: []const u8) ?[]const u8 {
 }
 
 /// Progress callback context for GraphRAG indexing
-pub const IndexingProgressContext = struct {
-    app: *App,
-    current_message_idx: ?usize = null, // Track which message to update
-    accumulated_content: std.ArrayListUnmanaged(u8) = .{},
-};
+/// Now uses unified ProgressDisplayContext from agents.zig
+const ProgressDisplayContext = @import("agents.zig").ProgressDisplayContext;
 
 /// Progress callback for GraphRAG indexing - updates UI with streaming content
-pub fn indexingProgressCallback(user_data: *anyopaque, update_type: @import("graphrag/llm_indexer.zig").ProgressUpdateType, message: []const u8) void {
-    const ctx = @as(*IndexingProgressContext, @ptrCast(@alignCast(user_data)));
+/// Now unified with agent progress display system
+pub fn indexingProgressCallback(user_data: ?*anyopaque, update_type: @import("agents.zig").ProgressUpdateType, message: []const u8) void {
+    const ctx = @as(*ProgressDisplayContext, @ptrCast(@alignCast(user_data orelse return)));
+    const allocator = ctx.app.allocator;
 
-    // Accumulate the message content
-    ctx.accumulated_content.appendSlice(ctx.app.allocator, message) catch return;
+    // Accumulate the message content based on type (like agent callback)
+    switch (update_type) {
+        .thinking => {
+            ctx.thinking_buffer.appendSlice(allocator, message) catch return;
+        },
+        .content => {
+            ctx.content_buffer.appendSlice(allocator, message) catch return;
+        },
+        .complete => {
+            // GraphRAG finished - finalize with beautiful formatting!
+            if (!ctx.finalized and ctx.current_message_idx != null) {
+                ctx.finalized = true;
+                message_renderer.finalizeProgressMessage(ctx) catch return;
+                return; // finalizeProgressMessage handles redraw
+            }
+        },
+        .embedding, .storage => {
+            // GraphRAG-specific status updates - could add to metadata later
+            // For now, just continue (could enhance to show "Creating embeddings..." etc.)
+        },
+        .iteration, .tool_call => {
+            // Status updates - continue accumulating
+        },
+    }
 
-    // Find or create the progress message
+    // Find or create the progress message (same structure as agent callback)
     if (ctx.current_message_idx == null) {
-        // Create new system message for this indexing progress
-        const content = ctx.app.allocator.dupe(u8, ctx.accumulated_content.items) catch return;
-        const processed = markdown.processMarkdown(ctx.app.allocator, content) catch return;
+        // Capture start time if not already set
+        if (ctx.start_time == 0) {
+            ctx.start_time = std.time.milliTimestamp();
+        }
 
-        ctx.app.messages.append(ctx.app.allocator, .{
+        // Create new system message for this indexing progress
+        const display_content = allocator.dupe(u8, "📊 Indexing...") catch return;
+        const content_processed = markdown.processMarkdown(allocator, display_content) catch return;
+
+        // Duplicate task name for message
+        const task_name_copy = allocator.dupe(u8, ctx.task_name) catch return;
+
+        ctx.app.messages.append(allocator, .{
             .role = .display_only_data,
-            .content = content,
-            .processed_content = processed,
+            .content = display_content,
+            .processed_content = content_processed,
+            .thinking_content = null,
+            .processed_thinking_content = null,
             .thinking_expanded = false,
             .timestamp = std.time.milliTimestamp(),
+            // Agent analysis metadata (for unified rendering!)
+            .agent_analysis_name = task_name_copy,
+            .agent_analysis_expanded = true, // Expanded during streaming
+            .agent_analysis_completed = false, // Not done yet
+            .tool_call_expanded = false,
+            .tool_name = null,
+            .tool_success = null,
+            .tool_execution_time = null, // Will be set on completion
         }) catch return;
 
         ctx.current_message_idx = ctx.app.messages.items.len - 1;
     } else {
-        // Update existing message
+        // Update existing message during streaming
         const idx = ctx.current_message_idx.?;
         var msg = &ctx.app.messages.items[idx];
 
         // Free old content
-        ctx.app.allocator.free(msg.content);
+        allocator.free(msg.content);
         for (msg.processed_content.items) |*item| {
-            item.deinit(ctx.app.allocator);
+            item.deinit(allocator);
         }
-        msg.processed_content.deinit(ctx.app.allocator);
+        msg.processed_content.deinit(allocator);
 
-        // Update with new content
-        msg.content = ctx.app.allocator.dupe(u8, ctx.accumulated_content.items) catch return;
-        msg.processed_content = markdown.processMarkdown(ctx.app.allocator, msg.content) catch return;
+        if (msg.thinking_content) |tc| allocator.free(tc);
+        if (msg.processed_thinking_content) |*ptc| {
+            for (ptc.items) |*item| {
+                item.deinit(allocator);
+            }
+            ptc.deinit(allocator);
+        }
+
+        // Show combined thinking + content during streaming
+        var combined = std.ArrayListUnmanaged(u8){};
+        defer combined.deinit(allocator);
+
+        if (ctx.thinking_buffer.items.len > 0) {
+            combined.appendSlice(allocator, ctx.thinking_buffer.items) catch return;
+            if (ctx.content_buffer.items.len > 0) {
+                combined.appendSlice(allocator, "\n\n") catch return;
+            }
+        }
+        if (ctx.content_buffer.items.len > 0) {
+            combined.appendSlice(allocator, ctx.content_buffer.items) catch return;
+        }
+
+        const display_content = if (combined.items.len > 0)
+            allocator.dupe(u8, combined.items) catch return
+        else
+            allocator.dupe(u8, "📊 Indexing...") catch return;
+
+        msg.content = display_content;
+        msg.processed_content = markdown.processMarkdown(allocator, display_content) catch return;
+        msg.thinking_content = null;
+        msg.processed_thinking_content = null;
     }
 
-    // Redraw screen to show progress
+    // Redraw to show progress
     if (!ctx.app.user_scrolled_away) {
         ctx.app.maintainBottomAnchor() catch return;
     }
@@ -90,8 +157,6 @@ pub fn indexingProgressCallback(user_data: *anyopaque, update_type: @import("gra
     if (!ctx.app.user_scrolled_away) {
         ctx.app.updateCursorToBottom();
     }
-
-    _ = update_type; // Unused for now, but available for future formatting
 }
 
 /// Update message history with custom line range
@@ -433,16 +498,23 @@ pub fn processQueuedFiles(app: *App) !void {
                         app.updateCursorToBottom();
                     }
 
-                    // Set up progress context for streaming updates
-                    var progress_ctx = IndexingProgressContext{
+                    // Set up progress context for streaming updates (unified with agent system)
+                    var progress_ctx = ProgressDisplayContext{
                         .app = app,
+                        .task_name = "GraphRAG Indexing",
+                        .task_icon = "📊",
+                        .start_time = std.time.milliTimestamp(),
+                        .metadata = .{
+                            .file_path = task.file_path,
+                        },
                     };
-                    defer progress_ctx.accumulated_content.deinit(app.allocator);
+                    defer progress_ctx.thinking_buffer.deinit(app.allocator);
+                    defer progress_ctx.content_buffer.deinit(app.allocator);
 
                     // Use main model for indexing with progress callback
                     llm_indexer.indexFile(
                         app.allocator,
-                        &app.ollama_client,
+                        &app.llm_provider,
                         app.config.model,
                         &app.app_context,
                         task.file_path,

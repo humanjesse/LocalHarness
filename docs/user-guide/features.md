@@ -2,6 +2,8 @@
 
 Complete guide to all ZodoLlama features and capabilities.
 
+> **Quick Reference:** See [Commands Reference](commands.md) for keyboard shortcuts and command syntax.
+
 ## Core Features
 
 ### Real-time Streaming
@@ -382,6 +384,58 @@ Information displayed:
 - Message count
 - Scroll position (when scrolled away)
 
+### Interactive Configuration Editor
+
+**Command:** `/config`
+
+A full-screen visual editor for modifying ZodoLlama settings without editing JSON files.
+
+**Features:**
+```
+┌───────────────────────────────────────┐
+│     Configuration Editor              │
+│  Tab to navigate, Ctrl+S to save     │
+│                                       │
+│  Provider Settings                    │
+│  ┌─────────────────────────────────┐ │
+│  │ Provider: [●] ollama [ ] lmstudio│ │
+│  │ Ollama Host: http://localhost...│ │
+│  └─────────────────────────────────┘ │
+│                                       │
+│  Features                             │
+│  ┌─────────────────────────────────┐ │
+│  │ Extended Thinking: [✓] ON       │ │
+│  │ Graph RAG: [✓] ON               │ │
+│  └─────────────────────────────────┘ │
+│                                       │
+│  [Ctrl+S] Save  [Esc] Cancel         │
+└───────────────────────────────────────┘
+```
+
+**How to use:**
+1. Type `/config` and press Enter
+2. Navigate with `Tab` or arrow keys
+3. Edit fields with `Enter`
+4. Press `Ctrl+S` to save or `Esc` to cancel
+
+**Keybindings:**
+| Key | Action |
+|-----|--------|
+| `Tab` / `↑↓` | Navigate fields |
+| `Enter` | Edit/toggle field |
+| `Space` | Toggle checkboxes |
+| `←` / `→` | Cycle radio buttons |
+| `Ctrl+S` | Save and close |
+| `Esc` | Cancel (discard changes) |
+
+**Benefits:**
+- No JSON syntax errors
+- Visual feedback for all settings
+- Provider-specific warnings
+- Safe: changes only apply when saved
+
+See [Configuration Guide](configuration.md#interactive-config-editor) for details.
+
 ### Input Handling
 
 **Chat input:**
@@ -391,8 +445,9 @@ Information displayed:
 - Multi-line support (press Enter in middle of text)
 
 **Special commands:**
+- `/config` + Enter: Open configuration editor
+- `/toggle-toolcall-json` + Enter: Show/hide tool JSON
 - `/quit` + Enter: Exit application
-- `/context`: Manual file tree (legacy, use tool calling instead)
 
 ### Keyboard Shortcuts
 

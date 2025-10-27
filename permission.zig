@@ -20,7 +20,7 @@ pub const Scope = enum {
     execute_commands,
     network_access,
     system_info,
-    task_management, // For internal task tracking operations
+    todo_management, // For internal todo tracking operations
 };
 
 pub const PermissionMode = enum {

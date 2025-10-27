@@ -1,4 +1,4 @@
-// List Tasks Tool - Lists all current tasks with status
+// List Todos Tool - Lists all current todos with status
 const std = @import("std");
 const ollama = @import("../ollama.zig");
 const permission = @import("../permission.zig");
@@ -14,8 +14,8 @@ pub fn getDefinition(allocator: std.mem.Allocator) !ToolDefinition {
         .ollama_tool = .{
             .type = "function",
             .function = .{
-                .name = try allocator.dupe(u8, "list_tasks"),
-                .description = try allocator.dupe(u8, "List all tasks. Example call: {} returns [{\"task_id\": \"task_1\", \"status\": \"pending\", \"content\": \"Fix bug\"}, {\"task_id\": \"task_2\", \"status\": \"completed\", \"content\": \"Write tests\"}]"),
+                .name = try allocator.dupe(u8, "list_todos"),
+                .description = try allocator.dupe(u8, "List all todos. Example call: {} returns [{\"todo_id\": \"todo_1\", \"status\": \"pending\", \"content\": \"Fix bug\"}, {\"todo_id\": \"todo_2\", \"status\": \"completed\", \"content\": \"Write tests\"}]"),
                 .parameters = try allocator.dupe(u8,
                     \\{
                     \\  "type": "object",
@@ -26,10 +26,10 @@ pub fn getDefinition(allocator: std.mem.Allocator) !ToolDefinition {
             },
         },
         .permission_metadata = .{
-            .name = "list_tasks",
-            .description = "List all tasks",
+            .name = "list_todos",
+            .description = "List all todos",
             .risk_level = .safe,
-            .required_scopes = &.{.task_management},
+            .required_scopes = &.{.todo_management},
             .validator = null,
         },
         .execute = execute,
@@ -40,23 +40,23 @@ fn execute(allocator: std.mem.Allocator, arguments: []const u8, context: *AppCon
     _ = arguments;
     const start_time = std.time.milliTimestamp();
 
-    const tasks = context.state.getTasks();
-    if (tasks.len == 0) {
+    const todos = context.state.getTodos();
+    if (todos.len == 0) {
         // Return empty JSON array
         const msg = try allocator.dupe(u8, "[]");
         defer allocator.free(msg);
         return ToolResult.ok(allocator, msg, start_time, null);
     }
 
-    // Build JSON array: [{"task_id": "task_1", "status": "pending", "content": "..."}, ...]
+    // Build JSON array: [{"todo_id": "todo_1", "status": "pending", "content": "..."}, ...]
     var result = std.ArrayListUnmanaged(u8){};
     errdefer result.deinit(allocator);
 
     try result.appendSlice(allocator, "[");
-    for (tasks, 0..) |task, i| {
+    for (todos, 0..) |todo, i| {
         if (i > 0) try result.appendSlice(allocator, ",");
 
-        const status_str = switch (task.status) {
+        const status_str = switch (todo.status) {
             .pending => "pending",
             .in_progress => "in_progress",
             .completed => "completed",
@@ -65,7 +65,7 @@ fn execute(allocator: std.mem.Allocator, arguments: []const u8, context: *AppCon
         // Escape content for JSON
         var escaped_content = std.ArrayListUnmanaged(u8){};
         defer escaped_content.deinit(allocator);
-        for (task.content) |c| {
+        for (todo.content) |c| {
             switch (c) {
                 '"' => try escaped_content.appendSlice(allocator, "\\\""),
                 '\\' => try escaped_content.appendSlice(allocator, "\\\\"),
@@ -76,13 +76,13 @@ fn execute(allocator: std.mem.Allocator, arguments: []const u8, context: *AppCon
             }
         }
 
-        const task_json = try std.fmt.allocPrint(
+        const todo_json = try std.fmt.allocPrint(
             allocator,
-            "{{\"task_id\":\"{s}\",\"status\":\"{s}\",\"content\":\"{s}\"}}",
-            .{ task.id, status_str, escaped_content.items },
+            "{{\"todo_id\":\"{s}\",\"status\":\"{s}\",\"content\":\"{s}\"}}",
+            .{ todo.id, status_str, escaped_content.items },
         );
-        defer allocator.free(task_json);
-        try result.appendSlice(allocator, task_json);
+        defer allocator.free(todo_json);
+        try result.appendSlice(allocator, todo_json);
     }
     try result.appendSlice(allocator, "]");
 

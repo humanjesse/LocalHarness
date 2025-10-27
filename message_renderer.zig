@@ -12,6 +12,94 @@ const app_module = @import("app.zig");
 const App = app_module.App;
 const Message = types.Message;
 
+/// Finalize a progress message with beautiful formatting (agents, GraphRAG, etc.)
+/// This unified function replaces separate finalization logic in app.zig and app_graphrag.zig
+pub fn finalizeProgressMessage(ctx: *@import("agents.zig").ProgressDisplayContext) !void {
+    const allocator = ctx.app.allocator;
+    const idx = ctx.current_message_idx orelse return;
+    var msg = &ctx.app.messages.items[idx];
+
+    // Calculate execution time
+    const end_time = std.time.milliTimestamp();
+    const execution_time = end_time - ctx.start_time;
+
+    // Free old content
+    allocator.free(msg.content);
+    for (msg.processed_content.items) |*item| {
+        item.deinit(allocator);
+    }
+    msg.processed_content.deinit(allocator);
+
+    if (msg.thinking_content) |tc| allocator.free(tc);
+    if (msg.processed_thinking_content) |*ptc| {
+        for (ptc.items) |*item| {
+            item.deinit(allocator);
+        }
+        ptc.deinit(allocator);
+    }
+
+    // Build final formatted message
+    var final_content = std.ArrayListUnmanaged(u8){};
+    defer final_content.deinit(allocator);
+    const writer = final_content.writer(allocator);
+
+    // Header with task name and icon
+    try writer.print("{s} **{s} Analysis**\n", .{ ctx.task_icon, ctx.task_name });
+    try writer.writeAll("─────────────────────────────────\n\n");
+
+    // Content (thinking + main content)
+    if (ctx.thinking_buffer.items.len > 0) {
+        try writer.writeAll(ctx.thinking_buffer.items);
+        if (ctx.content_buffer.items.len > 0) {
+            try writer.writeAll("\n\n");
+        }
+    }
+    if (ctx.content_buffer.items.len > 0) {
+        try writer.writeAll(ctx.content_buffer.items);
+    }
+
+    // Task-specific metadata (for GraphRAG)
+    if (ctx.metadata) |meta| {
+        try writer.writeAll("\n\n**Statistics:**\n");
+        if (meta.file_path) |path| {
+            try writer.print("- File: {s}\n", .{path});
+        }
+        if (meta.nodes_created > 0) {
+            try writer.print("- Nodes created: {d}\n", .{meta.nodes_created});
+        }
+        if (meta.edges_created > 0) {
+            try writer.print("- Edges created: {d}\n", .{meta.edges_created});
+        }
+        if (meta.embeddings_created > 0) {
+            try writer.print("- Embeddings: {d}\n", .{meta.embeddings_created});
+        }
+    }
+
+    // Footer
+    try writer.writeAll("\n\n─────────────────────────────────");
+
+    // Update message
+    const display_content = try final_content.toOwnedSlice(allocator);
+    msg.content = display_content;
+    msg.processed_content = try markdown.processMarkdown(allocator, display_content);
+    msg.thinking_content = null;
+    msg.processed_thinking_content = null;
+
+    // Set metadata for collapse/expand
+    msg.agent_analysis_completed = true; // Enable collapse button
+    msg.agent_analysis_expanded = false; // Auto-collapse to save space
+    msg.tool_execution_time = execution_time; // Store execution time for display
+
+    // Redraw screen to show finalized message
+    if (!ctx.app.user_scrolled_away) {
+        try ctx.app.maintainBottomAnchor();
+    }
+    _ = try redrawScreen(ctx.app);
+    if (!ctx.app.user_scrolled_away) {
+        ctx.app.updateCursorToBottom();
+    }
+}
+
 // Recursive markdown rendering function
 pub fn renderItemsToLines(
     app: *App,

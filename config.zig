@@ -6,8 +6,11 @@ const permission = @import("permission.zig");
 
 /// Application configuration
 pub const Config = struct {
+    // Provider selection
+    provider: []const u8 = "ollama", // LLM provider: "ollama" or "lmstudio"
     ollama_host: []const u8 = "http://localhost:11434",
     ollama_endpoint: []const u8 = "/api/chat",
+    lmstudio_host: []const u8 = "http://localhost:1234", // LM Studio default port
     model: []const u8 = "qwen3-coder:30b",
     model_keep_alive: []const u8 = "15m", // How long to keep model in memory (e.g., "5m", "15m", or "-1" for infinite)
     num_ctx: usize = 128000, // Context window size in tokens (default: 128k for full conversation history)
@@ -34,9 +37,58 @@ pub const Config = struct {
     // File reading thresholds (smart auto-detection)
     file_read_small_threshold: usize = 200, // Files <= this: show full content (no agent overhead). Files > this: use conversation-aware curation agent
 
+    /// Validate configuration values and warn about incompatibilities
+    pub fn validate(self: *const Config) !void {
+        const llm_provider = @import("llm_provider.zig");
+
+        // Validate provider exists
+        const caps = llm_provider.ProviderRegistry.get(self.provider) orelse {
+            std.debug.print("❌ Invalid provider: '{s}'\n", .{self.provider});
+            std.debug.print("   Available providers: ", .{});
+            for (llm_provider.ProviderRegistry.ALL, 0..) |provider, i| {
+                if (i > 0) std.debug.print(", ", .{});
+                std.debug.print("{s}", .{provider.name});
+            }
+            std.debug.print("\n", .{});
+            return error.InvalidProvider;
+        };
+
+        // Validate num_ctx range
+        if (self.num_ctx < 512 or self.num_ctx > 1_000_000) {
+            std.debug.print("❌ Invalid num_ctx: {d}. Must be between 512 and 1,000,000\n", .{self.num_ctx});
+            return error.InvalidContextSize;
+        }
+
+        // Validate num_predict is reasonable
+        if (self.num_predict < -1 or self.num_predict > 100_000) {
+            std.debug.print("❌ Invalid num_predict: {d}. Must be between -1 and 100,000\n", .{self.num_predict});
+            return error.InvalidPredictSize;
+        }
+
+        // Validate URLs
+        if (!mem.startsWith(u8, self.ollama_host, "http://") and !mem.startsWith(u8, self.ollama_host, "https://")) {
+            std.debug.print("⚠ Warning: ollama_host should start with http:// or https://\n", .{});
+        }
+        if (!mem.startsWith(u8, self.lmstudio_host, "http://") and !mem.startsWith(u8, self.lmstudio_host, "https://")) {
+            std.debug.print("⚠ Warning: lmstudio_host should start with http:// or https://\n", .{});
+        }
+
+        // Warn about unsupported feature combinations
+        if (self.enable_thinking and !caps.supports_thinking) {
+            std.debug.print("⚠ Warning: {s} doesn't support thinking mode. Feature will be disabled.\n", .{caps.name});
+        }
+
+        // Display provider-specific warnings
+        for (caps.config_warnings) |warning| {
+            std.debug.print("⚠ Note ({s}): {s}\n", .{ caps.name, warning.message });
+        }
+    }
+
     pub fn deinit(self: *Config, allocator: mem.Allocator) void {
+        allocator.free(self.provider);
         allocator.free(self.ollama_host);
         allocator.free(self.ollama_endpoint);
+        allocator.free(self.lmstudio_host);
         allocator.free(self.model);
         allocator.free(self.model_keep_alive);
         for (self.editor) |arg| {
@@ -56,9 +108,11 @@ pub const Config = struct {
 
 /// JSON-serializable config file structure
 const ConfigFile = struct {
+    provider: ?[]const u8 = null,
     editor: ?[]const []const u8 = null,
     ollama_host: ?[]const u8 = null,
     ollama_endpoint: ?[]const u8 = null,
+    lmstudio_host: ?[]const u8 = null,
     model: ?[]const u8 = null,
     model_keep_alive: ?[]const u8 = null,
     num_ctx: ?usize = null,
@@ -70,6 +124,7 @@ const ConfigFile = struct {
     color_thinking_dim: ?[]const u8 = null,
     color_inline_code_bg: ?[]const u8 = null,
     enable_thinking: ?bool = null,
+    show_tool_json: ?bool = null,
     graph_rag_enabled: ?bool = null,
     embedding_model: ?[]const u8 = null,
     indexing_model: ?[]const u8 = null,
@@ -93,8 +148,10 @@ pub fn loadConfigFromFile(allocator: mem.Allocator) !Config {
     default_editor[0] = try allocator.dupe(u8, "nvim");
 
     var config = Config{
+        .provider = try allocator.dupe(u8, "ollama"),
         .ollama_host = try allocator.dupe(u8, "http://localhost:11434"),
         .ollama_endpoint = try allocator.dupe(u8, "/api/chat"),
+        .lmstudio_host = try allocator.dupe(u8, "http://localhost:1234"),
         .model = try allocator.dupe(u8, "qwen3-coder:30b"),
         .model_keep_alive = try allocator.dupe(u8, "15m"),
         .editor = default_editor,
@@ -129,34 +186,19 @@ pub fn loadConfigFromFile(allocator: mem.Allocator) !Config {
                 if (dir_err != error.PathAlreadyExists) return config;
             };
 
-            // Create default config file
+            // Create default config file (serialize current config with defaults)
             const new_file = fs.cwd().createFile(config_path, .{}) catch return config;
             defer new_file.close();
 
-            const default_config =
-                \\{
-                \\  "editor": ["nvim"],
-                \\  "ollama_host": "http://localhost:11434",
-                \\  "ollama_endpoint": "/api/chat",
-                \\  "model": "qwen3-coder:30b",
-                \\  "model_keep_alive": "15m",
-                \\  "num_ctx": 128000,
-                \\  "num_predict": 8192,
-                \\  "scroll_lines": 3,
-                \\  "color_status": "\u001b[33m",
-                \\  "color_link": "\u001b[36m",
-                \\  "color_thinking_header": "\u001b[36m",
-                \\  "color_thinking_dim": "\u001b[2m",
-                \\  "color_inline_code_bg": "\u001b[48;5;237m",
-                \\  "graph_rag_enabled": true,
-                \\  "embedding_model": "embeddinggemma:300m",
-                \\  "indexing_model": "qwen3-coder:30b",
-                \\  "max_chunks_in_history": 5,
-                \\  "zvdb_path": ".zodollama/graphrag.zvdb"
-                \\}
-                \\
-            ;
-            new_file.writeAll(default_config) catch return config;
+            // Generate default config JSON from the config struct
+            const default_config_json = std.fmt.allocPrint(
+                allocator,
+                "{f}\n",
+                .{std.json.fmt(config, .{ .whitespace = .indent_2 })},
+            ) catch return config;
+            defer allocator.free(default_config_json);
+
+            new_file.writeAll(default_config_json) catch return config;
 
             return config;
         }
@@ -172,9 +214,19 @@ pub fn loadConfigFromFile(allocator: mem.Allocator) !Config {
     defer parsed.deinit();
 
     // Apply loaded values
+    if (parsed.value.provider) |provider| {
+        allocator.free(config.provider);
+        config.provider = try allocator.dupe(u8, provider);
+    }
+
     if (parsed.value.ollama_host) |ollama_host| {
         allocator.free(config.ollama_host);
         config.ollama_host = try allocator.dupe(u8, ollama_host);
+    }
+
+    if (parsed.value.lmstudio_host) |lmstudio_host| {
+        allocator.free(config.lmstudio_host);
+        config.lmstudio_host = try allocator.dupe(u8, lmstudio_host);
     }
 
     if (parsed.value.model) |model| {
@@ -244,6 +296,10 @@ pub fn loadConfigFromFile(allocator: mem.Allocator) !Config {
         config.enable_thinking = enable_thinking;
     }
 
+    if (parsed.value.show_tool_json) |show_tool_json| {
+        config.show_tool_json = show_tool_json;
+    }
+
     if (parsed.value.graph_rag_enabled) |graph_rag_enabled| {
         config.graph_rag_enabled = graph_rag_enabled;
     }
@@ -270,6 +326,12 @@ pub fn loadConfigFromFile(allocator: mem.Allocator) !Config {
     if (parsed.value.file_read_small_threshold) |file_read_small_threshold| {
         config.file_read_small_threshold = file_read_small_threshold;
     }
+
+    // Validate configuration before returning
+    config.validate() catch |err| {
+        std.debug.print("⚠ Config validation failed: {s}\n", .{@errorName(err)});
+        std.debug.print("   Using config anyway, but some features may not work correctly.\n\n", .{});
+    };
 
     return config;
 }
@@ -313,8 +375,8 @@ pub fn loadPolicies(allocator: mem.Allocator, permission_manager: *permission.Pe
             .network_access
         else if (mem.eql(u8, policy_file.scope, "system_info"))
             .system_info
-        else if (mem.eql(u8, policy_file.scope, "task_management"))
-            .task_management
+        else if (mem.eql(u8, policy_file.scope, "todo_management"))
+            .todo_management
         else
             continue; // Skip unknown scopes
 
@@ -380,7 +442,7 @@ pub fn savePolicies(allocator: mem.Allocator, permission_manager: *permission.Pe
             .execute_commands => "execute_commands",
             .network_access => "network_access",
             .system_info => "system_info",
-            .task_management => "task_management",
+            .todo_management => "todo_management",
         };
 
         const mode_str = switch (policy.mode) {
@@ -398,37 +460,49 @@ pub fn savePolicies(allocator: mem.Allocator, permission_manager: *permission.Pe
         });
     }
 
-    // Manually serialize to JSON (Zig 0.15.2 compatible)
-    var json_buffer = std.ArrayListUnmanaged(u8){};
-    defer json_buffer.deinit(allocator);
-    const writer = json_buffer.writer(allocator);
-
-    try writer.writeAll("[\n");
-    for (policy_files.items, 0..) |policy, i| {
-        try writer.writeAll("  {\n");
-        try writer.print("    \"scope\": \"{s}\",\n", .{policy.scope});
-        try writer.print("    \"mode\": \"{s}\",\n", .{policy.mode});
-        try writer.writeAll("    \"path_patterns\": [");
-        for (policy.path_patterns, 0..) |pattern, j| {
-            try writer.print("\"{s}\"", .{pattern});
-            if (j < policy.path_patterns.len - 1) try writer.writeAll(", ");
-        }
-        try writer.writeAll("],\n");
-        try writer.writeAll("    \"deny_patterns\": [");
-        for (policy.deny_patterns, 0..) |pattern, j| {
-            try writer.print("\"{s}\"", .{pattern});
-            if (j < policy.deny_patterns.len - 1) try writer.writeAll(", ");
-        }
-        try writer.writeAll("]\n");
-        try writer.writeAll("  }");
-        if (i < policy_files.items.len - 1) try writer.writeAll(",");
-        try writer.writeAll("\n");
-    }
-    try writer.writeAll("]\n");
+    // Serialize to JSON using std.json.fmt
+    const json_string = try std.fmt.allocPrint(
+        allocator,
+        "{f}\n",
+        .{std.json.fmt(policy_files.items, .{ .whitespace = .indent_2 })},
+    );
+    defer allocator.free(json_string);
 
     // Write to file
     const file = try fs.cwd().createFile(policies_path, .{ .truncate = true });
     defer file.close();
 
-    try file.writeAll(json_buffer.items);
+    try file.writeAll(json_string);
+}
+
+/// Save configuration to ~/.config/zodollama/config.json
+pub fn saveConfigToFile(allocator: mem.Allocator, config: Config) !void {
+    // Get home directory
+    const home = std.posix.getenv("HOME") orelse return error.NoHomeDir;
+
+    // Build path: ~/.config/zodollama/config.json
+    const config_dir = try fs.path.join(allocator, &.{ home, ".config", "zodollama" });
+    defer allocator.free(config_dir);
+
+    // Ensure config directory exists
+    fs.cwd().makePath(config_dir) catch |err| {
+        if (err != error.PathAlreadyExists) return err;
+    };
+
+    const config_path = try fs.path.join(allocator, &.{ config_dir, "config.json" });
+    defer allocator.free(config_path);
+
+    // Serialize to JSON using std.json.fmt
+    const json_string = try std.fmt.allocPrint(
+        allocator,
+        "{f}\n",
+        .{std.json.fmt(config, .{ .whitespace = .indent_2 })},
+    );
+    defer allocator.free(json_string);
+
+    // Write to file
+    const file = try fs.cwd().createFile(config_path, .{ .truncate = true });
+    defer file.close();
+
+    try file.writeAll(json_string);
 }
