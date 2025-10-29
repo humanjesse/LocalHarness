@@ -83,6 +83,9 @@ pub const ConfigEditorState = struct {
             .model_keep_alive = try allocator.dupe(u8, current_config.model_keep_alive),
             .num_ctx = current_config.num_ctx,
             .num_predict = current_config.num_predict,
+            .indexing_temperature = current_config.indexing_temperature,
+            .indexing_num_predict = current_config.indexing_num_predict,
+            .indexing_repeat_penalty = current_config.indexing_repeat_penalty,
             .editor = blk: {
                 const editor = try allocator.alloc([]const u8, current_config.editor.len);
                 for (current_config.editor, 0..) |arg, i| {
@@ -282,6 +285,27 @@ fn buildFormSections(allocator: std.mem.Allocator, temp_config: *const config_mo
             .field_type = .number_input,
             .key = "num_predict",
             .help_text = "Maximum response length (default: 8192)",
+        });
+
+        try fields.append(allocator, .{
+            .label = "GraphRAG Indexing Temperature",
+            .field_type = .text_input,
+            .key = "indexing_temperature",
+            .help_text = "Temperature for entity extraction (null=default, 0.1=focused, 0.5=balanced)",
+        });
+
+        try fields.append(allocator, .{
+            .label = "GraphRAG Max Tokens",
+            .field_type = .text_input,
+            .key = "indexing_num_predict",
+            .help_text = "Max tokens for indexing (null=use main config, default: 10240)",
+        });
+
+        try fields.append(allocator, .{
+            .label = "GraphRAG Repeat Penalty",
+            .field_type = .text_input,
+            .key = "indexing_repeat_penalty",
+            .help_text = "Penalize repetition in indexing (null=default, 1.3=reduce verbosity)",
         });
 
         try sections.append(allocator, .{

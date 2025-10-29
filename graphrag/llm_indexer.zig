@@ -52,8 +52,9 @@ fn formatNodesForPrompt(allocator: std.mem.Allocator, graph_builder: *const Grap
 
 /// System prompt that guides the LLM to analyze files and build knowledge graphs
 const INDEXING_SYSTEM_PROMPT =
-    \\Extract entities FAST. Call create_node for every function/struct/concept you see - do NOT deliberate.
-    \\Work quickly: scan file, call tools immediately. Short summaries only.
+    \\You are analyzing code to build a knowledge graph.
+    \\Create a node for every function, class, struct, type, and important concept you find.
+    \\Use concise summaries (1-2 sentences per node).
 ;
 
 // Use unified types from agents module (no duplication!)
@@ -159,7 +160,11 @@ pub fn indexFile(
     // Build phase 1 user message: nodes only
     const user_prompt = try std.fmt.allocPrint(
         allocator,
-        \\Use the create_node tool to create nodes for this file.
+        \\Analyze this file and create nodes for all entities:
+        \\- Functions and methods
+        \\- Classes, structs, types, interfaces
+        \\- Important constants and variables
+        \\- Key concepts and patterns
         \\
         \\File:
         \\{s}
@@ -275,8 +280,8 @@ pub fn indexFile(
         // Get provider capabilities to check what's supported
         const caps = llm_provider.getCapabilities();
 
-        // Enable thinking if provider supports it (beneficial for entity extraction reasoning)
-        const enable_thinking = caps.supports_thinking;
+        // Enable thinking if both config and provider support it (matches main loop behavior)
+        const enable_thinking = app_context.config.enable_thinking and caps.supports_thinking;
 
         // Only pass keep_alive if provider supports it
         const keep_alive = if (caps.supports_keep_alive) app_context.config.model_keep_alive else null;
@@ -289,9 +294,9 @@ pub fn indexFile(
             if (tools.len > 0) tools else null,
             keep_alive, // Capability-aware keep_alive
             app_context.config.num_ctx,
-            10240, // Increased from 8192 - give model room to think and call tools naturally
-            0.1, // temperature=0.1 - very focused, deterministic extraction
-            1.3, // repeat_penalty=1.3 - penalize repetitive deliberation phrases (default: 1.1)
+            app_context.config.indexing_num_predict orelse app_context.config.num_predict, // Use indexing config, fallback to main
+            app_context.config.indexing_temperature, // null = model default (allows tool calling)
+            app_context.config.indexing_repeat_penalty, // null = model default
             &stream_ctx,
             streamCallback,
         ) catch |err| {

@@ -266,18 +266,36 @@ fn cycleRadioBackward(state: *ConfigEditorState, field: *ConfigField) !void {
 
 /// Start editing a text field
 fn startTextEdit(state: *ConfigEditorState, field: *ConfigField) !void {
-    // Get current value from config
-    const current_value = getCurrentTextValue(state, field.key);
-
-    // Allocate edit buffer and copy current value
-    const buffer = try state.allocator.dupe(u8, current_value);
+    const config = &state.temp_config;
 
     // Free old buffer if exists
     if (field.edit_buffer) |old_buffer| {
         state.allocator.free(old_buffer);
     }
 
-    field.edit_buffer = buffer;
+    // Handle special nullable fields that need formatting
+    if (std.mem.eql(u8, field.key, "indexing_temperature")) {
+        field.edit_buffer = if (config.indexing_temperature) |temp|
+            try std.fmt.allocPrint(state.allocator, "{d:.2}", .{temp})
+        else
+            try state.allocator.dupe(u8, "null");
+    } else if (std.mem.eql(u8, field.key, "indexing_num_predict")) {
+        field.edit_buffer = if (config.indexing_num_predict) |num|
+            try std.fmt.allocPrint(state.allocator, "{d}", .{num})
+        else
+            try state.allocator.dupe(u8, "null");
+    } else if (std.mem.eql(u8, field.key, "indexing_repeat_penalty")) {
+        field.edit_buffer = if (config.indexing_repeat_penalty) |penalty|
+            try std.fmt.allocPrint(state.allocator, "{d:.2}", .{penalty})
+        else
+            try state.allocator.dupe(u8, "null");
+    } else {
+        // Get current value from config for regular text fields
+        const current_value = getCurrentTextValue(state, field.key);
+        // Allocate edit buffer and copy current value
+        field.edit_buffer = try state.allocator.dupe(u8, current_value);
+    }
+
     field.is_editing = true;
 }
 
@@ -407,6 +425,27 @@ fn setTextValue(state: *ConfigEditorState, key: []const u8, value: []const u8) !
     } else if (std.mem.eql(u8, key, "model")) {
         state.allocator.free(config.model);
         config.model = try state.allocator.dupe(u8, value);
+    } else if (std.mem.eql(u8, key, "indexing_temperature")) {
+        // Parse nullable float - "null" or empty = null, otherwise parse as float
+        if (std.mem.eql(u8, value, "null") or value.len == 0) {
+            config.indexing_temperature = null;
+        } else {
+            config.indexing_temperature = std.fmt.parseFloat(f32, value) catch null;
+        }
+    } else if (std.mem.eql(u8, key, "indexing_num_predict")) {
+        // Parse nullable int - "null" or empty = null, otherwise parse as int
+        if (std.mem.eql(u8, value, "null") or value.len == 0) {
+            config.indexing_num_predict = null;
+        } else {
+            config.indexing_num_predict = std.fmt.parseInt(isize, value, 10) catch null;
+        }
+    } else if (std.mem.eql(u8, key, "indexing_repeat_penalty")) {
+        // Parse nullable float - "null" or empty = null, otherwise parse as float
+        if (std.mem.eql(u8, value, "null") or value.len == 0) {
+            config.indexing_repeat_penalty = null;
+        } else {
+            config.indexing_repeat_penalty = std.fmt.parseFloat(f32, value) catch null;
+        }
     }
 }
 

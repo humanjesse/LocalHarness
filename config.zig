@@ -15,6 +15,10 @@ pub const Config = struct {
     model_keep_alive: []const u8 = "15m", // How long to keep model in memory (e.g., "5m", "15m", or "-1" for infinite)
     num_ctx: usize = 128000, // Context window size in tokens (default: 128k for full conversation history)
     num_predict: isize = 8192, // Max tokens to generate per response (default: 8192 for detailed code generation)
+    // GraphRAG indexing parameters (separate from main chat)
+    indexing_temperature: ?f32 = null, // null = use model default; Ollama works at 0.1, LM Studio may need higher
+    indexing_num_predict: ?isize = null, // null = use config.num_predict; default for indexing is 10240
+    indexing_repeat_penalty: ?f32 = null, // null = use model default; helps reduce verbosity in entity extraction
     editor: []const []const u8 = &.{"nvim"},
     // UI customization
     scroll_lines: usize = 3, // Number of lines to scroll per wheel movement
@@ -117,6 +121,9 @@ const ConfigFile = struct {
     model_keep_alive: ?[]const u8 = null,
     num_ctx: ?usize = null,
     num_predict: ?isize = null,
+    indexing_temperature: ?f32 = null,
+    indexing_num_predict: ?isize = null,
+    indexing_repeat_penalty: ?f32 = null,
     scroll_lines: ?usize = null,
     color_status: ?[]const u8 = null,
     color_link: ?[]const u8 = null,
@@ -166,6 +173,9 @@ pub fn loadConfigFromFile(allocator: mem.Allocator) !Config {
         .indexing_model = try allocator.dupe(u8, "llama3.1:8b"),
         .max_chunks_in_history = 5,
         .zvdb_path = try allocator.dupe(u8, ".zodollama/graphrag.zvdb"),
+        .indexing_temperature = null,
+        .indexing_num_predict = null,
+        .indexing_repeat_penalty = null,
     };
 
     // Try to get home directory
@@ -245,6 +255,18 @@ pub fn loadConfigFromFile(allocator: mem.Allocator) !Config {
 
     if (parsed.value.num_predict) |num_predict| {
         config.num_predict = num_predict;
+    }
+
+    if (parsed.value.indexing_temperature) |indexing_temperature| {
+        config.indexing_temperature = indexing_temperature;
+    }
+
+    if (parsed.value.indexing_num_predict) |indexing_num_predict| {
+        config.indexing_num_predict = indexing_num_predict;
+    }
+
+    if (parsed.value.indexing_repeat_penalty) |indexing_repeat_penalty| {
+        config.indexing_repeat_penalty = indexing_repeat_penalty;
     }
 
     if (parsed.value.editor) |editor| {
