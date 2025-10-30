@@ -36,7 +36,7 @@ pub const Config = struct {
     show_tool_json: bool = false, // Show raw JSON tool calls (for debugging, default hidden)
     // Graph RAG configuration
     graph_rag_enabled: bool = false, // Enable Graph RAG for code context compression
-    embedding_model: []const u8 = "nomic-embed-text", // Embedding model for vector search (both Ollama and LM Studio)
+    embedding_model: []const u8 = "nomic-embed-text", // Embedding model for vector search (format depends on provider: Ollama uses "nomic-embed-text", LM Studio uses "text-embedding-nomic-embed-text-v1.5")
     indexing_model: []const u8 = "llama3.1:8b", // Model for analyzing files and building graphs (smaller/faster model with reliable tool calling)
     max_chunks_in_history: usize = 5, // Max number of code chunks to include in compressed history
     zvdb_path: []const u8 = ".localharness/graphrag.zvdb", // Path to vector database file
@@ -104,9 +104,32 @@ pub const Config = struct {
                 std.debug.print("⚠ Warning: GraphRAG enabled but indexing_model is empty\n", .{});
             }
 
-            // Provider-specific guidance
+            // Provider-specific model name validation
             if (mem.eql(u8, self.provider, "lmstudio")) {
-                std.debug.print("ℹ Note: Using LM Studio for embeddings. Ensure an embedding model is loaded.\n", .{});
+                // Check if embedding model looks like Ollama format
+                if (!mem.startsWith(u8, self.embedding_model, "text-embedding-") and
+                    self.embedding_model.len > 0)
+                {
+                    std.debug.print("\n⚠ Warning: LM Studio embedding model should start with 'text-embedding-'\n", .{});
+                    std.debug.print("   Current: {s}\n", .{self.embedding_model});
+                    std.debug.print("   Example: text-embedding-nomic-embed-text-v1.5\n", .{});
+                    std.debug.print("   Note: Download and load model in LM Studio first!\n\n", .{});
+                }
+
+                // Provider-specific setup guidance
+                std.debug.print("ℹ LM Studio Embedding Setup:\n", .{});
+                std.debug.print("   1. Download a BERT/nomic-bert model in LM Studio\n", .{});
+                std.debug.print("   2. Load it in the 'Embedding Model Settings' dropdown\n", .{});
+                std.debug.print("   3. Start the server (default port 1234)\n", .{});
+                std.debug.print("   4. Use OpenAI-style model name (e.g., 'text-embedding-...')\n\n", .{});
+            } else if (mem.eql(u8, self.provider, "ollama")) {
+                // Check if embedding model looks like LM Studio format
+                if (mem.startsWith(u8, self.embedding_model, "text-embedding-")) {
+                    std.debug.print("\n⚠ Warning: Ollama embedding model should NOT start with 'text-embedding-'\n", .{});
+                    std.debug.print("   Current: {s}\n", .{self.embedding_model});
+                    std.debug.print("   Example: nomic-embed-text\n", .{});
+                    std.debug.print("   Note: Pull model with 'ollama pull nomic-embed-text' first!\n\n", .{});
+                }
             }
         }
     }
@@ -194,6 +217,9 @@ pub fn loadConfigFromFile(allocator: mem.Allocator) !Config {
         .color_thinking_dim = try allocator.dupe(u8, "\x1b[2m"),
         .color_inline_code_bg = try allocator.dupe(u8, "\x1b[48;5;237m"),
         .graph_rag_enabled = false,
+        // Default embedding model (Ollama format)
+        // For LM Studio, use: "text-embedding-nomic-embed-text-v1.5"
+        // For Ollama, use: "nomic-embed-text"
         .embedding_model = try allocator.dupe(u8, "nomic-embed-text"),
         .indexing_model = try allocator.dupe(u8, "llama3.1:8b"),
         .max_chunks_in_history = 5,

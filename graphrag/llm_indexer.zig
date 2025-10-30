@@ -50,6 +50,25 @@ fn formatNodesForPrompt(allocator: std.mem.Allocator, graph_builder: *const Grap
     return try buffer.toOwnedSlice(allocator);
 }
 
+/// Clean up and free all messages in the array
+fn freeMessages(allocator: std.mem.Allocator, messages: *std.ArrayListUnmanaged(ollama.ChatMessage)) void {
+    for (messages.items) |msg| {
+        allocator.free(msg.role);
+        allocator.free(msg.content);
+        if (msg.tool_calls) |calls| {
+            for (calls) |call| {
+                if (call.id) |id| allocator.free(id);
+                if (call.type) |t| allocator.free(t);
+                allocator.free(call.function.name);
+                allocator.free(call.function.arguments);
+            }
+            allocator.free(calls);
+        }
+        if (msg.tool_call_id) |id| allocator.free(id);
+    }
+    messages.clearRetainingCapacity();
+}
+
 /// System prompt for Phase 1: Node Extraction Agent
 /// This agent focuses ONLY on identifying and creating entity nodes
 const NODE_EXTRACTION_SYSTEM_PROMPT =
@@ -520,18 +539,32 @@ pub fn indexFile(
     }
 
     // ========================================================================
-    // PHASE 2: EDGE CREATION
+    // PHASE 2: EDGE CREATION (Fresh Context)
     // ========================================================================
 
-    // User prompt for Phase 2 - focused on edge creation only
+    // Clear Phase 1 conversation - Phase 2 needs fresh context
+    if (isDebugEnabled()) {
+        std.debug.print("[INDEXER] Clearing Phase 1 context ({d} messages)\n", .{messages.items.len});
+    }
+    freeMessages(allocator, &messages);
+
+    // Format nodes for Phase 2 prompt
     const nodes_summary = try formatNodesForPrompt(allocator, &graph_builder);
     defer allocator.free(nodes_summary);
 
     const edge_prompt = try std.fmt.allocPrint(
         allocator,
-        \\Create edges between nodes using create_edge tool. ONLY connect nodes from this list:
+        \\Map relationships between entities extracted from: {s}
         \\
+        \\EXTRACTED ENTITIES:
         \\{s}
+        \\
+        \\ORIGINAL DOCUMENT (for reference):
+        \\```
+        \\{s}
+        \\```
+        \\
+        \\TASK: Create edges between these entities using create_edge tool.
         \\
         \\Use these relationship values:
         \\• "calls" - for function/method invocations
@@ -539,10 +572,11 @@ pub fn indexFile(
         \\• "references" - for variable/type references
         \\• "relates_to" - for conceptual connections
         \\
-        \\START CALLING create_edge NOW - do not explain, just call the tool for each relationship.
+        \\ONLY connect nodes from the EXTRACTED ENTITIES list above.
+        \\START CALLING create_edge NOW - do not explain, just call tools.
         \\Each unique edge should be created ONCE only - no duplicates.
     ,
-        .{nodes_summary},
+        .{ file_path, nodes_summary, content },
     );
     // NOTE: Do NOT defer free edge_prompt here - ownership transferred to messages
 
@@ -561,7 +595,7 @@ pub fn indexFile(
         std.debug.print("[INDEXER] Phase 2 tools: {d}\n", .{edge_tools.len});
     }
 
-    // Add Phase 2 system prompt and user prompt to existing message history
+    // Build fresh Phase 2 context (Phase 1 history cleared)
     try messages.append(allocator, .{
         .role = try allocator.dupe(u8, "system"),
         .content = try allocator.dupe(u8, EDGE_CREATION_SYSTEM_PROMPT),
@@ -570,6 +604,13 @@ pub fn indexFile(
         .role = try allocator.dupe(u8, "user"),
         .content = edge_prompt, // Transfer ownership
     });
+
+    if (isDebugEnabled()) {
+        std.debug.print("[INDEXER] Phase 2 context built: {d} messages\n", .{messages.items.len});
+        std.debug.print("[INDEXER]   - System: {d} chars\n", .{messages.items[0].content.len});
+        std.debug.print("[INDEXER]   - User prompt: {d} chars\n", .{messages.items[1].content.len});
+        std.debug.print("[INDEXER]   - Nodes in context: {d}\n", .{graph_builder.getNodeCount()});
+    }
 
     // Notify progress for Phase 2
     if (progress_callback) |callback| {

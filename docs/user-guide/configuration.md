@@ -52,7 +52,7 @@ This file is automatically created on first run with default values. You can edi
   "enable_thinking": true,
   "show_tool_json": false,
   "graph_rag_enabled": false,
-  "embedding_model": "nomic-embed-text",
+  "embedding_model": "nomic-embed-text",  // Ollama format; LM Studio needs "text-embedding-..." prefix
   "indexing_model": "llama3.1:8b",
   "max_chunks_in_history": 5,
   "zvdb_path": ".localharness/graphrag.zvdb",
@@ -128,9 +128,9 @@ ollama serve
 - ⚠️ **Context size** must be set in LM Studio UI (not in config file)
 - ⚠️ **Extended thinking mode** is not supported
 - ⚠️ **`model_keep_alive`** parameter is ignored
-- ⚠️ **GraphRAG users**: Ensure an embedding model is loaded in LM Studio before indexing files
+- ⚠️ **GraphRAG embedding models**: Use format `text-embedding-nomic-embed-text-v1.5`, load BERT model in UI first
 - ✅ All tools work (file operations, GraphRAG, etc.)
-- ✅ Embeddings fully supported (configurable via `embedding_model` and `indexing_model`)
+- ✅ Embeddings fully supported with error handling and retry logic
 - ✅ Function/tool calling supported
 
 #### Switching Providers
@@ -219,7 +219,7 @@ $EDITOR ~/.config/localharness/config.json
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `graph_rag_enabled` | boolean | `false` | Enable GraphRAG context compression |
-| `embedding_model` | string | `"nomic-embed-text"` | Model for vector embeddings (both Ollama and LM Studio) |
+| `embedding_model` | string | `"nomic-embed-text"` | Model for embeddings - Ollama: `"nomic-embed-text"`, LM Studio: `"text-embedding-..."` |
 | `indexing_model` | string | `"llama3.1:8b"` | Model for file analysis (both Ollama and LM Studio) |
 | `max_chunks_in_history` | number | `5` | Max entities in summaries |
 | `zvdb_path` | string | `".localharness/graphrag.zvdb"` | Vector DB path |

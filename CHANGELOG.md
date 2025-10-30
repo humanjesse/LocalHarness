@@ -2,6 +2,22 @@
 
 All notable changes to Local Harness will be documented in this file.
 
+## [Unreleased] - 2025-10-30
+
+### Added
+- **Embedding Model Validation** - Provider-specific format validation with helpful warnings
+- **LM Studio Embeddings Robustness** - Error parsing, retry logic, connection recovery, debug support
+- **Runtime Embedder Validation** - GraphRAG checks embedder before indexing, shows clear errors
+
+### Changed
+- **GraphRAG Phase 2 Context** - Independent context for edge creation (30-40% token reduction)
+- **Indexing Queue Independence** - Queue created even if embedder fails (better error diagnosis)
+- **Documentation** - Updated docs to reflect Phase 2 optimization and model format requirements
+
+### Fixed
+- **LM Studio Embedding Format** - Default config documents provider-specific format requirements
+- **GraphRAG Silent Failures** - Queue dependency could disable system
+
 ## [Unreleased] - 2025-10-27
 
 ### Added

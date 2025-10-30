@@ -41,13 +41,26 @@ Secondary agentic loop that builds knowledge graphs from read files to compress 
 - Drained by secondary loop
 
 ### 2. LLM Indexer (`graphrag/llm_indexer.zig`)
-**Two-iteration agentic loop:**
-- **Iteration 1:** Extract entities (functions, structs, sections, concepts)
-- **Iteration 2:** Create relationships (calls, imports, references, relates_to)
+**Two-phase agentic workflow with independent contexts:**
 
-**Tools provided to LLM:**
-- `create_node`: Define entity with type and description
-- `create_edge`: Link entities with typed relationships
+**Phase 1: Node Extraction**
+- Agent receives: System prompt + document
+- Task: Extract ALL entities (functions, structs, sections, concepts)
+- Iterates until completion (2 empty iterations signal done)
+- Tools: `create_node`
+
+**Phase 2: Edge Creation (Fresh Context)**
+- Phase 1 history cleared - agent receives fresh context
+- Agent receives: System prompt + extracted nodes + document (for reference)
+- Task: Map relationships between entities
+- Iterates until completion
+- Tools: `create_edge`
+
+**Why separate contexts?**
+- Each phase has focused, tailored context
+- 30-40% token savings for Phase 2
+- No confusion from mixing entity extraction + relationship mapping
+- Better scalability for large documents
 
 **Model:** `llama3.1:8b` (configurable via `indexing_model`)
 
@@ -58,11 +71,28 @@ In-memory graph construction during indexing:
 - Prepares for vector DB storage
 
 ### 4. Embeddings (`embedder_interface.zig`)
-- Generic embedder interface supporting both Ollama and LM Studio
-- Provider-aware: automatically uses configured provider for embeddings
-- Model: `nomic-embed-text` (configurable via `embedding_model`)
+Unified embeddings interface with full provider support:
+
+**Provider Support:**
+- **Ollama**: Uses `/api/embed` endpoint
+- **LM Studio**: Uses OpenAI-compatible `/v1/embeddings` endpoint
+- Provider-aware: automatically uses configured provider
+
+**Model Name Format (IMPORTANT):**
+- **Ollama format**: `nomic-embed-text` (short name)
+- **LM Studio format**: `text-embedding-nomic-embed-text-v1.5` (OpenAI-style with prefix)
+- **Validation**: App validates format matches provider at startup
+
+**Reliability Features:**
+- Retry logic for transient connection failures
+- Error response parsing with helpful messages
+- Runtime validation before indexing
+- Debug support via `DEBUG_EMBEDDINGS=1`
+
+**Performance:**
 - Batch embedding generation for efficiency
 - Cosine similarity for retrieval
+- Connection pooling and reuse
 
 ### 5. Vector Database (`zvdb/`)
 Custom HNSW implementation:
@@ -188,6 +218,11 @@ Enable in `~/.config/localharness/config.json` or via `/config` command:
 - Set `provider: "ollama"` or `provider: "lmstudio"` to choose
 - Embedding and indexing models work with both providers
 
+**Model Name Formats:**
+- **Ollama**: `"embedding_model": "nomic-embed-text"`
+- **LM Studio**: `"embedding_model": "text-embedding-nomic-embed-text-v1.5"`
+- App validates format at startup
+
 ## Performance
 
 **First read:**
@@ -216,7 +251,8 @@ Enable in `~/.config/localharness/config.json` or via `/config` command:
 - First read doesn't benefit (full content returned)
 - Vector DB grows with indexed files (~1-5MB per file)
 - Only compresses files marked as indexed
-- LM Studio users must ensure embedding model is loaded before indexing
+- LM Studio users must: download BERT model, load in UI, use `text-embedding-` prefix
+- Phase 1 context not passed to Phase 2 (independent contexts for efficiency)
 
 ## See Also
 

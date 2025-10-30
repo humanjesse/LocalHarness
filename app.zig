@@ -317,7 +317,13 @@ pub const App = struct {
                             embedder_opt = embedder;
 
                             if (std.posix.getenv("DEBUG_GRAPHRAG")) |_| {
-                                std.debug.print("[INIT] LM Studio embeddings client initialized (host: {s}, model: {s})\n", .{ config.lmstudio_host, config.embedding_model });
+                                std.debug.print("[INIT] LM Studio embeddings client initialized\n", .{});
+                                std.debug.print("       Host: {s}\n", .{config.lmstudio_host});
+                                std.debug.print("       Model: {s}\n", .{config.embedding_model});
+                                if (!mem.startsWith(u8, config.embedding_model, "text-embedding-")) {
+                                    std.debug.print("       ⚠️  Warning: Model name doesn't match LM Studio format!\n", .{});
+                                    std.debug.print("       Expected format: text-embedding-...\n", .{});
+                                }
                             }
                         } else {
                             allocator.destroy(embedder);
@@ -336,7 +342,13 @@ pub const App = struct {
                             embedder_opt = embedder;
 
                             if (std.posix.getenv("DEBUG_GRAPHRAG")) |_| {
-                                std.debug.print("[INIT] Ollama embeddings client initialized (host: {s}, model: {s})\n", .{ config.ollama_host, config.embedding_model });
+                                std.debug.print("[INIT] Ollama embeddings client initialized\n", .{});
+                                std.debug.print("       Host: {s}\n", .{config.ollama_host});
+                                std.debug.print("       Model: {s}\n", .{config.embedding_model});
+                                if (mem.startsWith(u8, config.embedding_model, "text-embedding-")) {
+                                    std.debug.print("       ⚠️  Warning: Model name looks like LM Studio format!\n", .{});
+                                    std.debug.print("       Ollama models typically don't have 'text-embedding-' prefix\n", .{});
+                                }
                             }
                         } else {
                             allocator.destroy(embedder);
@@ -344,30 +356,36 @@ pub const App = struct {
                     }
                 }
 
-                // Initialize background indexing infrastructure if embedder was created
-                if (embedder_opt) |_| {
-                    const queue = allocator.create(IndexingQueue) catch |err| blk: {
-                        std.debug.print("Warning: Failed to create indexing queue: {}\n", .{err});
-                        break :blk null;
-                    };
+                // Always initialize indexing queue if GraphRAG is enabled
+                // (independent of embedder since files can be queued even if embeddings aren't ready)
+                const queue = allocator.create(IndexingQueue) catch |err| blk: {
+                    std.debug.print("Warning: Failed to create indexing queue: {}\n", .{err});
+                    break :blk null;
+                };
 
-                    if (queue) |q| {
-                        q.* = IndexingQueue.init(allocator);
-                        indexing_queue_opt = q;
+                if (queue) |q| {
+                    q.* = IndexingQueue.init(allocator);
+                    indexing_queue_opt = q;
 
-                        if (std.posix.getenv("DEBUG_GRAPHRAG")) |_| {
-                            std.debug.print("[INIT] Indexing queue initialized\n", .{});
-                        }
-
-                        // Note: We can't spawn the worker thread yet because app_context
-                        // isn't initialized until after App.init() completes
-                        // The thread will be spawned in fixContextPointers() instead
+                    if (std.posix.getenv("DEBUG_GRAPHRAG")) |_| {
+                        std.debug.print("[INIT] Indexing queue initialized\n", .{});
                     }
-                } else {
-                    // Failed to create embedder - clean up vector store
+
+                    // Note: We can't spawn the worker thread yet because app_context
+                    // isn't initialized until after App.init() completes
+                    // The thread will be spawned in fixContextPointers() instead
+                }
+
+                // Clean up vector store if embedder failed to initialize
+                if (embedder_opt == null) {
                     store.deinit();
                     allocator.destroy(store);
                     vector_store_opt = null;
+
+                    if (std.posix.getenv("DEBUG_GRAPHRAG")) |_| {
+                        std.debug.print("[INIT] Embedder failed to initialize - vector store cleaned up\n", .{});
+                        std.debug.print("[INIT] Queue is available, but indexing will fail until embedder is fixed\n", .{});
+                    }
                 }
             }
         }

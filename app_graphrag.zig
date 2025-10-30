@@ -475,6 +475,44 @@ pub fn processQueuedFiles(app: *App) !void {
                     var task = task_val;
                     defer task.deinit();
 
+                    // Check if embedder is available
+                    if (app.embedder == null) {
+                        const error_msg = try std.fmt.allocPrint(
+                            app.allocator,
+                            "  ⚠️  Cannot index {s}: Embedder not initialized!\n" ++
+                            "      Check that your embedding model is:\n" ++
+                            "      - LM Studio: Model loaded and server running\n" ++
+                            "      - Ollama: Model pulled with 'ollama pull {s}'\n",
+                            .{ task.file_path, app.config.embedding_model },
+                        );
+                        const error_processed = try markdown.processMarkdown(app.allocator, error_msg);
+                        try app.messages.append(app.allocator, .{
+                            .role = .display_only_data,
+                            .content = error_msg,
+                            .processed_content = error_processed,
+                            .thinking_expanded = false,
+                            .timestamp = std.time.milliTimestamp(),
+                        });
+
+                        // Redraw to show error
+                        if (!app.user_scrolled_away) {
+                            try app.maintainBottomAnchor();
+                        }
+                        _ = try message_renderer.redrawScreen(app);
+                        if (!app.user_scrolled_away) {
+                            app.updateCursorToBottom();
+                        }
+
+                        // Skip this file
+                        app.graphrag_choice_response = null;
+                        app.line_range_response = null;
+                        if (app.current_indexing_file) |file| {
+                            app.allocator.free(file);
+                            app.current_indexing_file = null;
+                        }
+                        return;
+                    }
+
                     const progress_msg = try std.fmt.allocPrint(
                         app.allocator,
                         "  📊 Indexing {s}...\n",

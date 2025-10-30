@@ -51,6 +51,15 @@ const OpenAIEmbeddingResponse = struct {
     },
 };
 
+// OpenAI error response format
+const OpenAIErrorResponse = struct {
+    @"error": struct {
+        message: []const u8,
+        type: []const u8,
+        code: ?[]const u8 = null,
+    },
+};
+
 /// LM Studio Chat Client (OpenAI-compatible)
 pub const LMStudioClient = struct {
     allocator: mem.Allocator,
@@ -585,7 +594,27 @@ pub const LMStudioEmbeddingsClient = struct {
         const payload = try payload_list.toOwnedSlice(self.allocator);
         defer self.allocator.free(payload);
 
-        return self.embedImpl(payload);
+        // Try with retry logic for stale connections
+        return self.embedImpl(payload) catch |err| {
+            if (err == error.EndOfStream or err == error.ConnectionResetByPeer) {
+                if (std.posix.getenv("DEBUG_EMBEDDINGS")) |_| {
+                    std.debug.print("[DEBUG] Connection error, recreating client and retrying...\n", .{});
+                }
+
+                // Recreate HTTP client to clear stale connection pool
+                self.client.deinit();
+                self.client = http.Client{ .allocator = self.allocator };
+
+                std.Thread.sleep(100 * std.time.ns_per_ms);
+
+                // Retry once
+                return self.embedImpl(payload) catch |retry_err| {
+                    std.debug.print("\n❌ Failed to connect to LM Studio after retry: {s}\n\n", .{@errorName(retry_err)});
+                    return retry_err;
+                };
+            }
+            return err;
+        };
     }
 
     /// Generate embeddings for multiple texts (batch)
@@ -629,10 +658,37 @@ pub const LMStudioEmbeddingsClient = struct {
         const payload = try payload_list.toOwnedSlice(self.allocator);
         defer self.allocator.free(payload);
 
-        return self.embedBatchImpl(payload);
+        // Try with retry logic for stale connections
+        return self.embedBatchImpl(payload) catch |err| {
+            if (err == error.EndOfStream or err == error.ConnectionResetByPeer) {
+                if (std.posix.getenv("DEBUG_EMBEDDINGS")) |_| {
+                    std.debug.print("[DEBUG] Connection error, recreating client and retrying...\n", .{});
+                }
+
+                // Recreate HTTP client to clear stale connection pool
+                self.client.deinit();
+                self.client = http.Client{ .allocator = self.allocator };
+
+                std.Thread.sleep(100 * std.time.ns_per_ms);
+
+                // Retry once
+                return self.embedBatchImpl(payload) catch |retry_err| {
+                    std.debug.print("\n❌ Failed to connect to LM Studio after retry: {s}\n\n", .{@errorName(retry_err)});
+                    return retry_err;
+                };
+            }
+            return err;
+        };
     }
 
     fn embedImpl(self: *LMStudioEmbeddingsClient, payload: []const u8) ![]f32 {
+        if (std.posix.getenv("DEBUG_EMBEDDINGS")) |_| {
+            std.debug.print("\n=== DEBUG: LM Studio Embeddings Request ===\n", .{});
+            std.debug.print("URL: {s}/v1/embeddings\n", .{self.base_url});
+            std.debug.print("Payload: {s}\n", .{payload});
+            std.debug.print("=== END ===\n\n", .{});
+        }
+
         const full_url = try std.fmt.allocPrint(self.allocator, "{s}/v1/embeddings", .{self.base_url});
         defer self.allocator.free(full_url);
         const uri = try std.Uri.parse(full_url);
@@ -659,6 +715,50 @@ pub const LMStudioEmbeddingsClient = struct {
         const response = try req.receiveHead(redirect_buffer);
 
         if (response.head.status != .ok) {
+            // Try to read and parse error body
+            var error_body = std.ArrayListUnmanaged(u8){};
+            defer error_body.deinit(self.allocator);
+
+            const conn_reader = req.connection.?.reader();
+            var error_read_buffer: [4096]u8 = undefined;
+            while (true) {
+                var read_vec = [_][]u8{&error_read_buffer};
+                const bytes_read = conn_reader.*.readVec(&read_vec) catch break;
+                if (bytes_read == 0) break;
+                error_body.appendSlice(self.allocator, error_read_buffer[0..bytes_read]) catch break;
+            }
+
+            if (error_body.items.len > 0) {
+                // Try to parse as OpenAI error format
+                const error_parsed = json.parseFromSlice(
+                    OpenAIErrorResponse,
+                    self.allocator,
+                    error_body.items,
+                    .{ .ignore_unknown_fields = true },
+                ) catch {
+                    std.debug.print("\n❌ LM Studio API error (status {})\n", .{response.head.status});
+                    std.debug.print("   Response: {s}\n\n", .{error_body.items});
+                    return error.EmbeddingAPIError;
+                };
+                defer error_parsed.deinit();
+
+                std.debug.print("\n❌ LM Studio API error: {s}\n", .{error_parsed.value.@"error".message});
+
+                // Check for specific known errors and provide guidance
+                if (std.mem.indexOf(u8, error_parsed.value.@"error".message, "not embedding") != null or
+                    std.mem.indexOf(u8, error_parsed.value.@"error".message, "model_not_found") != null)
+                {
+                    std.debug.print("💡 Make sure you've loaded an embedding model in LM Studio!\n", .{});
+                    std.debug.print("   1. Download a BERT/nomic-bert model\n", .{});
+                    std.debug.print("   2. Load it in 'Embedding Model Settings'\n", .{});
+                    std.debug.print("   3. Restart the server\n\n", .{});
+                }
+
+                return error.EmbeddingAPIError;
+            }
+
+            // No error body available
+            std.debug.print("\n❌ LM Studio returned status {}\n\n", .{response.head.status});
             return error.BadStatus;
         }
 
@@ -717,6 +817,47 @@ pub const LMStudioEmbeddingsClient = struct {
         const response = try req.receiveHead(redirect_buffer);
 
         if (response.head.status != .ok) {
+            // Try to read and parse error body (same as embedImpl)
+            var error_body = std.ArrayListUnmanaged(u8){};
+            defer error_body.deinit(self.allocator);
+
+            const conn_reader = req.connection.?.reader();
+            var error_read_buffer: [4096]u8 = undefined;
+            while (true) {
+                var read_vec = [_][]u8{&error_read_buffer};
+                const bytes_read = conn_reader.*.readVec(&read_vec) catch break;
+                if (bytes_read == 0) break;
+                error_body.appendSlice(self.allocator, error_read_buffer[0..bytes_read]) catch break;
+            }
+
+            if (error_body.items.len > 0) {
+                const error_parsed = json.parseFromSlice(
+                    OpenAIErrorResponse,
+                    self.allocator,
+                    error_body.items,
+                    .{ .ignore_unknown_fields = true },
+                ) catch {
+                    std.debug.print("\n❌ LM Studio API error (status {})\n", .{response.head.status});
+                    std.debug.print("   Response: {s}\n\n", .{error_body.items});
+                    return error.EmbeddingAPIError;
+                };
+                defer error_parsed.deinit();
+
+                std.debug.print("\n❌ LM Studio API error: {s}\n", .{error_parsed.value.@"error".message});
+
+                if (std.mem.indexOf(u8, error_parsed.value.@"error".message, "not embedding") != null or
+                    std.mem.indexOf(u8, error_parsed.value.@"error".message, "model_not_found") != null)
+                {
+                    std.debug.print("💡 Make sure you've loaded an embedding model in LM Studio!\n", .{});
+                    std.debug.print("   1. Download a BERT/nomic-bert model\n", .{});
+                    std.debug.print("   2. Load it in 'Embedding Model Settings'\n", .{});
+                    std.debug.print("   3. Restart the server\n\n", .{});
+                }
+
+                return error.EmbeddingAPIError;
+            }
+
+            std.debug.print("\n❌ LM Studio returned status {}\n\n", .{response.head.status});
             return error.BadStatus;
         }
 

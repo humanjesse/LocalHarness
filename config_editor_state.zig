@@ -239,7 +239,7 @@ fn buildFormSections(allocator: std.mem.Allocator, temp_config: *const config_mo
             .label = "Embedding Model",
             .field_type = .text_input,
             .key = "embedding_model",
-            .help_text = "Model for generating embeddings (both Ollama and LM Studio)",
+            .help_text = "Ollama: 'nomic-embed-text' | LM Studio: 'text-embedding-nomic-embed-text-v1.5' (must be loaded first!)",
         });
 
         // Indexing Model (text input) - for LLM-based file analysis
