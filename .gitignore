@@ -57,7 +57,7 @@ http_example.zig
 http_post_example_0_15.zig
 
 # GraphRAG vector database file
-.zodollama/graphrag.zvdb
+.localharness/graphrag.zvdb
 
 # Test files
 test_insert.txt

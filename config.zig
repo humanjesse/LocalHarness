@@ -19,6 +19,8 @@ pub const Config = struct {
     indexing_temperature: ?f32 = null, // null = use model default; Ollama works at 0.1, LM Studio may need higher
     indexing_num_predict: ?isize = null, // null = use config.num_predict; default for indexing is 10240
     indexing_repeat_penalty: ?f32 = null, // null = use model default; helps reduce verbosity in entity extraction
+    indexing_max_iterations: usize = 20, // Max analysis passes for GraphRAG indexing (increase for models that generate 1 tool call at a time)
+    indexing_enable_thinking: bool = false, // Enable thinking mode during GraphRAG indexing (separate from main chat; both Ollama and LM Studio)
     editor: []const []const u8 = &.{"nvim"},
     // UI customization
     scroll_lines: usize = 3, // Number of lines to scroll per wheel movement
@@ -34,10 +36,10 @@ pub const Config = struct {
     show_tool_json: bool = false, // Show raw JSON tool calls (for debugging, default hidden)
     // Graph RAG configuration
     graph_rag_enabled: bool = false, // Enable Graph RAG for code context compression
-    embedding_model: []const u8 = "nomic-embed-text", // Ollama embedding model for vector search
+    embedding_model: []const u8 = "nomic-embed-text", // Embedding model for vector search (both Ollama and LM Studio)
     indexing_model: []const u8 = "llama3.1:8b", // Model for analyzing files and building graphs (smaller/faster model with reliable tool calling)
     max_chunks_in_history: usize = 5, // Max number of code chunks to include in compressed history
-    zvdb_path: []const u8 = ".zodollama/graphrag.zvdb", // Path to vector database file
+    zvdb_path: []const u8 = ".localharness/graphrag.zvdb", // Path to vector database file
     // File reading thresholds (smart auto-detection)
     file_read_small_threshold: usize = 200, // Files <= this: show full content (no agent overhead). Files > this: use conversation-aware curation agent
 
@@ -69,6 +71,12 @@ pub const Config = struct {
             return error.InvalidPredictSize;
         }
 
+        // Validate indexing_max_iterations range
+        if (self.indexing_max_iterations < 1 or self.indexing_max_iterations > 100) {
+            std.debug.print("❌ Invalid indexing_max_iterations: {d}. Must be between 1 and 100\n", .{self.indexing_max_iterations});
+            return error.InvalidIterations;
+        }
+
         // Validate URLs
         if (!mem.startsWith(u8, self.ollama_host, "http://") and !mem.startsWith(u8, self.ollama_host, "https://")) {
             std.debug.print("⚠ Warning: ollama_host should start with http:// or https://\n", .{});
@@ -85,6 +93,21 @@ pub const Config = struct {
         // Display provider-specific warnings
         for (caps.config_warnings) |warning| {
             std.debug.print("⚠ Note ({s}): {s}\n", .{ caps.name, warning.message });
+        }
+
+        // Validate GraphRAG configuration if enabled
+        if (self.graph_rag_enabled) {
+            if (self.embedding_model.len == 0) {
+                std.debug.print("⚠ Warning: GraphRAG enabled but embedding_model is empty\n", .{});
+            }
+            if (self.indexing_model.len == 0) {
+                std.debug.print("⚠ Warning: GraphRAG enabled but indexing_model is empty\n", .{});
+            }
+
+            // Provider-specific guidance
+            if (mem.eql(u8, self.provider, "lmstudio")) {
+                std.debug.print("ℹ Note: Using LM Studio for embeddings. Ensure an embedding model is loaded.\n", .{});
+            }
         }
     }
 
@@ -124,6 +147,8 @@ const ConfigFile = struct {
     indexing_temperature: ?f32 = null,
     indexing_num_predict: ?isize = null,
     indexing_repeat_penalty: ?f32 = null,
+    indexing_max_iterations: ?usize = null,
+    indexing_enable_thinking: ?bool = null,
     scroll_lines: ?usize = null,
     color_status: ?[]const u8 = null,
     color_link: ?[]const u8 = null,
@@ -148,7 +173,7 @@ const PolicyFile = struct {
     deny_patterns: []const []const u8,
 };
 
-/// Load configuration from ~/.config/zodollama/config.json
+/// Load configuration from ~/.config/localharness/config.json
 pub fn loadConfigFromFile(allocator: mem.Allocator) !Config {
     // Default config - properly allocate all strings
     const default_editor = try allocator.alloc([]const u8, 1);
@@ -169,10 +194,10 @@ pub fn loadConfigFromFile(allocator: mem.Allocator) !Config {
         .color_thinking_dim = try allocator.dupe(u8, "\x1b[2m"),
         .color_inline_code_bg = try allocator.dupe(u8, "\x1b[48;5;237m"),
         .graph_rag_enabled = false,
-        .embedding_model = try allocator.dupe(u8, "embeddinggemma:300m"),
+        .embedding_model = try allocator.dupe(u8, "nomic-embed-text"),
         .indexing_model = try allocator.dupe(u8, "llama3.1:8b"),
         .max_chunks_in_history = 5,
-        .zvdb_path = try allocator.dupe(u8, ".zodollama/graphrag.zvdb"),
+        .zvdb_path = try allocator.dupe(u8, ".localharness/graphrag.zvdb"),
         .indexing_temperature = null,
         .indexing_num_predict = null,
         .indexing_repeat_penalty = null,
@@ -181,8 +206,8 @@ pub fn loadConfigFromFile(allocator: mem.Allocator) !Config {
     // Try to get home directory
     const home = std.posix.getenv("HOME") orelse return config;
 
-    // Build config file path: ~/.config/zodollama/config.json
-    const config_dir = try fs.path.join(allocator, &.{home, ".config", "zodollama"});
+    // Build config file path: ~/.config/localharness/config.json
+    const config_dir = try fs.path.join(allocator, &.{home, ".config", "localharness"});
     defer allocator.free(config_dir);
     const config_path = try fs.path.join(allocator, &.{config_dir, "config.json"});
     defer allocator.free(config_path);
@@ -267,6 +292,14 @@ pub fn loadConfigFromFile(allocator: mem.Allocator) !Config {
 
     if (parsed.value.indexing_repeat_penalty) |indexing_repeat_penalty| {
         config.indexing_repeat_penalty = indexing_repeat_penalty;
+    }
+
+    if (parsed.value.indexing_max_iterations) |indexing_max_iterations| {
+        config.indexing_max_iterations = indexing_max_iterations;
+    }
+
+    if (parsed.value.indexing_enable_thinking) |indexing_enable_thinking| {
+        config.indexing_enable_thinking = indexing_enable_thinking;
     }
 
     if (parsed.value.editor) |editor| {
@@ -358,13 +391,13 @@ pub fn loadConfigFromFile(allocator: mem.Allocator) !Config {
     return config;
 }
 
-/// Load permission policies from ~/.config/zodollama/policies.json
+/// Load permission policies from ~/.config/localharness/policies.json
 pub fn loadPolicies(allocator: mem.Allocator, permission_manager: *permission.PermissionManager) !void {
     // Try to get home directory
     const home = std.posix.getenv("HOME") orelse return; // No home dir, skip loading
 
-    // Build path: ~/.config/zodollama/policies.json
-    const config_dir = try fs.path.join(allocator, &.{ home, ".config", "zodollama" });
+    // Build path: ~/.config/localharness/policies.json
+    const config_dir = try fs.path.join(allocator, &.{ home, ".config", "localharness" });
     defer allocator.free(config_dir);
     const policies_path = try fs.path.join(allocator, &.{ config_dir, "policies.json" });
     defer allocator.free(policies_path);
@@ -436,13 +469,13 @@ pub fn loadPolicies(allocator: mem.Allocator, permission_manager: *permission.Pe
     }
 }
 
-/// Save permission policies to ~/.config/zodollama/policies.json
+/// Save permission policies to ~/.config/localharness/policies.json
 pub fn savePolicies(allocator: mem.Allocator, permission_manager: *permission.PermissionManager) !void {
     // Get home directory
     const home = std.posix.getenv("HOME") orelse return error.NoHomeDir;
 
-    // Build path: ~/.config/zodollama/policies.json
-    const config_dir = try fs.path.join(allocator, &.{ home, ".config", "zodollama" });
+    // Build path: ~/.config/localharness/policies.json
+    const config_dir = try fs.path.join(allocator, &.{ home, ".config", "localharness" });
     defer allocator.free(config_dir);
 
     // Ensure config directory exists
@@ -497,13 +530,13 @@ pub fn savePolicies(allocator: mem.Allocator, permission_manager: *permission.Pe
     try file.writeAll(json_string);
 }
 
-/// Save configuration to ~/.config/zodollama/config.json
+/// Save configuration to ~/.config/localharness/config.json
 pub fn saveConfigToFile(allocator: mem.Allocator, config: Config) !void {
     // Get home directory
     const home = std.posix.getenv("HOME") orelse return error.NoHomeDir;
 
-    // Build path: ~/.config/zodollama/config.json
-    const config_dir = try fs.path.join(allocator, &.{ home, ".config", "zodollama" });
+    // Build path: ~/.config/localharness/config.json
+    const config_dir = try fs.path.join(allocator, &.{ home, ".config", "localharness" });
     defer allocator.free(config_dir);
 
     // Ensure config directory exists

@@ -1,6 +1,6 @@
 # Deployment and Release Guide
 
-This guide covers the standard procedures for deploying ZodoLlama updates, creating releases, and managing the GitHub repository.
+This guide covers the standard procedures for deploying Local Harness updates, creating releases, and managing the GitHub repository.
 
 ## Table of Contents
 1. [Daily Development Workflow](#daily-development-workflow)
@@ -20,7 +20,7 @@ This guide covers the standard procedures for deploying ZodoLlama updates, creat
 # Make your code changes
 # Test locally
 zig build
-./zig-out/bin/zodollama
+./zig-out/bin/localharness
 
 # Check what changed
 git status
@@ -103,7 +103,7 @@ git commit -m "feat: add emoji skin tone support
 
 ## Semantic Versioning
 
-ZodoLlama follows [Semantic Versioning](https://semver.org/): `MAJOR.MINOR.PATCH`
+Local Harness follows [Semantic Versioning](https://semver.org/): `MAJOR.MINOR.PATCH`
 
 ### Version Format: `vX.Y.Z`
 - **MAJOR (X)**: Breaking changes (API changes, incompatible updates)
@@ -159,7 +159,7 @@ ZodoLlama follows [Semantic Versioning](https://semver.org/): `MAJOR.MINOR.PATCH
 3. **Test the build:**
    ```bash
    zig build -Doptimize=ReleaseSafe
-   ./zig-out/bin/zodollama
+   ./zig-out/bin/localharness
    # Test major features to ensure they work
    ```
 
@@ -190,7 +190,7 @@ ZodoLlama follows [Semantic Versioning](https://semver.org/): `MAJOR.MINOR.PATCH
 
 ### Step 3: Verify the Release
 
-1. Go to: `https://github.com/humanjesse/zodollama/releases`
+1. Go to: `https://github.com/humanjesse/localharness/releases`
 2. Check that the release was created
 3. Verify the binary is attached
 4. Download and test the binary
@@ -283,7 +283,7 @@ git push -u origin feature/syntax-highlighting
 ```bash
 # 1. Fix the bug
 vim ui.zig
-zig build && ./zig-out/bin/zodollama  # Test
+zig build && ./zig-out/bin/localharness  # Test
 
 # 2. Commit
 git add ui.zig
@@ -468,7 +468,7 @@ git status
 
 # 2. Test the build
 zig build -Doptimize=ReleaseSafe
-./zig-out/bin/zodollama
+./zig-out/bin/localharness
 # Manual testing: send a message, check markdown rendering, test scrolling ✓
 
 # 3. Create the first release tag
@@ -489,13 +489,13 @@ git push origin v0.1.0         # Push the tag
 
 # 5. Wait a few minutes for GitHub Actions to build
 
-# 6. Go to https://github.com/humanjesse/zodollama/releases
+# 6. Go to https://github.com/humanjesse/localharness/releases
 # You should see v0.1.0 with the binary attached!
 
 # 7. Download the binary and test it
-wget https://github.com/humanjesse/zodollama/releases/download/v0.1.0/zodollama-linux-x86_64
-chmod +x zodollama-linux-x86_64
-./zodollama-linux-x86_64
+wget https://github.com/humanjesse/localharness/releases/download/v0.1.0/localharness-linux-x86_64
+chmod +x localharness-linux-x86_64
+./localharness-linux-x86_64
 
 # 8. Done! 🎉 Your project is now publicly released!
 ```

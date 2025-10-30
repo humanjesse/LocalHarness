@@ -1,8 +1,8 @@
-# ZodoLlama Architecture Overview
+# Local Harness Architecture Overview
 
 ## Introduction
 
-ZodoLlama is a fast, lightweight terminal chat interface for Ollama written in Zig. This document provides a high-level overview of the system architecture.
+Local Harness is a fast, lightweight terminal chat interface for Ollama written in Zig. This document provides a high-level overview of the system architecture.
 
 ## Core Design Principles
 
@@ -336,8 +336,8 @@ pub const AppState = struct {
 ```
 
 ### Persistent State
-- Configuration: `~/.config/zodollama/config.json`
-- Permissions: `~/.config/zodollama/policies.json`
+- Configuration: `~/.config/localharness/config.json`
+- Permissions: `~/.config/localharness/policies.json`
 
 ## Rendering Pipeline
 
@@ -399,7 +399,7 @@ The master loop enables agentic behavior by iterating until task completion.
 
 **Secondary Agentic Loop for Context Compression**
 
-ZodoLlama implements a dual-loop architecture where GraphRAG operates as a background indexing system that compresses conversation history.
+Local Harness implements a dual-loop architecture where GraphRAG operates as a background indexing system that compresses conversation history.
 
 ### Two-Loop Design
 
@@ -430,7 +430,7 @@ See [GraphRAG Documentation](graphrag.md) for implementation details.
 
 ### Config Hierarchy
 1. Default values (hardcoded)
-2. Config file (`~/.config/zodollama/config.json`)
+2. Config file (`~/.config/localharness/config.json`)
 3. CLI arguments (override file settings)
 
 ### Configurable Components

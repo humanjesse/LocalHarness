@@ -2,7 +2,7 @@
 
 ## Overview
 
-ZodoLlama implements a comprehensive tool calling system that allows the AI model to interact with the local environment through defined tools. This enables agentic behavior where the model can autonomously gather context, read files, manage tasks, and more.
+Local Harness implements a comprehensive tool calling system that allows the AI model to interact with the local environment through defined tools. This enables agentic behavior where the model can autonomously gather context, read files, manage tasks, and more.
 
 ## Architecture
 
@@ -259,7 +259,7 @@ When the AI requests a tool, the permission system evaluates:
 2. **User Decision:**
    - **Allow Once**: Execute this tool call only (one-time)
    - **Session**: Allow for this session (until you quit)
-   - **Remember**: Always allow (saved to `~/.config/zodollama/policies.json`)
+   - **Remember**: Always allow (saved to `~/.config/localharness/policies.json`)
    - **Deny**: Block this tool call
 
 3. **Permission Prompt Example:**
@@ -275,7 +275,7 @@ Risk: MEDIUM
 
 ### Policy Storage
 
-Policies are saved in `~/.config/zodollama/policies.json` and persist across sessions.
+Policies are saved in `~/.config/localharness/policies.json` and persist across sessions.
 
 ## Tool Executor State Machine
 
@@ -383,7 +383,7 @@ Initially, the model could request tools, but results weren't fed back for proce
 
 ### The Solution
 
-ZodoLlama implements proper multi-turn conversation support:
+Local Harness implements proper multi-turn conversation support:
 
 1. **Model requests tools** → Stored in assistant message with `tool_calls` field
 2. **Execute tools** → Generate structured `ToolResult`
@@ -444,7 +444,7 @@ This pattern enables:
 
 ## Tool Call Limits
 
-ZodoLlama implements a two-level protection system:
+Local Harness implements a two-level protection system:
 
 ### Level 1: Tool Call Depth (Per Iteration)
 - **Max:** 15 tool calls per iteration
@@ -523,7 +523,7 @@ Ollama's tool calling format differs slightly from OpenAI:
 "arguments": "{\"path\": \"file.txt\", \"line_start\": 1}"  // JSON string
 ```
 
-ZodoLlama handles both formats by:
+Local Harness handles both formats by:
 1. Parsing with flexible `std.json.Value` type
 2. Converting objects to JSON strings with proper type handling:
    - `.string` → Quoted string values

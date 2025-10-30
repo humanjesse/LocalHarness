@@ -662,15 +662,25 @@ pub const LMStudioEmbeddingsClient = struct {
             return error.BadStatus;
         }
 
-        // Read response body
-        const response_body = try req.connection.?.readAll(self.allocator, 10 * 1024 * 1024);
-        defer self.allocator.free(response_body);
+        // Read response body manually (like Ollama implementation)
+        var response_body = std.ArrayListUnmanaged(u8){};
+        defer response_body.deinit(self.allocator);
+
+        const conn_reader = req.connection.?.reader();
+        var read_buffer: [16384]u8 = undefined;
+
+        while (true) {
+            var read_vec = [_][]u8{&read_buffer};
+            const bytes_read = conn_reader.*.readVec(&read_vec) catch break;
+            if (bytes_read == 0) break;
+            try response_body.appendSlice(self.allocator, read_buffer[0..bytes_read]);
+        }
 
         // Parse OpenAI embeddings response
         const parsed = try json.parseFromSlice(
             OpenAIEmbeddingResponse,
             self.allocator,
-            response_body,
+            response_body.items,
             .{ .ignore_unknown_fields = true },
         );
         defer parsed.deinit();
@@ -710,15 +720,25 @@ pub const LMStudioEmbeddingsClient = struct {
             return error.BadStatus;
         }
 
-        // Read response body
-        const response_body = try req.connection.?.readAll(self.allocator, 10 * 1024 * 1024);
-        defer self.allocator.free(response_body);
+        // Read response body manually (like Ollama implementation)
+        var response_body = std.ArrayListUnmanaged(u8){};
+        defer response_body.deinit(self.allocator);
+
+        const conn_reader = req.connection.?.reader();
+        var read_buffer: [16384]u8 = undefined;
+
+        while (true) {
+            var read_vec = [_][]u8{&read_buffer};
+            const bytes_read = conn_reader.*.readVec(&read_vec) catch break;
+            if (bytes_read == 0) break;
+            try response_body.appendSlice(self.allocator, read_buffer[0..bytes_read]);
+        }
 
         // Parse OpenAI embeddings response
         const parsed = try json.parseFromSlice(
             OpenAIEmbeddingResponse,
             self.allocator,
-            response_body,
+            response_body.items,
             .{ .ignore_unknown_fields = true },
         );
         defer parsed.deinit();

@@ -86,6 +86,8 @@ pub const ConfigEditorState = struct {
             .indexing_temperature = current_config.indexing_temperature,
             .indexing_num_predict = current_config.indexing_num_predict,
             .indexing_repeat_penalty = current_config.indexing_repeat_penalty,
+            .indexing_max_iterations = current_config.indexing_max_iterations,
+            .indexing_enable_thinking = current_config.indexing_enable_thinking,
             .editor = blk: {
                 const editor = try allocator.alloc([]const u8, current_config.editor.len);
                 for (current_config.editor, 0..) |arg, i| {
@@ -232,6 +234,22 @@ fn buildFormSections(allocator: std.mem.Allocator, temp_config: *const config_mo
             .help_text = "Model name to use by default",
         });
 
+        // Embedding Model (text input) - for GraphRAG vector search
+        try fields.append(allocator, .{
+            .label = "Embedding Model",
+            .field_type = .text_input,
+            .key = "embedding_model",
+            .help_text = "Model for generating embeddings (both Ollama and LM Studio)",
+        });
+
+        // Indexing Model (text input) - for LLM-based file analysis
+        try fields.append(allocator, .{
+            .label = "Indexing Model",
+            .field_type = .text_input,
+            .key = "indexing_model",
+            .help_text = "Model for analyzing files during GraphRAG indexing",
+        });
+
         try sections.append(allocator, .{
             .title = "Provider Settings",
             .fields = try fields.toOwnedSlice(allocator),
@@ -261,6 +279,13 @@ fn buildFormSections(allocator: std.mem.Allocator, temp_config: *const config_mo
             .field_type = .toggle,
             .key = "show_tool_json",
             .help_text = "Display raw tool call JSON",
+        });
+
+        try fields.append(allocator, .{
+            .label = "GraphRAG Indexing Thinking",
+            .field_type = .toggle,
+            .key = "indexing_enable_thinking",
+            .help_text = "Enable thinking mode during file indexing (both Ollama and LM Studio)",
         });
 
         try sections.append(allocator, .{
@@ -306,6 +331,13 @@ fn buildFormSections(allocator: std.mem.Allocator, temp_config: *const config_mo
             .field_type = .text_input,
             .key = "indexing_repeat_penalty",
             .help_text = "Penalize repetition in indexing (null=default, 1.3=reduce verbosity)",
+        });
+
+        try fields.append(allocator, .{
+            .label = "GraphRAG Max Iterations",
+            .field_type = .number_input,
+            .key = "indexing_max_iterations",
+            .help_text = "Max analysis passes for indexing (default: 20, increase for models generating 1 tool call at a time)",
         });
 
         try sections.append(allocator, .{

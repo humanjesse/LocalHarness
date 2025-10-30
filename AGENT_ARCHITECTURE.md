@@ -2,7 +2,7 @@
 
 ## Overview
 
-ZodoLlama now has a unified agent system for running isolated LLM sub-tasks. Agents are self-contained execution units with controlled resource access, separate message histories, and capability-based security.
+Local Harness now has a unified agent system for running isolated LLM sub-tasks. Agents are self-contained execution units with controlled resource access, separate message histories, and capability-based security.
 
 ## Core Components
 
@@ -301,7 +301,7 @@ pub const Config = struct {
 };
 ```
 
-Users can customize the threshold in `~/.config/zodollama/config.json`:
+Users can customize the threshold in `~/.config/localharness/config.json`:
 ```json
 {
   "file_read_small_threshold": 100

@@ -1,8 +1,8 @@
-# ZodoLlama
+# Local Harness
 
 A fast, lightweight terminal chat interface for local LLMs written in Zig. Supports Ollama and LM Studio with real-time markdown rendering.
 
-![ZodoLlama Demo](zodollamademo.gif)
+![Local Harness Demo](localharnesdemo.gif)
 
 ## Quick Start
 
@@ -22,9 +22,9 @@ ollama serve
 # Option 2: Using LM Studio
 # Start LM Studio GUI and load a model on port 1234
 
-# Build and run ZodoLlama
+# Build and run Local Harness
 zig build
-./zig-out/bin/zodollama
+./zig-out/bin/localharness
 ```
 
 ## Features
@@ -68,11 +68,11 @@ Control AI access to tools (file read/write, search, tasks) with a permission pr
 
 **Options:** Allow Once (1), Session (2), Remember (3), or Deny (4)
 
-Policies persist in `~/.config/zodollama/policies.json`. Some tools like file trees and searches are auto-approved; file writes require permission.
+Policies persist in `~/.config/localharness/policies.json`. Some tools like file trees and searches are auto-approved; file writes require permission.
 
 ## Configuration
 
-Config: `~/.config/zodollama/config.json` (created on first run)
+Config: `~/.config/localharness/config.json` (created on first run)
 
 **Provider Selection:**
 ```json

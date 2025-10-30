@@ -1,6 +1,6 @@
 # Commands Reference
 
-Quick reference for all ZodoLlama commands and keyboard shortcuts.
+Quick reference for all Local Harness commands and keyboard shortcuts.
 
 ---
 
@@ -53,7 +53,7 @@ Useful for:
 
 ### `/quit` - Exit Application
 
-Exit ZodoLlama gracefully.
+Exit Local Harness gracefully.
 
 **Usage:** Type `/quit` or press `Ctrl+D`
 
@@ -90,11 +90,11 @@ When a tool is requested by the AI, you'll see a permission prompt:
 - Directory: `/home/user/project/*`
 - Wildcard: `*.zig`
 
-**Policies persist** in `~/.config/zodollama/policies.json`
+**Policies persist** in `~/.config/localharness/policies.json`
 
 **Reset permissions:**
 ```bash
-rm ~/.config/zodollama/policies.json
+rm ~/.config/localharness/policies.json
 ```
 
 ---
@@ -122,17 +122,17 @@ See [/config](#config---configuration-editor) command above.
 
 ## Command-Line Arguments
 
-Override config file settings when launching ZodoLlama:
+Override config file settings when launching Local Harness:
 
 ```bash
 # Use different model
-zodollama --model llama3.2:70b
+localharness --model llama3.2:70b
 
 # Connect to remote Ollama server
-zodollama --ollama-host http://192.168.1.100:11434
+localharness --ollama-host http://192.168.1.100:11434
 
 # Combine multiple options
-zodollama --model qwen2.5:14b --ollama-host http://localhost:11434
+localharness --model qwen2.5:14b --ollama-host http://localhost:11434
 ```
 
 ### Available Flags
@@ -153,10 +153,10 @@ zodollama --model qwen2.5:14b --ollama-host http://localhost:11434
 
 ```bash
 # Open config in your editor
-$EDITOR ~/.config/zodollama/config.json
+$EDITOR ~/.config/localharness/config.json
 
 # Or use visual editor
-./zodollama
+./localharness
 # Then type: /config
 ```
 
@@ -186,28 +186,28 @@ curl http://localhost:1234/v1/chat/completions \
 
 ```bash
 # Redirect stderr to file
-zodollama 2> debug.log
+localharness 2> debug.log
 
 # View in real-time
-zodollama 2>&1 | tee zodollama.log
+localharness 2>&1 | tee localharness.log
 ```
 
 ### Reset Configuration
 
 ```bash
 # Delete config file to regenerate defaults
-rm ~/.config/zodollama/config.json
-./zodollama  # Will create new default config
+rm ~/.config/localharness/config.json
+./localharness  # Will create new default config
 ```
 
 ### Switch Between Configs
 
 ```bash
 # Development config
-XDG_CONFIG_HOME=~/.config-dev ./zodollama
+XDG_CONFIG_HOME=~/.config-dev ./localharness
 
 # Production config
-XDG_CONFIG_HOME=~/.config-prod ./zodollama
+XDG_CONFIG_HOME=~/.config-prod ./localharness
 ```
 
 ---
@@ -224,12 +224,12 @@ XDG_CONFIG_HOME=~/.config-prod ./zodollama
 
 **Method 2: CLI**
 ```bash
-zodollama --model llama3.2:70b
+localharness --model llama3.2:70b
 ```
 
 **Method 3: Edit Config**
 ```bash
-$EDITOR ~/.config/zodollama/config.json
+$EDITOR ~/.config/localharness/config.json
 # Change "model" field
 ```
 

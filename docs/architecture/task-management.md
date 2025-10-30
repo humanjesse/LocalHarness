@@ -2,7 +2,7 @@
 
 ## Overview
 
-ZodoLlama implements a **scratch space** (working memory) system that allows the LLM to iterate on complex tasks without modifying the user's actual files. This is fundamental to agentic behavior.
+Local Harness implements a **scratch space** (working memory) system that allows the LLM to iterate on complex tasks without modifying the user's actual files. This is fundamental to agentic behavior.
 
 ## The Problem
 
@@ -187,7 +187,7 @@ pub const AppState = struct {
     tasks: ArrayList(Task),
 
     // Persistent (future)
-    workspace_dir: []const u8,  // ~/.local/share/zodollama/workspace/
+    workspace_dir: []const u8,  // ~/.local/share/localharness/workspace/
     draft_files: HashMap([]const u8, []const u8),  // filename -> content
     execution_log: ArrayList(LogEntry),
 };

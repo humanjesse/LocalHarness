@@ -50,11 +50,42 @@ fn formatNodesForPrompt(allocator: std.mem.Allocator, graph_builder: *const Grap
     return try buffer.toOwnedSlice(allocator);
 }
 
-/// System prompt that guides the LLM to analyze files and build knowledge graphs
-const INDEXING_SYSTEM_PROMPT =
-    \\You are analyzing code to build a knowledge graph.
-    \\Create a node for every function, class, struct, type, and important concept you find.
-    \\Use concise summaries (1-2 sentences per node).
+/// System prompt for Phase 1: Node Extraction Agent
+/// This agent focuses ONLY on identifying and creating entity nodes
+const NODE_EXTRACTION_SYSTEM_PROMPT =
+    \\You are a node extraction specialist, create nodes using the create_node tool.
+    \\
+    \\VALID NODE TYPES (use exactly these):
+    \\• function - Functions, methods, procedures
+    \\• struct - Data structures, classes, types
+    \\• section - Documentation sections, chapters
+    \\• concept - Abstract concepts, ideas, patterns
+    \\
+    \\RULES:
+    \\1. Call create_node tool immediately for each entity - do NOT explain your reasoning
+    \\2. Use concise summaries (1-2 sentences max per node)
+    \\3. Extract ALL significant entities - be thorough
+    \\4. Do NOT create edges - another agent will handle that
+    \\5. When finished extracting all entities, stop calling tools
+;
+
+/// System prompt for Phase 2: Edge Creation Agent
+/// This agent focuses ONLY on mapping relationships between existing nodes
+const EDGE_CREATION_SYSTEM_PROMPT =
+    \\You are a relationship mapping specialist, create edges using the create_edge tool.
+    \\
+    \\VALID RELATIONSHIP TYPES (use exactly these):
+    \\• calls - Function/method invocations
+    \\• imports - Import/dependency relationships
+    \\• references - Variable/type references
+    \\• relates_to - Conceptual connections
+    \\
+    \\RULES:
+    \\1. Call create_edge tool immediately for each relationship - do NOT explain your reasoning
+    \\2. Only connect nodes that exist in the provided node list
+    \\3. Do NOT create duplicate edges - each unique relationship should be created once only
+    \\4. Be thorough - map ALL meaningful relationships
+    \\5. When finished mapping all relationships, stop calling tools
 ;
 
 // Use unified types from agents module (no duplication!)
@@ -114,6 +145,18 @@ fn streamCallback(
 
     // Collect tool calls
     if (tool_calls_chunk) |calls| {
+        defer {
+            // Free the received tool calls array and its contents
+            // (ownership was transferred from LM Studio)
+            for (calls) |call| {
+                if (call.id) |id| ctx.allocator.free(id);
+                if (call.type) |t| ctx.allocator.free(t);
+                ctx.allocator.free(call.function.name);
+                ctx.allocator.free(call.function.arguments);
+            }
+            ctx.allocator.free(calls);
+        }
+
         for (calls) |call| {
             // Notify progress callback about tool call
             if (ctx.progress_callback) |callback| {
@@ -155,37 +198,49 @@ pub fn indexFile(
 ) !void {
     if (isDebugEnabled()) {
         std.debug.print("[INDEXER] Starting indexing for: {s} ({d} bytes)\n", .{ file_path, content.len });
+        std.debug.print("[INDEXER] Configuration:\n", .{});
+        std.debug.print("  - Indexing model: {s}\n", .{indexing_model});
+        std.debug.print("  - Embedding model: {s}\n", .{app_context.config.embedding_model});
+        std.debug.print("  - Provider: {s}\n", .{app_context.config.provider});
     }
 
-    // Build phase 1 user message: nodes only
-    const user_prompt = try std.fmt.allocPrint(
+    // ========================================================================
+    // PHASE 1: NODE EXTRACTION
+    // ========================================================================
+
+    // User prompt for Phase 1 - focused on node extraction only
+    const node_prompt = try std.fmt.allocPrint(
         allocator,
-        \\Analyze this file and create nodes for all entities:
-        \\- Functions and methods
-        \\- Classes, structs, types, interfaces
-        \\- Important constants and variables
-        \\- Key concepts and patterns
+        \\Analyze this file and create nodes for ALL significant entities using create_node tool.
         \\
-        \\File:
+        \\Use these node_type values:
+        \\• "function" - for functions, methods, procedures
+        \\• "struct" - for data structures, classes, types
+        \\• "section" - for documentation sections, chapters
+        \\• "concept" - for abstract concepts, ideas, patterns, systems
+        \\
+        \\START CALLING create_node NOW - do not explain, just call the tool for each entity.
+        \\
+        \\File content:
         \\{s}
     ,
         .{content},
     );
-    // NOTE: Do NOT defer free user_prompt here - ownership transferred to messages
+    // NOTE: Do NOT defer free node_prompt here - ownership transferred to messages
 
-    // Get indexing tools from registry
-    const tools = try indexing_tool_registry.getIndexingTools(allocator);
+    // Get node extraction tools from registry (only create_node)
+    const node_tools = try indexing_tool_registry.getNodeExtractionTools(allocator);
     defer {
-        for (tools) |tool| {
+        for (node_tools) |tool| {
             allocator.free(tool.function.name);
             allocator.free(tool.function.description);
             allocator.free(tool.function.parameters);
         }
-        allocator.free(tools);
+        allocator.free(node_tools);
     }
 
     if (isDebugEnabled()) {
-        std.debug.print("[INDEXER] Tools: {d}\n", .{tools.len});
+        std.debug.print("[INDEXER] Phase 1 tools: {d}\n", .{node_tools.len});
     }
 
     // Initialize graph builder
@@ -218,28 +273,29 @@ pub fn indexFile(
         messages.deinit(allocator);
     }
 
-    // Add initial messages
+    // Add initial messages for Phase 1
     try messages.append(allocator, .{
         .role = try allocator.dupe(u8, "system"),
-        .content = try allocator.dupe(u8, INDEXING_SYSTEM_PROMPT),
+        .content = try allocator.dupe(u8, NODE_EXTRACTION_SYSTEM_PROMPT),
     });
     try messages.append(allocator, .{
         .role = try allocator.dupe(u8, "user"),
-        .content = user_prompt, // Transfer ownership
+        .content = node_prompt, // Transfer ownership
     });
 
-    // Notify progress
+    // Notify progress for Phase 1
     if (progress_callback) |callback| {
-        callback(progress_user_data.?, .thinking, "Analyzing file...");
+        callback(progress_user_data.?, .thinking, "Phase 1: Extracting entities...");
     }
 
-    // Iteration loop (max 2 iterations)
-    const max_iterations: usize = 2;
-    var current_iteration: usize = 0;
+    // Phase 1 iteration loop - node extraction with 2-empty-iteration completion
+    const max_iterations: usize = app_context.config.indexing_max_iterations;
+    var phase1_iteration: usize = 0;
+    var consecutive_empty_iterations: usize = 0; // Track model completion signals
 
-    while (current_iteration < max_iterations) : (current_iteration += 1) {
+    while (phase1_iteration < max_iterations) : (phase1_iteration += 1) {
         if (isDebugEnabled()) {
-            std.debug.print("[INDEXER] === Iteration {d}/{d} ===\n", .{ current_iteration + 1, max_iterations });
+            std.debug.print("[INDEXER] === PHASE 1 Iteration {d}/{d} ===\n", .{ phase1_iteration + 1, max_iterations });
         }
 
         // Set up streaming context for this iteration
@@ -258,7 +314,7 @@ pub fn indexFile(
 
         // Call LLM with current message history
         if (isDebugEnabled()) {
-            std.debug.print("\n[INDEXER] ===== ITERATION {d} CALL =====\n", .{current_iteration + 1});
+            std.debug.print("\n[INDEXER] ===== PHASE 1 ITERATION {d} CALL =====\n", .{phase1_iteration + 1});
             std.debug.print("[INDEXER] Model: {s}\n", .{indexing_model});
             std.debug.print("[INDEXER] Messages: {d}\n", .{messages.items.len});
             for (messages.items, 0..) |msg, i| {
@@ -272,36 +328,42 @@ pub fn indexFile(
             }
             std.debug.print("[INDEXER] Think: {s}\n", .{if (app_context.config.enable_thinking) "true" else "false"});
             std.debug.print("[INDEXER] Format: null\n", .{});
-            std.debug.print("[INDEXER] Tools.len: {d}\n", .{tools.len});
-            std.debug.print("[INDEXER] Tools being passed: {s}\n", .{if (tools.len > 0) "YES" else "NO"});
+            std.debug.print("[INDEXER] Tools.len: {d}\n", .{node_tools.len});
+            std.debug.print("[INDEXER] Tools being passed: {s}\n", .{if (node_tools.len > 0) "YES" else "NO"});
             std.debug.print("[INDEXER] ===== END CALL INFO =====\n\n", .{});
         }
 
         // Get provider capabilities to check what's supported
         const caps = llm_provider.getCapabilities();
 
-        // Enable thinking if both config and provider support it (matches main loop behavior)
-        const enable_thinking = app_context.config.enable_thinking and caps.supports_thinking;
+        // Enable thinking if both config and provider support it (separate from main chat)
+        const enable_thinking = app_context.config.indexing_enable_thinking and caps.supports_thinking;
 
         // Only pass keep_alive if provider supports it
         const keep_alive = if (caps.supports_keep_alive) app_context.config.model_keep_alive else null;
+
+        // Use explicit defaults for indexing parameters to ensure reliable tool calling
+        // These values work well for both Ollama and LM Studio
+        const indexing_temp = app_context.config.indexing_temperature orelse 0.1; // Focused, deterministic
+        const indexing_tokens = app_context.config.indexing_num_predict orelse 10240; // Enough for tool calls
+        const indexing_penalty = app_context.config.indexing_repeat_penalty orelse 1.3; // Reduce verbosity
 
         llm_provider.chatStream(
             indexing_model,
             messages.items,
             enable_thinking, // Capability-aware thinking mode
             null,
-            if (tools.len > 0) tools else null,
+            if (node_tools.len > 0) node_tools else null,
             keep_alive, // Capability-aware keep_alive
             app_context.config.num_ctx,
-            app_context.config.indexing_num_predict orelse app_context.config.num_predict, // Use indexing config, fallback to main
-            app_context.config.indexing_temperature, // null = model default (allows tool calling)
-            app_context.config.indexing_repeat_penalty, // null = model default
+            indexing_tokens,
+            indexing_temp,
+            indexing_penalty,
             &stream_ctx,
             streamCallback,
         ) catch |err| {
             if (isDebugEnabled()) {
-                std.debug.print("[INDEXER] LLM call failed on iteration {d}: {}\n", .{ current_iteration, err });
+                std.debug.print("[INDEXER] Phase 1 LLM call failed on iteration {d}: {}\n", .{ phase1_iteration, err });
             }
             return err;
         };
@@ -309,23 +371,39 @@ pub fn indexFile(
         const num_tool_calls = stream_ctx.tool_calls.items.len;
 
         if (isDebugEnabled()) {
-            std.debug.print("[INDEXER] Iteration {d}: LLM returned {d} tool calls\n", .{ current_iteration + 1, num_tool_calls });
+            std.debug.print("[INDEXER] Phase 1 Iteration {d}: LLM returned {d} tool calls\n", .{ phase1_iteration + 1, num_tool_calls });
         }
 
         // If no tool calls on first iteration, that's an error
-        if (current_iteration == 0 and num_tool_calls == 0) {
+        if (phase1_iteration == 0 and num_tool_calls == 0) {
             if (isDebugEnabled()) {
-                std.debug.print("[INDEXER] ERROR: No tool calls on first iteration\n", .{});
+                std.debug.print("[INDEXER] ERROR: No tool calls on first Phase 1 iteration\n", .{});
             }
             return error.NoToolCallsGenerated;
         }
 
-        // If no tool calls on later iterations, we're done
+        // Track consecutive empty iterations to detect model completion
         if (num_tool_calls == 0) {
+            consecutive_empty_iterations += 1;
+
             if (isDebugEnabled()) {
-                std.debug.print("[INDEXER] No more tool calls - done\n", .{});
+                std.debug.print("[INDEXER] Phase 1: No tool calls this iteration (consecutive: {d})\n", .{consecutive_empty_iterations});
             }
-            break;
+
+            // Model signals completion with 2 consecutive empty iterations
+            // (1 empty = might be thinking, 2 empty = definitely done)
+            if (consecutive_empty_iterations >= 2) {
+                if (isDebugEnabled()) {
+                    std.debug.print("[INDEXER] Phase 1: Model signaled completion - done with node extraction\n", .{});
+                }
+                break;
+            }
+
+            // One empty iteration - give model another chance
+            continue;
+        } else {
+            // Got tool calls - reset counter
+            consecutive_empty_iterations = 0;
         }
 
         // Add assistant message with tool calls to history
@@ -398,110 +476,307 @@ pub fn indexFile(
             }
         }
 
-        // Show iteration summary
+        // Show Phase 1 iteration summary
         if (progress_callback) |callback| {
             const summary = try std.fmt.allocPrint(
                 allocator,
-                "Iteration {d} complete: {d} nodes, {d} edges, {d} errors",
-                .{ current_iteration + 1, indexing_ctx.stats.nodes_created, indexing_ctx.stats.edges_created, indexing_ctx.stats.errors },
+                "Phase 1 Iteration {d} complete: {d} nodes created",
+                .{ phase1_iteration + 1, indexing_ctx.stats.nodes_created },
             );
             defer allocator.free(summary);
             callback(progress_user_data.?, .content, summary);
         }
 
         if (isDebugEnabled()) {
-            std.debug.print("[INDEXER] Iteration {d} stats: {d} nodes, {d} edges, {d} errors\n", .{
-                current_iteration + 1,
+            std.debug.print("[INDEXER] Phase 1 Iteration {d} stats: {d} nodes, {d} errors\n", .{
+                phase1_iteration + 1,
                 indexing_ctx.stats.nodes_created,
+                indexing_ctx.stats.errors,
+            });
+        }
+
+    }
+
+    // End of Phase 1 - validate we created nodes
+    if (graph_builder.getNodeCount() == 0) {
+        if (isDebugEnabled()) {
+            std.debug.print("[INDEXER] ERROR: No nodes created after {d} Phase 1 iterations\n", .{phase1_iteration});
+        }
+        return error.NoNodesCreated;
+    }
+
+    if (isDebugEnabled()) {
+        std.debug.print("[INDEXER] Phase 1 complete: {d} nodes created in {d} iterations\n", .{
+            graph_builder.getNodeCount(),
+            phase1_iteration,
+        });
+    }
+
+    // Notify Phase 1 completion
+    if (progress_callback) |callback| {
+        const msg = try std.fmt.allocPrint(allocator, "Phase 1 complete: {d} nodes extracted", .{graph_builder.getNodeCount()});
+        defer allocator.free(msg);
+        callback(progress_user_data.?, .content, msg);
+    }
+
+    // ========================================================================
+    // PHASE 2: EDGE CREATION
+    // ========================================================================
+
+    // User prompt for Phase 2 - focused on edge creation only
+    const nodes_summary = try formatNodesForPrompt(allocator, &graph_builder);
+    defer allocator.free(nodes_summary);
+
+    const edge_prompt = try std.fmt.allocPrint(
+        allocator,
+        \\Create edges between nodes using create_edge tool. ONLY connect nodes from this list:
+        \\
+        \\{s}
+        \\
+        \\Use these relationship values:
+        \\• "calls" - for function/method invocations
+        \\• "imports" - for import/dependency relationships
+        \\• "references" - for variable/type references
+        \\• "relates_to" - for conceptual connections
+        \\
+        \\START CALLING create_edge NOW - do not explain, just call the tool for each relationship.
+        \\Each unique edge should be created ONCE only - no duplicates.
+    ,
+        .{nodes_summary},
+    );
+    // NOTE: Do NOT defer free edge_prompt here - ownership transferred to messages
+
+    // Get edge creation tools from registry (only create_edge)
+    const edge_tools = try indexing_tool_registry.getEdgeCreationTools(allocator);
+    defer {
+        for (edge_tools) |tool| {
+            allocator.free(tool.function.name);
+            allocator.free(tool.function.description);
+            allocator.free(tool.function.parameters);
+        }
+        allocator.free(edge_tools);
+    }
+
+    if (isDebugEnabled()) {
+        std.debug.print("[INDEXER] Phase 2 tools: {d}\n", .{edge_tools.len});
+    }
+
+    // Add Phase 2 system prompt and user prompt to existing message history
+    try messages.append(allocator, .{
+        .role = try allocator.dupe(u8, "system"),
+        .content = try allocator.dupe(u8, EDGE_CREATION_SYSTEM_PROMPT),
+    });
+    try messages.append(allocator, .{
+        .role = try allocator.dupe(u8, "user"),
+        .content = edge_prompt, // Transfer ownership
+    });
+
+    // Notify progress for Phase 2
+    if (progress_callback) |callback| {
+        callback(progress_user_data.?, .thinking, "Phase 2: Mapping relationships...");
+    }
+
+    // Phase 2 iteration loop - edge creation with 2-empty-iteration completion
+    var phase2_iteration: usize = 0;
+    consecutive_empty_iterations = 0; // Reset for Phase 2
+
+    while (phase2_iteration < max_iterations) : (phase2_iteration += 1) {
+        if (isDebugEnabled()) {
+            std.debug.print("[INDEXER] === PHASE 2 Iteration {d}/{d} ===\n", .{ phase2_iteration + 1, max_iterations });
+        }
+
+        // Set up streaming context for this iteration
+        var stream_ctx = StreamContext{
+            .allocator = allocator,
+            .tool_calls = .{},
+            .content_buffer = .{},
+            .progress_callback = progress_callback,
+            .progress_user_data = progress_user_data,
+        };
+        defer {
+            // Note: We move tool_calls to message history, so don't free them here
+            stream_ctx.tool_calls.deinit(allocator);
+            stream_ctx.content_buffer.deinit(allocator);
+        }
+
+        // Call LLM with current message history
+        if (isDebugEnabled()) {
+            std.debug.print("\n[INDEXER] ===== PHASE 2 ITERATION {d} CALL =====\n", .{phase2_iteration + 1});
+            std.debug.print("[INDEXER] Model: {s}\n", .{indexing_model});
+            std.debug.print("[INDEXER] Messages: {d}\n", .{messages.items.len});
+            std.debug.print("[INDEXER] Tools.len: {d}\n", .{edge_tools.len});
+            std.debug.print("[INDEXER] Tools being passed: {s}\n", .{if (edge_tools.len > 0) "YES" else "NO"});
+            std.debug.print("[INDEXER] ===== END CALL INFO =====\n\n", .{});
+        }
+
+        // Get provider capabilities (same as Phase 1)
+        const caps = llm_provider.getCapabilities();
+        const enable_thinking = app_context.config.indexing_enable_thinking and caps.supports_thinking;
+        const keep_alive = if (caps.supports_keep_alive) app_context.config.model_keep_alive else null;
+
+        // Use same indexing parameters as Phase 1
+        const indexing_temp = app_context.config.indexing_temperature orelse 0.1;
+        const indexing_tokens = app_context.config.indexing_num_predict orelse 10240;
+        const indexing_penalty = app_context.config.indexing_repeat_penalty orelse 1.3;
+
+        llm_provider.chatStream(
+            indexing_model,
+            messages.items,
+            enable_thinking,
+            null,
+            if (edge_tools.len > 0) edge_tools else null,
+            keep_alive,
+            app_context.config.num_ctx,
+            indexing_tokens,
+            indexing_temp,
+            indexing_penalty,
+            &stream_ctx,
+            streamCallback,
+        ) catch |err| {
+            if (isDebugEnabled()) {
+                std.debug.print("[INDEXER] Phase 2 LLM call failed on iteration {d}: {}\n", .{ phase2_iteration, err });
+            }
+            return err;
+        };
+
+        const num_tool_calls = stream_ctx.tool_calls.items.len;
+
+        if (isDebugEnabled()) {
+            std.debug.print("[INDEXER] Phase 2 Iteration {d}: LLM returned {d} tool calls\n", .{ phase2_iteration + 1, num_tool_calls });
+        }
+
+        // Track consecutive empty iterations to detect model completion
+        if (num_tool_calls == 0) {
+            consecutive_empty_iterations += 1;
+
+            if (isDebugEnabled()) {
+                std.debug.print("[INDEXER] Phase 2: No tool calls this iteration (consecutive: {d})\n", .{consecutive_empty_iterations});
+            }
+
+            // Model signals completion with 2 consecutive empty iterations
+            if (consecutive_empty_iterations >= 2) {
+                if (isDebugEnabled()) {
+                    std.debug.print("[INDEXER] Phase 2: Model signaled completion - done with edge creation\n", .{});
+                }
+                break;
+            }
+
+            // One empty iteration - give model another chance
+            continue;
+        } else {
+            // Got tool calls - reset counter
+            consecutive_empty_iterations = 0;
+        }
+
+        // Add assistant message with tool calls to history
+        const assistant_content = if (stream_ctx.content_buffer.items.len > 0)
+            try allocator.dupe(u8, stream_ctx.content_buffer.items)
+        else
+            try allocator.dupe(u8, "");
+
+        // Move tool calls to message history (transfer ownership)
+        const tool_calls_owned = try stream_ctx.tool_calls.toOwnedSlice(allocator);
+
+        try messages.append(allocator, .{
+            .role = try allocator.dupe(u8, "assistant"),
+            .content = assistant_content,
+            .tool_calls = tool_calls_owned,
+        });
+
+        // Execute all tool calls and collect results
+        for (tool_calls_owned, 0..) |call, idx| {
+            // Execute tool using registry
+            var result = indexing_tool_registry.executeIndexingToolCall(
+                allocator,
+                call,
+                &indexing_ctx,
+            ) catch |err| {
+                const msg = try std.fmt.allocPrint(allocator, "Tool execution failed: {}", .{err});
+                defer allocator.free(msg);
+                var error_result = try indexing_tool_registry.IndexingToolResult.err(allocator, msg);
+                defer error_result.deinit(allocator);
+
+                // Still add error result to history
+                const tool_id = if (call.id) |id|
+                    try allocator.dupe(u8, id)
+                else
+                    try std.fmt.allocPrint(allocator, "call_{d}", .{idx});
+
+                const result_json = try error_result.toJSON(allocator);
+                try messages.append(allocator, .{
+                    .role = try allocator.dupe(u8, "tool"),
+                    .content = result_json,
+                    .tool_call_id = tool_id,
+                });
+                continue;
+            };
+            defer result.deinit(allocator);
+
+            // Generate tool_call_id
+            const tool_id = if (call.id) |id|
+                try allocator.dupe(u8, id)
+            else
+                try std.fmt.allocPrint(allocator, "call_{d}", .{idx});
+
+            // Convert result to JSON for LLM
+            const result_json = try result.toJSON(allocator);
+
+            // Add tool result to message history
+            try messages.append(allocator, .{
+                .role = try allocator.dupe(u8, "tool"),
+                .content = result_json,
+                .tool_call_id = tool_id,
+            });
+
+            // Notify progress callback
+            if (progress_callback) |callback| {
+                callback(progress_user_data.?, .tool_call, result.message);
+            }
+
+            if (isDebugEnabled()) {
+                std.debug.print("[INDEXER] Tool result: {s}\n", .{result.message});
+            }
+        }
+
+        // Show Phase 2 iteration summary
+        if (progress_callback) |callback| {
+            const summary = try std.fmt.allocPrint(
+                allocator,
+                "Phase 2 Iteration {d} complete: {d} edges created",
+                .{ phase2_iteration + 1, indexing_ctx.stats.edges_created },
+            );
+            defer allocator.free(summary);
+            callback(progress_user_data.?, .content, summary);
+        }
+
+        if (isDebugEnabled()) {
+            std.debug.print("[INDEXER] Phase 2 Iteration {d} stats: {d} edges, {d} errors\n", .{
+                phase2_iteration + 1,
                 indexing_ctx.stats.edges_created,
                 indexing_ctx.stats.errors,
             });
         }
 
-        // After iteration 1: condense message history and inject edge creation prompt
-        if (current_iteration == 0 and num_tool_calls > 0) {
-            if (isDebugEnabled()) {
-                std.debug.print("[INDEXER] Condensing message history before iteration 2\n", .{});
-                std.debug.print("[INDEXER] Current message count: {d}\n", .{messages.items.len});
-            }
-
-            // Extract the original file content from the first user message (index 1)
-            const original_file_content = messages.items[1].content;
-
-            // Format the nodes created in iteration 1
-            const formatted_nodes = try formatNodesForPrompt(allocator, &graph_builder);
-            defer allocator.free(formatted_nodes);
-
-            // Build condensed user prompt with file content + node list
-            const condensed_prompt = try std.fmt.allocPrint(
-                allocator,
-                \\{s}
-                \\
-                \\Nodes created:
-                \\{s}
-            ,
-                .{original_file_content, formatted_nodes},
-            );
-
-            // Build edge creation prompt - focus only on create_edge tool
-            const edge_prompt = try std.fmt.allocPrint(
-                allocator,
-                \\Use create_edge to establish relationships: which functions call which, what imports what, and how concepts relate.
-            ,
-                .{},
-            );
-
-            // Free old messages (except system and first user which we're keeping content from)
-            // We need to free messages[2..] (assistant + tool results)
-            for (messages.items[2..]) |msg| {
-                allocator.free(msg.role);
-                allocator.free(msg.content);
-                if (msg.tool_call_id) |id| allocator.free(id);
-                if (msg.tool_calls) |calls| {
-                    for (calls) |call| {
-                        if (call.id) |cid| allocator.free(cid);
-                        if (call.type) |t| allocator.free(t);
-                        allocator.free(call.function.name);
-                        allocator.free(call.function.arguments);
-                    }
-                    allocator.free(calls);
-                }
-            }
-
-            // Rebuild messages array with condensed context
-            // Keep system message (index 0), replace user message content, discard rest
-            allocator.free(messages.items[1].content); // Free old user content
-            messages.items[1].content = condensed_prompt; // Replace with condensed version
-
-            // Shrink array to just [system, condensed_user]
-            messages.shrinkRetainingCapacity(2);
-
-            // Add assistant acknowledgment (required to maintain user/assistant alternation)
-            try messages.append(allocator, .{
-                .role = try allocator.dupe(u8, "assistant"),
-                .content = try allocator.dupe(u8, "Nodes created."),
-            });
-
-            // Add edge creation prompt as new user message
-            try messages.append(allocator, .{
-                .role = try allocator.dupe(u8, "user"),
-                .content = edge_prompt,
-            });
-
-            if (isDebugEnabled()) {
-                std.debug.print("[INDEXER] Condensed message count: {d}\n", .{messages.items.len});
-                std.debug.print("[INDEXER] Added edge creation prompt for iteration 2\n", .{});
-            }
-        }
     }
 
-    // Validate we created nodes
-    if (graph_builder.getNodeCount() == 0) {
-        if (isDebugEnabled()) {
-            std.debug.print("[INDEXER] ERROR: No nodes created after {d} iterations\n", .{current_iteration});
-        }
-        return error.NoNodesCreated;
+    // End of Phase 2
+    if (isDebugEnabled()) {
+        std.debug.print("[INDEXER] Phase 2 complete: {d} edges created in {d} iterations\n", .{
+            graph_builder.getEdgeCount(),
+            phase2_iteration,
+        });
     }
+
+    // Notify Phase 2 completion
+    if (progress_callback) |callback| {
+        const msg = try std.fmt.allocPrint(allocator, "Phase 2 complete: {d} edges mapped", .{graph_builder.getEdgeCount()});
+        defer allocator.free(msg);
+        callback(progress_user_data.?, .content, msg);
+    }
+
+    // ========================================================================
+    // FINAL VALIDATION AND STORAGE
+    // ========================================================================
 
     // Final graph summary
     if (isDebugEnabled()) {
@@ -516,11 +791,12 @@ pub fn indexFile(
     try storeGraphInVectorDB(allocator, app_context, &graph_builder, file_path, progress_callback, progress_user_data);
 
     if (isDebugEnabled()) {
-        std.debug.print("[INDEXER] Successfully indexed {s}: {d} nodes, {d} edges in {d} iterations\n", .{
+        std.debug.print("[INDEXER] Successfully indexed {s}: {d} nodes, {d} edges (Phase 1: {d} iterations, Phase 2: {d} iterations)\n", .{
             file_path,
             indexing_ctx.stats.nodes_created,
             indexing_ctx.stats.edges_created,
-            current_iteration,
+            phase1_iteration,
+            phase2_iteration,
         });
     }
 
@@ -599,10 +875,10 @@ fn storeGraphInVectorDB(
         var metadata = try zvdb.NodeMetadata.init(allocator, node.node_type.toString(), file_path);
         errdefer metadata.deinit(allocator);
 
-        // Add attributes
-        try metadata.setAttribute(allocator, "name", .{ .string = try allocator.dupe(u8, name) });
+        // Add attributes (setAttribute clones values internally, no need to dupe)
+        try metadata.setAttribute(allocator, "name", .{ .string = name });
         try metadata.setAttribute(allocator, "is_public", .{ .bool = node.is_public });
-        try metadata.setAttribute(allocator, "summary", .{ .string = try allocator.dupe(u8, node.summary) });
+        try metadata.setAttribute(allocator, "summary", .{ .string = node.summary });
 
         // Insert into vector store and track external ID
         const external_id = try vector_store.*.insertWithMetadata(embedding, null, metadata);

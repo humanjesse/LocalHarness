@@ -236,6 +236,7 @@ fn getFieldBoolValue(state: *const ConfigEditorState, key: []const u8) bool {
     if (std.mem.eql(u8, key, "enable_thinking")) return config.enable_thinking;
     if (std.mem.eql(u8, key, "graph_rag_enabled")) return config.graph_rag_enabled;
     if (std.mem.eql(u8, key, "show_tool_json")) return config.show_tool_json;
+    if (std.mem.eql(u8, key, "indexing_enable_thinking")) return config.indexing_enable_thinking;
 
     return false;
 }

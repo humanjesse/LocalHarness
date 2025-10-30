@@ -1,6 +1,6 @@
-# ZodoLlama Documentation
+# Local Harness Documentation
 
-Welcome to the ZodoLlama documentation. This guide will help you understand, use, and contribute to the project.
+Welcome to the Local Harness documentation. This guide will help you understand, use, and contribute to the project.
 
 ## Quick Links
 
@@ -9,7 +9,7 @@ Welcome to the ZodoLlama documentation. This guide will help you understand, use
 
 ## User Guide
 
-New to ZodoLlama? Start here:
+New to Local Harness? Start here:
 
 - [Installation](user-guide/installation.md) - Building from source and setup
 - [Features](user-guide/features.md) - Complete feature guide
@@ -18,7 +18,7 @@ New to ZodoLlama? Start here:
 
 ## Development
 
-Contributing to ZodoLlama:
+Contributing to Local Harness:
 
 - [Deployment](development/deployment.md) - Release and deployment process
 - [Zig HTTP Client](development/zig-http-client.md) - Working with Zig's HTTP client
@@ -26,7 +26,7 @@ Contributing to ZodoLlama:
 
 ## Architecture
 
-Understanding how ZodoLlama works:
+Understanding how Local Harness works:
 
 - [Overview](architecture/overview.md) - High-level architecture
 - [Config Editor](architecture/config-editor.md) - **NEW** Full-screen TUI config editor architecture
@@ -48,7 +48,7 @@ Historical documentation and implementation notes:
 ## Project Structure
 
 ```
-zodollama/
+localharness/
 ├── README.md              # Main documentation (start here!)
 ├── CHANGELOG.md           # Version history
 ├── build.zig              # Build configuration
@@ -67,6 +67,6 @@ zodollama/
 
 ## Getting Help
 
-- **Issues:** https://github.com/humanjesse/zodollama/issues
+- **Issues:** https://github.com/humanjesse/localharness/issues
 - **Discussions:** Use GitHub Discussions for questions
 - **Contributing:** See [Contributing Guide](development/contributing.md)

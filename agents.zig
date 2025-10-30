@@ -5,7 +5,7 @@ const llm_provider_module = @import("llm_provider.zig");
 const config_module = @import("config.zig");
 const tools_module = @import("tools.zig");
 const zvdb = @import("zvdb/src/zvdb.zig");
-const embeddings_module = @import("embeddings.zig");
+const embedder_interface = @import("embedder_interface.zig");
 
 /// Progress update callback function type (shared with GraphRAG)
 pub const ProgressCallback = *const fn (user_data: ?*anyopaque, update_type: ProgressUpdateType, message: []const u8) void;
@@ -85,7 +85,7 @@ pub const AgentContext = struct {
 
     // Optional resources - only provided if agent needs them
     vector_store: ?*zvdb.HNSW(f32) = null,
-    embedder: ?*embeddings_module.EmbeddingsClient = null,
+    embedder: ?*embedder_interface.Embedder = null, // Generic interface - works with both Ollama and LM Studio
 
     // Optional conversation history for context-aware agents
     // Contains recent messages from main conversation to help agents

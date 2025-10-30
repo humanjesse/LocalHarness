@@ -196,7 +196,7 @@ pub fn getCreateNodeDefinition(allocator: std.mem.Allocator) !IndexingToolDefini
             .type = "function",
             .function = .{
                 .name = try allocator.dupe(u8, "create_node"),
-                .description = try allocator.dupe(u8, "Create a node for graph rag."),
+                .description = try allocator.dupe(u8, "Create a node in the knowledge graph for an entity."),
                 .parameters = try allocator.dupe(u8,
                     \\{
                     \\  "type": "object",
@@ -229,57 +229,64 @@ fn executeCreateEdge(
     arguments: []const u8,
     context: *IndexingContext,
 ) !IndexingToolResult {
-    // Parse edge from JSON arguments
-    var edge = Edge.fromToolCallArgs(allocator, arguments) catch |err| {
-        const msg = try std.fmt.allocPrint(
-            allocator,
-            "Failed to parse edge arguments: {}",
-            .{err},
-        );
+    // Get edge count before attempting to create
+    const edges_before = context.graph_builder.getEdgeCount();
+
+    // Use GraphBuilder's createEdge method (handles validation and duplicate detection)
+    context.graph_builder.createEdge(arguments) catch |err| {
+        const msg = switch (err) {
+            error.NodeNotFound => try std.fmt.allocPrint(
+                allocator,
+                "Edge references unknown node. Both nodes must exist before creating edge.",
+                .{},
+            ),
+            error.InvalidRelationshipType => try std.fmt.allocPrint(
+                allocator,
+                "Invalid relationship type. Use: calls, imports, references, or relates_to",
+                .{},
+            ),
+            else => try std.fmt.allocPrint(
+                allocator,
+                "Failed to create edge: {}",
+                .{err},
+            ),
+        };
         defer allocator.free(msg);
         context.stats.errors += 1;
         return IndexingToolResult.err(allocator, msg);
     };
-    errdefer edge.deinit(allocator);
 
-    // Validate from_node exists
-    if (!context.graph_builder.nodes.contains(edge.from_node)) {
-        edge.deinit(allocator);
+    // Check if edge was actually added (vs duplicate skipped)
+    const edges_after = context.graph_builder.getEdgeCount();
+    const edge_was_added = edges_after > edges_before;
+
+    if (edge_was_added) {
+        context.stats.edges_created += 1;
+
+        // Parse edge info for success message
+        var edge = try Edge.fromToolCallArgs(allocator, arguments);
+        defer edge.deinit(allocator);
+
         const msg = try std.fmt.allocPrint(
             allocator,
-            "Edge references unknown from_node '{s}'. Create the node first with create_node.",
-            .{edge.from_node},
+            "Created edge: {s} -{s}-> {s}",
+            .{ edge.from_node, edge.relationship.toString(), edge.to_node },
         );
         defer allocator.free(msg);
-        context.stats.errors += 1;
-        return IndexingToolResult.err(allocator, msg);
-    }
+        return IndexingToolResult.ok(allocator, msg);
+    } else {
+        // Duplicate edge was skipped
+        var edge = try Edge.fromToolCallArgs(allocator, arguments);
+        defer edge.deinit(allocator);
 
-    // Validate to_node exists
-    if (!context.graph_builder.nodes.contains(edge.to_node)) {
-        edge.deinit(allocator);
         const msg = try std.fmt.allocPrint(
             allocator,
-            "Edge references unknown to_node '{s}'. Create the node first with create_node.",
-            .{edge.to_node},
+            "Edge already exists (skipped duplicate): {s} -{s}-> {s}",
+            .{ edge.from_node, edge.relationship.toString(), edge.to_node },
         );
         defer allocator.free(msg);
-        context.stats.errors += 1;
-        return IndexingToolResult.err(allocator, msg);
+        return IndexingToolResult.ok(allocator, msg);
     }
-
-    // Add edge to graph builder
-    try context.graph_builder.edges.append(allocator, edge);
-    context.stats.edges_created += 1;
-
-    // Return success with descriptive feedback
-    const msg = try std.fmt.allocPrint(
-        allocator,
-        "Created edge: {s} -{s}-> {s}",
-        .{ edge.from_node, edge.relationship.toString(), edge.to_node },
-    );
-    defer allocator.free(msg);
-    return IndexingToolResult.ok(allocator, msg);
 }
 
 /// Get create_edge tool definition for registry
@@ -289,7 +296,7 @@ pub fn getCreateEdgeDefinition(allocator: std.mem.Allocator) !IndexingToolDefini
             .type = "function",
             .function = .{
                 .name = try allocator.dupe(u8, "create_edge"),
-                .description = try allocator.dupe(u8, "Connect two nodes."),
+                .description = try allocator.dupe(u8, "Create an edge in the knowledge graph to connect two existing nodes."),
                 .parameters = try allocator.dupe(u8,
                     \\{
                     \\  "type": "object",

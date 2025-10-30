@@ -1,4 +1,4 @@
-// ZodoLlama - Terminal chat interface for Ollama
+// Local Harness - Terminal chat interface for Ollama and LM Studio
 const std = @import("std");
 const ui = @import("ui.zig");
 const markdown = @import("markdown.zig");
@@ -21,9 +21,9 @@ pub fn main() !void {
     while (args.next()) |arg| {
         if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
             std.debug.print(
-                \\ZodoLlama - Terminal chat interface for Ollama
+                \\Local Harness - Terminal chat interface for Ollama and LM Studio
                 \\
-                \\Usage: zodollama [OPTIONS]
+                \\Usage: localharness [OPTIONS]
                 \\
                 \\Options:
                 \\  --ollama-host <URL>    Ollama server URL (default: http://localhost:11434)
@@ -31,7 +31,7 @@ pub fn main() !void {
                 \\  --help, -h             Show this help message
                 \\
                 \\Configuration:
-                \\  Config file: ~/.config/zodollama/config.json
+                \\  Config file: ~/.config/localharness/config.json
                 \\
                 \\Controls:
                 \\  Scroll Wheel     Scroll through messages

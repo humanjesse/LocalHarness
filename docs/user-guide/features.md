@@ -1,6 +1,6 @@
 # Features Guide
 
-Complete guide to all ZodoLlama features and capabilities.
+Complete guide to all Local Harness features and capabilities.
 
 > **Quick Reference:** See [Commands Reference](commands.md) for keyboard shortcuts and command syntax.
 
@@ -261,7 +261,7 @@ Risk: MEDIUM
 - **Deny** (4): Block this call
 
 **Policy management:**
-- Policies saved in `~/.config/zodollama/policies.json`
+- Policies saved in `~/.config/localharness/policies.json`
 - Persist across sessions
 - Can be edited manually
 
@@ -388,7 +388,7 @@ Information displayed:
 
 **Command:** `/config`
 
-A full-screen visual editor for modifying ZodoLlama settings without editing JSON files.
+A full-screen visual editor for modifying Local Harness settings without editing JSON files.
 
 **Features:**
 ```
@@ -526,7 +526,7 @@ All tools return JSON with:
   - Iteration 1: Extract entities (functions, structs, sections, concepts)
   - Iteration 2: Create relationships (calls, imports, references, relates_to)
 - Generates embeddings for semantic search
-- Stores in vector database (`.zodollama/graphrag.zvdb`)
+- Stores in vector database (`.localharness/graphrag.zvdb`)
 
 **Context compression in action:**
 ```
@@ -677,6 +677,6 @@ See [Installation Guide](installation.md#troubleshooting) for:
 
 ## See Also
 
-- [Configuration Guide](configuration.md) - Customize ZodoLlama
+- [Configuration Guide](configuration.md) - Customize Local Harness
 - [Installation Guide](installation.md) - Setup and building
 - [Architecture Documentation](../architecture/overview.md) - How it works

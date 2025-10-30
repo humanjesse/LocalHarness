@@ -49,7 +49,7 @@ Secondary agentic loop that builds knowledge graphs from read files to compress 
 - `create_node`: Define entity with type and description
 - `create_edge`: Link entities with typed relationships
 
-**Model:** `qwen3:30b` (configurable via `indexing_model`)
+**Model:** `llama3.1:8b` (configurable via `indexing_model`)
 
 ### 3. Graph Builder (`graphrag/graph_builder.zig`)
 In-memory graph construction during indexing:
@@ -57,9 +57,10 @@ In-memory graph construction during indexing:
 - Idempotent operations (duplicates ignored)
 - Prepares for vector DB storage
 
-### 4. Embeddings (`embeddings.zig`)
-- Ollama embeddings API client
-- Model: `embeddinggemma:300m` (configurable)
+### 4. Embeddings (`embedder_interface.zig`)
+- Generic embedder interface supporting both Ollama and LM Studio
+- Provider-aware: automatically uses configured provider for embeddings
+- Model: `nomic-embed-text` (configurable via `embedding_model`)
 - Batch embedding generation for efficiency
 - Cosine similarity for retrieval
 
@@ -68,7 +69,7 @@ Custom HNSW implementation:
 - Fast approximate nearest neighbor search
 - Rich metadata (node types, file paths, descriptions)
 - Typed edges between entities
-- Persistence: `.zodollama/graphrag.zvdb`
+- Persistence: `.localharness/graphrag.zvdb`
 
 ### 6. Query Engine (`graphrag/query.zig`)
 `summarizeFileForHistory()` retrieves compressed summaries:
@@ -171,16 +172,21 @@ for (messages) |msg| {
 
 ## Configuration
 
-Enable in `~/.config/zodollama/config.json`:
+Enable in `~/.config/localharness/config.json` or via `/config` command:
 ```json
 {
   "graph_rag_enabled": true,
-  "embedding_model": "embeddinggemma:300m",
-  "indexing_model": "qwen3:30b",
+  "embedding_model": "nomic-embed-text",
+  "indexing_model": "llama3.1:8b",
   "max_chunks_in_history": 5,
-  "zvdb_path": ".zodollama/graphrag.zvdb"
+  "zvdb_path": ".localharness/graphrag.zvdb"
 }
 ```
+
+**Provider Support:**
+- Both Ollama and LM Studio are supported for embeddings
+- Set `provider: "ollama"` or `provider: "lmstudio"` to choose
+- Embedding and indexing models work with both providers
 
 ## Performance
 
@@ -206,10 +212,11 @@ Enable in `~/.config/zodollama/config.json`:
 
 ## Limitations
 
-- Requires two separate Ollama models (main + indexing)
+- Requires two separate models (main + indexing + embedding)
 - First read doesn't benefit (full content returned)
 - Vector DB grows with indexed files (~1-5MB per file)
 - Only compresses files marked as indexed
+- LM Studio users must ensure embedding model is loaded before indexing
 
 ## See Also
 

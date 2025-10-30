@@ -6,7 +6,7 @@ A full-screen TUI configuration editor with clean three-layer architecture, simi
 
 ### What Is It?
 
-An interactive visual editor for ZodoLlama's configuration that lets users modify settings without editing JSON files directly.
+An interactive visual editor for Local Harness's configuration that lets users modify settings without editing JSON files directly.
 
 ### Files
 
@@ -18,7 +18,7 @@ An interactive visual editor for ZodoLlama's configuration that lets users modif
 
 ### How to Trigger
 
-User types `/config` in ZodoLlama → full-screen editor opens → modal mode (editor owns screen and input).
+User types `/config` in Local Harness → full-screen editor opens → modal mode (editor owns screen and input).
 
 ### Integration (3 Steps)
 

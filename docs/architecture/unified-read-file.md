@@ -12,7 +12,7 @@ Replaced three separate file reading approaches with a single unified `read_file
 
 ### Previous Architecture (Pre-Unification)
 
-ZodoLlama had **three different file reading implementations**:
+Local Harness had **three different file reading implementations**:
 
 1. **`read_file`** - Full file content (100% context usage)
 2. **`read_file_curated`** - Agent-based relevance filtering (~30-50% context)
@@ -296,7 +296,7 @@ file_read_small_threshold: usize = 100,
 
 ### User Customization
 
-Users can tune in `~/.config/zodollama/config.json`:
+Users can tune in `~/.config/localharness/config.json`:
 
 ```json
 {
@@ -400,7 +400,7 @@ Set `DEBUG_GRAPHRAG=1` to see mode selection:
 
 ```bash
 export DEBUG_GRAPHRAG=1
-./zig-out/bin/zodollama
+./zig-out/bin/localharness
 ```
 
 **Output:**

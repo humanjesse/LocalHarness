@@ -1,6 +1,6 @@
 # Changelog
 
-All notable changes to ZodoLlama will be documented in this file.
+All notable changes to Local Harness will be documented in this file.
 
 ## [Unreleased] - 2025-10-27
 
@@ -38,6 +38,23 @@ All notable changes to ZodoLlama will be documented in this file.
     - GraphRAG indexing works with both providers
     - Agent system works with both providers
 
+- **Provider-Aware Embeddings for GraphRAG** - Unified embeddings interface supporting both Ollama and LM Studio:
+  - **Generic Embedder Interface** (`embedder_interface.zig`) - Union type dispatching to provider-specific implementations
+  - **Provider-aware initialization** - App automatically creates correct embedder based on configured provider
+  - **Config Editor UI** - Added "Embedding Model" and "Indexing Model" fields to Provider Settings section
+  - **Validation** - GraphRAG config validation warns if embedding/indexing models are empty
+  - **Debug transparency** - `DEBUG_GRAPHRAG=1` shows model and provider configuration during indexing
+  - **Updated defaults** - Changed default embedding model from `embeddinggemma:300m` to `nomic-embed-text` for better availability
+  - **HTTP API fix** - Fixed LM Studio batch embeddings to use correct Zig 0.15.2 HTTP response reading
+  - **Configuration:**
+    ```json
+    {
+      "graph_rag_enabled": true,
+      "embedding_model": "nomic-embed-text",  // Works with both providers
+      "indexing_model": "llama3.1:8b"         // Model for file analysis
+    }
+    ```
+
 ### Changed
 - **Provider abstraction layer** - All LLM interactions now go through unified interface:
   - `app.zig`: Uses `LLMProvider` instead of `OllamaClient`
@@ -52,16 +69,20 @@ All notable changes to ZodoLlama will be documented in this file.
 - **New files:**
   - `llm_provider.zig` (370 lines) - Provider abstraction and factory
   - `lmstudio.zig` (630 lines) - LM Studio OpenAI-compatible client
+  - `embedder_interface.zig` (41 lines) - Generic embedder interface for both providers
 - **Modified files:**
-  - `config.zig` (+30 lines) - Provider selection and LM Studio host
-  - `app.zig` (~50 lines changed) - Provider initialization and usage
-  - `context.zig` (5 lines) - Context struct update
-  - `agents.zig` (5 lines) - Agent context update
+  - `config.zig` (+30 lines) - Provider selection, LM Studio host, GraphRAG validation
+  - `app.zig` (~70 lines changed) - Provider initialization, embedder initialization
+  - `context.zig` (5 lines) - Context struct update, generic embedder type
+  - `agents.zig` (5 lines) - Agent context update, generic embedder type
   - `agent_executor.zig` (10 lines) - Provider usage
   - `llm_helper.zig` (5 lines) - Generic provider parameter
-  - `graphrag/llm_indexer.zig` (10 lines) - Provider interface
+  - `graphrag/llm_indexer.zig` (15 lines) - Provider interface, debug output
   - `tools/read_file.zig` (5 lines) - Provider usage
   - `app_graphrag.zig` (5 lines) - Provider usage
+  - `config_editor_state.zig` (15 lines) - Added embedding/indexing model fields
+  - `config_editor_input.zig` (8 lines) - Input handlers for new fields
+  - `config_editor_renderer.zig` (0 lines) - Reuses existing text input renderer
 - **Architecture:**
   - Tagged union pattern (`union(enum)`) for zero-cost abstraction
   - Type-safe provider dispatch via Zig's compile-time `switch`

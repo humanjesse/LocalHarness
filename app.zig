@@ -19,6 +19,8 @@ const message_renderer = @import("message_renderer.zig");
 const tool_executor_module = @import("tool_executor.zig");
 const zvdb = @import("zvdb/src/zvdb.zig");
 const embeddings_module = @import("embeddings.zig");
+const embedder_interface = @import("embedder_interface.zig");
+const lmstudio = @import("lmstudio.zig");
 const agents_module = @import("agents.zig");
 const IndexingQueue = @import("graphrag/indexing_queue.zig").IndexingQueue;
 // TODO: Re-implement with LLM-based indexing
@@ -239,7 +241,7 @@ pub const App = struct {
     user_scrolled_away: bool = false, // Tracks if user manually scrolled during streaming
     // Graph RAG components
     vector_store: ?*zvdb.HNSW(f32) = null,
-    embedder: ?*embeddings_module.EmbeddingsClient = null,
+    embedder: ?*embedder_interface.Embedder = null, // Generic interface - works with both Ollama and LM Studio
     indexing_queue: ?*IndexingQueue = null,
     // Config editor state (modal mode)
     config_editor: ?config_editor_state.ConfigEditorState = null,
@@ -261,7 +263,7 @@ pub const App = struct {
 
         // Initialize Graph RAG components if enabled
         var vector_store_opt: ?*zvdb.HNSW(f32) = null;
-        var embedder_opt: ?*embeddings_module.EmbeddingsClient = null;
+        var embedder_opt: ?*embedder_interface.Embedder = null;
         var indexing_queue_opt: ?*IndexingQueue = null;
 
         if (config.graph_rag_enabled) {
@@ -293,21 +295,57 @@ pub const App = struct {
                     std.debug.print("[INIT] Vector store initialized successfully\n", .{});
                 }
 
-                // Initialize embeddings client
-                const emb = allocator.create(embeddings_module.EmbeddingsClient) catch |err| blk: {
+                // Initialize embeddings client based on provider
+                const emb = allocator.create(embedder_interface.Embedder) catch |err| blk: {
                     std.debug.print("Warning: Failed to create embeddings client: {}\n", .{err});
                     break :blk null;
                 };
 
-                if (emb) |client| {
-                    client.* = embeddings_module.EmbeddingsClient.init(allocator, config.ollama_host);
-                    embedder_opt = client;
+                if (emb) |embedder| {
+                    // Create provider-specific embeddings client
+                    if (mem.eql(u8, config.provider, "lmstudio")) {
+                        // LM Studio embeddings
+                        const lmstudio_client = allocator.create(lmstudio.LMStudioEmbeddingsClient) catch |err| blk: {
+                            std.debug.print("Warning: Failed to create LM Studio embeddings client: {}\n", .{err});
+                            allocator.destroy(embedder);
+                            break :blk null;
+                        };
 
-                    if (std.posix.getenv("DEBUG_GRAPHRAG")) |_| {
-                        std.debug.print("[INIT] Embeddings client initialized (host: {s}, model: {s})\n", .{ config.ollama_host, config.embedding_model });
+                        if (lmstudio_client) |client| {
+                            client.* = lmstudio.LMStudioEmbeddingsClient.init(allocator, config.lmstudio_host);
+                            embedder.* = .{ .lmstudio = client };
+                            embedder_opt = embedder;
+
+                            if (std.posix.getenv("DEBUG_GRAPHRAG")) |_| {
+                                std.debug.print("[INIT] LM Studio embeddings client initialized (host: {s}, model: {s})\n", .{ config.lmstudio_host, config.embedding_model });
+                            }
+                        } else {
+                            allocator.destroy(embedder);
+                        }
+                    } else {
+                        // Ollama embeddings (default)
+                        const ollama_client = allocator.create(embeddings_module.EmbeddingsClient) catch |err| blk: {
+                            std.debug.print("Warning: Failed to create Ollama embeddings client: {}\n", .{err});
+                            allocator.destroy(embedder);
+                            break :blk null;
+                        };
+
+                        if (ollama_client) |client| {
+                            client.* = embeddings_module.EmbeddingsClient.init(allocator, config.ollama_host);
+                            embedder.* = .{ .ollama = client };
+                            embedder_opt = embedder;
+
+                            if (std.posix.getenv("DEBUG_GRAPHRAG")) |_| {
+                                std.debug.print("[INIT] Ollama embeddings client initialized (host: {s}, model: {s})\n", .{ config.ollama_host, config.embedding_model });
+                            }
+                        } else {
+                            allocator.destroy(embedder);
+                        }
                     }
+                }
 
-                    // Initialize background indexing infrastructure
+                // Initialize background indexing infrastructure if embedder was created
+                if (embedder_opt) |_| {
                     const queue = allocator.create(IndexingQueue) catch |err| blk: {
                         std.debug.print("Warning: Failed to create indexing queue: {}\n", .{err});
                         break :blk null;
@@ -1008,6 +1046,11 @@ pub const App = struct {
         if (self.embedder) |emb| {
             emb.deinit();
             self.allocator.destroy(emb);
+        }
+
+        // Clean up config editor if active
+        if (self.config_editor) |*editor| {
+            editor.deinit();
         }
 
         // Clean up config (App owns it)

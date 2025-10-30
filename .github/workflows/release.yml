@@ -36,20 +36,20 @@ jobs:
       - name: Build Linux x86_64
         run: |
           zig build -Doptimize=ReleaseSafe
-          mv zig-out/bin/zodollama zodollama-linux-x86_64
+          mv zig-out/bin/localharness localharness-linux-x86_64
 
       - name: Generate checksums
         run: |
-          sha256sum zodollama-linux-x86_64 > zodollama-linux-x86_64.sha256
+          sha256sum localharness-linux-x86_64 > localharness-linux-x86_64.sha256
 
       - name: Create Release
         uses: softprops/action-gh-release@v1
         with:
           files: |
-            zodollama-linux-x86_64
-            zodollama-linux-x86_64.sha256
+            localharness-linux-x86_64
+            localharness-linux-x86_64.sha256
           body: |
-            ## ZodoLlama ${{ github.ref_name }}
+            ## Local Harness ${{ github.ref_name }}
 
             ### Platform Support
             - **Tested:** Linux x86_64 (Arch Linux, kernel 6.17+)
@@ -57,23 +57,23 @@ jobs:
             - **May work:** macOS (untested - please report!)
 
             ### Installation
-            1. Download `zodollama-linux-x86_64`
-            2. Make it executable: `chmod +x zodollama-linux-x86_64`
-            3. Run: `./zodollama-linux-x86_64`
-            4. Optional: Move to PATH: `mv zodollama-linux-x86_64 ~/.local/bin/zodollama`
+            1. Download `localharness-linux-x86_64`
+            2. Make it executable: `chmod +x localharness-linux-x86_64`
+            3. Run: `./localharness-linux-x86_64`
+            4. Optional: Move to PATH: `mv localharness-linux-x86_64 ~/.local/bin/localharness`
 
             ### Verify Download
             ```bash
-            sha256sum -c zodollama-linux-x86_64.sha256
+            sha256sum -c localharness-linux-x86_64.sha256
             ```
 
             ### Build from Source
             If the binary doesn't work for your system:
             ```bash
             git clone https://github.com/${{ github.repository }}
-            cd zodollama
+            cd localharness
             zig build
-            ./zig-out/bin/zodollama
+            ./zig-out/bin/localharness
             ```
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

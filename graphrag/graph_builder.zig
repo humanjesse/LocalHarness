@@ -94,7 +94,26 @@ pub const GraphBuilder = struct {
             return error.NodeNotFound;
         }
 
-        // Add edge (allow duplicates - LLM might call same relationship twice)
+        // Check for duplicate edges (same from_node, to_node, and relationship)
+        for (self.edges.items) |existing_edge| {
+            if (std.mem.eql(u8, existing_edge.from_node, edge.from_node) and
+                std.mem.eql(u8, existing_edge.to_node, edge.to_node) and
+                existing_edge.relationship == edge.relationship)
+            {
+                if (isDebugEnabled()) {
+                    std.debug.print("[GRAPH] Skipping duplicate edge: {s} -{s}-> {s}\n", .{
+                        edge.from_node,
+                        edge.relationship.toString(),
+                        edge.to_node,
+                    });
+                }
+                // Free the duplicate edge and return success (idempotent operation)
+                edge.deinit(self.allocator);
+                return;
+            }
+        }
+
+        // Add edge (no duplicate found)
         try self.edges.append(self.allocator, edge);
 
         if (isDebugEnabled()) {

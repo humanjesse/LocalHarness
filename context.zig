@@ -3,7 +3,7 @@ const std = @import("std");
 const state_module = @import("state.zig");
 const config_module = @import("config.zig");
 const zvdb = @import("zvdb/src/zvdb.zig");
-const embeddings = @import("embeddings.zig");
+const embedder_interface = @import("embedder_interface.zig");
 const ollama = @import("ollama.zig");
 const llm_provider_module = @import("llm_provider.zig");
 const types = @import("types.zig");
@@ -19,7 +19,7 @@ pub const AppContext = struct {
 
     // Graph RAG components (optional - initialized if graph_rag_enabled)
     vector_store: ?*zvdb.HNSW(f32) = null,
-    embedder: ?*embeddings.EmbeddingsClient = null,
+    embedder: ?*embedder_interface.Embedder = null, // Generic interface - works with both Ollama and LM Studio
     indexing_queue: ?*IndexingQueue = null,
 
     // Recent conversation messages for context-aware tools

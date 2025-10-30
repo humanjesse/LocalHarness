@@ -1,20 +1,20 @@
 # Configuration Guide
 
-ZodoLlama can be configured in three ways:
+Local Harness can be configured in three ways:
 
 1. **Interactive Editor** (`/config` command) - Recommended for most users
-2. **JSON File** (`~/.config/zodollama/config.json`) - For advanced users and automation
+2. **JSON File** (`~/.config/localharness/config.json`) - For advanced users and automation
 3. **CLI Arguments** (`--model`, `--ollama-host`) - For quick overrides
 
 ---
 
 ## Interactive Config Editor
 
-**The easiest way to configure ZodoLlama.**
+**The easiest way to configure Local Harness.**
 
 ### Quick Start
 
-1. Start ZodoLlama: `./zodollama`
+1. Start Local Harness: `./localharness`
 2. Type: `/config`
 3. Navigate with Tab, edit with Enter
 4. Press Ctrl+S to save
@@ -33,7 +33,7 @@ ZodoLlama can be configured in three ways:
 
 ## Configuration File
 
-Config file location: `~/.config/zodollama/config.json`
+Config file location: `~/.config/localharness/config.json`
 
 This file is automatically created on first run with default values. You can edit it directly or use the `/config` command for a visual editor.
 
@@ -53,9 +53,9 @@ This file is automatically created on first run with default values. You can edi
   "show_tool_json": false,
   "graph_rag_enabled": false,
   "embedding_model": "nomic-embed-text",
-  "indexing_model": "qwen3-coder:30b",
+  "indexing_model": "llama3.1:8b",
   "max_chunks_in_history": 5,
-  "zvdb_path": ".zodollama/graphrag.zvdb",
+  "zvdb_path": ".localharness/graphrag.zvdb",
   "file_read_small_threshold": 200,
   "editor": ["nvim"],
   "scroll_lines": 3,
@@ -71,7 +71,7 @@ This file is automatically created on first run with default values. You can edi
 
 ### Provider Selection
 
-ZodoLlama supports multiple LLM backends. Choose based on your hardware, preferences, and available models.
+Local Harness supports multiple LLM backends. Choose based on your hardware, preferences, and available models.
 
 #### Ollama (Default)
 
@@ -128,8 +128,9 @@ ollama serve
 - ⚠️ **Context size** must be set in LM Studio UI (not in config file)
 - ⚠️ **Extended thinking mode** is not supported
 - ⚠️ **`model_keep_alive`** parameter is ignored
+- ⚠️ **GraphRAG users**: Ensure an embedding model is loaded in LM Studio before indexing files
 - ✅ All tools work (file operations, GraphRAG, etc.)
-- ✅ Embeddings supported
+- ✅ Embeddings fully supported (configurable via `embedding_model` and `indexing_model`)
 - ✅ Function/tool calling supported
 
 #### Switching Providers
@@ -143,7 +144,7 @@ ollama serve
 **Manual Edit:**
 ```bash
 # Edit config file
-$EDITOR ~/.config/zodollama/config.json
+$EDITOR ~/.config/localharness/config.json
 
 # Change provider field
 {
@@ -151,7 +152,7 @@ $EDITOR ~/.config/zodollama/config.json
   ...
 }
 
-# Restart ZodoLlama
+# Restart Local Harness
 ```
 
 ---
@@ -218,12 +219,18 @@ $EDITOR ~/.config/zodollama/config.json
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `graph_rag_enabled` | boolean | `false` | Enable GraphRAG context compression |
-| `embedding_model` | string | `"embeddinggemma:300m"` | Model for vector embeddings |
-| `indexing_model` | string | `"qwen3:30b"` | Model for file analysis |
+| `embedding_model` | string | `"nomic-embed-text"` | Model for vector embeddings (both Ollama and LM Studio) |
+| `indexing_model` | string | `"llama3.1:8b"` | Model for file analysis (both Ollama and LM Studio) |
 | `max_chunks_in_history` | number | `5` | Max entities in summaries |
-| `zvdb_path` | string | `".zodollama/graphrag.zvdb"` | Vector DB path |
+| `zvdb_path` | string | `".localharness/graphrag.zvdb"` | Vector DB path |
 
-GraphRAG builds knowledge graphs of read files in a secondary loop, compressing conversation history by 90%+ while preserving semantics. See [Features Guide](features.md#graphrag-context-compression).
+GraphRAG builds knowledge graphs of read files in a secondary loop, compressing conversation history by 90%+ while preserving semantics. Both Ollama and LM Studio are fully supported - the embedder automatically uses your configured provider. See [Features Guide](features.md#graphrag-context-compression).
+
+**Configuration Tips:**
+- Use `/config` command to edit embedding/indexing models interactively
+- Both models are now visible in the Provider Settings section of the config editor
+- For LM Studio: Ensure your embedding model is loaded before enabling GraphRAG
+- Debug mode: Set `DEBUG_GRAPHRAG=1` environment variable to see model/provider info during indexing
 
 ### Color Settings
 
@@ -267,7 +274,7 @@ Bold: \u001b[1m
 Override config file settings with CLI arguments:
 
 ```bash
-./zig-out/bin/zodollama --model llama3.2:70b --ollama-host http://localhost:11434
+./zig-out/bin/localharness --model llama3.2:70b --ollama-host http://localhost:11434
 ```
 
 **Available Arguments:**
@@ -283,7 +290,7 @@ Override config file settings with CLI arguments:
 
 Permission policies are stored separately from configuration:
 
-**Location:** `~/.config/zodollama/policies.json`
+**Location:** `~/.config/localharness/policies.json`
 
 **Format:**
 ```json
@@ -367,9 +374,9 @@ If colors look wrong:
 ### Troubleshooting
 
 **Config file not loading:**
-- Check file exists: `ls ~/.config/zodollama/config.json`
-- Verify JSON syntax: `cat ~/.config/zodollama/config.json | jq .`
-- Check file permissions: `ls -la ~/.config/zodollama/`
+- Check file exists: `ls ~/.config/localharness/config.json`
+- Verify JSON syntax: `cat ~/.config/localharness/config.json | jq .`
+- Check file permissions: `ls -la ~/.config/localharness/`
 
 **Ollama connection issues:**
 - Verify Ollama is running: `curl http://localhost:11434/api/tags`
@@ -389,10 +396,10 @@ Switch between configs by using different config directories:
 
 ```bash
 # Development config
-XDG_CONFIG_HOME=~/.config-dev ./zodollama
+XDG_CONFIG_HOME=~/.config-dev ./localharness
 
 # Production config
-XDG_CONFIG_HOME=~/.config-prod ./zodollama
+XDG_CONFIG_HOME=~/.config-prod ./localharness
 ```
 
 ### Resetting Configuration
@@ -400,8 +407,8 @@ XDG_CONFIG_HOME=~/.config-prod ./zodollama
 Delete config file to regenerate defaults:
 
 ```bash
-rm ~/.config/zodollama/config.json
-./zodollama  # Will create new default config
+rm ~/.config/localharness/config.json
+./localharness  # Will create new default config
 ```
 
 ## See Also

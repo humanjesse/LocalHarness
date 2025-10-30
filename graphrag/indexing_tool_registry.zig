@@ -152,6 +152,30 @@ pub fn getIndexingTools(allocator: std.mem.Allocator) ![]const ollama.Tool {
     return tools;
 }
 
+/// Returns only the create_node tool for Phase 1: Node Extraction
+/// Caller owns returned memory
+pub fn getNodeExtractionTools(allocator: std.mem.Allocator) ![]const ollama.Tool {
+    var tools = try allocator.alloc(ollama.Tool, 1);
+
+    // Get only the create_node tool
+    const create_node_def = try indexing_tools.getCreateNodeDefinition(allocator);
+    tools[0] = create_node_def.ollama_tool;
+
+    return tools;
+}
+
+/// Returns only the create_edge tool for Phase 2: Edge Creation
+/// Caller owns returned memory
+pub fn getEdgeCreationTools(allocator: std.mem.Allocator) ![]const ollama.Tool {
+    var tools = try allocator.alloc(ollama.Tool, 1);
+
+    // Get only the create_edge tool
+    const create_edge_def = try indexing_tools.getCreateEdgeDefinition(allocator);
+    tools[0] = create_edge_def.ollama_tool;
+
+    return tools;
+}
+
 /// Execute an indexing tool call by name
 /// Finds matching tool and executes it with given context
 pub fn executeIndexingToolCall(

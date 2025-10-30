@@ -1,6 +1,6 @@
-# Building ZodoLlama from Source
+# Building Local Harness from Source
 
-This guide covers building ZodoLlama from source for development or if pre-built binaries don't work on your system.
+This guide covers building Local Harness from source for development or if pre-built binaries don't work on your system.
 
 ## Prerequisites
 
@@ -58,8 +58,8 @@ ollama serve
 
 ### 1. Clone the Repository
 ```bash
-git clone https://github.com/humanjesse/zodollama.git
-cd zodollama
+git clone https://github.com/humanjesse/localharness.git
+cd localharness
 ```
 
 ### 2. Build the Project
@@ -69,7 +69,7 @@ cd zodollama
 zig build
 ```
 
-The binary will be at: `zig-out/bin/zodollama`
+The binary will be at: `zig-out/bin/localharness`
 
 #### Release Build (optimized)
 ```bash
@@ -83,7 +83,7 @@ zig build -Doptimize=ReleaseFast
 
 ### 3. Run
 ```bash
-./zig-out/bin/zodollama
+./zig-out/bin/localharness
 ```
 
 ## Build Options
@@ -119,7 +119,7 @@ zig build -Doptimize=ReleaseSafe
 
 # Copy to local bin
 mkdir -p ~/.local/bin
-cp zig-out/bin/zodollama ~/.local/bin/
+cp zig-out/bin/localharness ~/.local/bin/
 
 # Ensure ~/.local/bin is in your PATH
 echo 'export PATH=$PATH:~/.local/bin' >> ~/.bashrc  # or ~/.zshrc
@@ -129,14 +129,14 @@ source ~/.bashrc
 ### System-wide Installation (requires sudo)
 ```bash
 zig build -Doptimize=ReleaseSafe
-sudo cp zig-out/bin/zodollama /usr/local/bin/
+sudo cp zig-out/bin/localharness /usr/local/bin/
 ```
 
 ## Development
 
 ### Project Structure
 ```
-zodollama/
+localharness/
 ├── build.zig           # Build configuration
 ├── main.zig            # Entry point, app logic, config
 ├── ui.zig              # Terminal UI, input handling, drawing
@@ -164,12 +164,12 @@ rm -rf zig-cache/ zig-out/
 - Verify: `which zig`
 
 #### Version Mismatch
-- ZodoLlama requires Zig 0.15.2+
+- Local Harness requires Zig 0.15.2+
 - Check: `zig version`
 - Download correct version from: https://ziglang.org/download/
 
 #### C Library Not Found
-ZodoLlama uses C libraries for terminal control:
+Local Harness uses C libraries for terminal control:
 ```bash
 # Ubuntu/Debian
 sudo apt-get install libc6-dev
@@ -193,7 +193,7 @@ sudo pacman -S glibc
 
 #### "Model not found"
 - Pull the model first: `ollama pull llama3.2`
-- Or configure a different model in `~/.config/zodollama/config.json`
+- Or configure a different model in `~/.config/localharness/config.json`
 
 ## Cross-Compilation
 
@@ -225,7 +225,7 @@ When contributing, please:
 
 ## Getting Help
 
-- **Issues:** https://github.com/humanjesse/zodollama/issues
+- **Issues:** https://github.com/humanjesse/localharness/issues
 - **Zig Documentation:** https://ziglang.org/documentation/
 - **Ollama Documentation:** https://docs.ollama.com/
 

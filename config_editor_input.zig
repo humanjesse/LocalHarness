@@ -215,6 +215,8 @@ fn toggleField(state: *ConfigEditorState, field: *ConfigField) !void {
         config.graph_rag_enabled = !config.graph_rag_enabled;
     } else if (std.mem.eql(u8, field.key, "show_tool_json")) {
         config.show_tool_json = !config.show_tool_json;
+    } else if (std.mem.eql(u8, field.key, "indexing_enable_thinking")) {
+        config.indexing_enable_thinking = !config.indexing_enable_thinking;
     }
 }
 
@@ -408,6 +410,8 @@ fn getCurrentTextValue(state: *const ConfigEditorState, key: []const u8) []const
     if (std.mem.eql(u8, key, "ollama_host")) return config.ollama_host;
     if (std.mem.eql(u8, key, "lmstudio_host")) return config.lmstudio_host;
     if (std.mem.eql(u8, key, "model")) return config.model;
+    if (std.mem.eql(u8, key, "embedding_model")) return config.embedding_model;
+    if (std.mem.eql(u8, key, "indexing_model")) return config.indexing_model;
 
     return "";
 }
@@ -425,6 +429,12 @@ fn setTextValue(state: *ConfigEditorState, key: []const u8, value: []const u8) !
     } else if (std.mem.eql(u8, key, "model")) {
         state.allocator.free(config.model);
         config.model = try state.allocator.dupe(u8, value);
+    } else if (std.mem.eql(u8, key, "embedding_model")) {
+        state.allocator.free(config.embedding_model);
+        config.embedding_model = try state.allocator.dupe(u8, value);
+    } else if (std.mem.eql(u8, key, "indexing_model")) {
+        state.allocator.free(config.indexing_model);
+        config.indexing_model = try state.allocator.dupe(u8, value);
     } else if (std.mem.eql(u8, key, "indexing_temperature")) {
         // Parse nullable float - "null" or empty = null, otherwise parse as float
         if (std.mem.eql(u8, value, "null") or value.len == 0) {
@@ -458,6 +468,7 @@ fn getCurrentNumberValue(state: *const ConfigEditorState, key: []const u8) isize
     if (std.mem.eql(u8, key, "max_chunks_in_history")) return @as(isize, @intCast(config.max_chunks_in_history));
     if (std.mem.eql(u8, key, "scroll_lines")) return @as(isize, @intCast(config.scroll_lines));
     if (std.mem.eql(u8, key, "file_read_small_threshold")) return @as(isize, @intCast(config.file_read_small_threshold));
+    if (std.mem.eql(u8, key, "indexing_max_iterations")) return @as(isize, @intCast(config.indexing_max_iterations));
 
     return 0;
 }
@@ -476,5 +487,7 @@ fn setNumberValue(state: *ConfigEditorState, key: []const u8, value: isize) !voi
         config.scroll_lines = @as(usize, @intCast(@max(1, value)));
     } else if (std.mem.eql(u8, key, "file_read_small_threshold")) {
         config.file_read_small_threshold = @as(usize, @intCast(@max(0, value)));
+    } else if (std.mem.eql(u8, key, "indexing_max_iterations")) {
+        config.indexing_max_iterations = @as(usize, @intCast(@max(1, value)));
     }
 }

@@ -1,4 +1,4 @@
-// Shared type definitions for ZodoLlama
+// Shared type definitions for Local Harness
 const std = @import("std");
 const markdown = @import("markdown.zig");
 const ollama = @import("ollama.zig");
