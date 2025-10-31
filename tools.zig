@@ -18,6 +18,8 @@ const pwd = @import("tools/pwd.zig");
 const add_todo = @import("tools/add_todo.zig");
 const list_todos = @import("tools/list_todos.zig");
 const update_todo = @import("tools/update_todo.zig");
+const run_agent = @import("tools/run_agent.zig");
+const list_agents = @import("tools/list_agents.zig");
 
 const AppContext = context_module.AppContext;
 
@@ -213,6 +215,10 @@ pub fn getAllToolDefinitions(allocator: std.mem.Allocator) ![]ToolDefinition {
     try tools.append(allocator, try add_todo.getDefinition(allocator));
     try tools.append(allocator, try list_todos.getDefinition(allocator));
     try tools.append(allocator, try update_todo.getDefinition(allocator));
+
+    // Agent tools
+    try tools.append(allocator, try run_agent.getDefinition(allocator));
+    try tools.append(allocator, try list_agents.getDefinition(allocator));
 
     return try tools.toOwnedSlice(allocator);
 }

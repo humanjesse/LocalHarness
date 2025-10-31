@@ -82,6 +82,7 @@ pub const AgentContext = struct {
     llm_provider: *llm_provider_module.LLMProvider,
     config: *const config_module.Config,
     capabilities: AgentCapabilities,
+    system_prompt: []const u8, // Agent's defining prompt (from AgentDefinition)
 
     // Optional resources - only provided if agent needs them
     vector_store: ?*zvdb.HNSW(f32) = null,
@@ -202,6 +203,11 @@ pub const AgentRegistry = struct {
 
     pub fn deinit(self: *AgentRegistry) void {
         self.agents.deinit(self.allocator);
+    }
+
+    /// Clear all registered agents (keeps allocated capacity)
+    pub fn clear(self: *AgentRegistry) void {
+        self.agents.clearRetainingCapacity();
     }
 
     /// Register an agent

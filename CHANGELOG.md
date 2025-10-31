@@ -4,6 +4,43 @@ All notable changes to Local Harness will be documented in this file.
 
 ## [Unreleased] - 2025-10-30
 
+### Fixed - Agent Builder System
+- **Memory Leak in Agent Builder** - Fixed double-free crash in `getSelectedTools()`
+  - Removed incorrect `defer selected.deinit()` call in `agent_builder_state.zig:230`
+  - Ownership properly transferred to caller via `toOwnedSlice()`
+  - Prevents crash when saving agents with selected tools
+- **Name Validation Enforcement** - Now properly rejects uppercase letters
+  - Validation checks `std.ascii.isLower()` correctly (agent_builder_state.zig:198-207)
+  - Only allows: lowercase letters, numbers, hyphens, underscores
+  - Error message: "Name must contain only lowercase letters, numbers, hyphens, and underscores"
+- **Agent Reload Crash** - Added `clear()` method to AgentRegistry
+  - New `clear()` method in `agents.zig:209-211`
+  - Agent loader calls `registry.clear()` before loading agents (agent_loader.zig:46)
+  - Prevents HashMap corruption from duplicate registrations when creating new agents
+- **Checkbox Navigation** - Added wrap-around to tool selection
+  - Arrow up at top wraps to bottom, arrow down at bottom wraps to top (agent_builder_input.zig:42-84)
+  - More intuitive keyboard navigation in tool selection UI
+- **Memory Leaks on Shutdown** - Fixed two memory leaks when exiting the app
+  - Embedder client pointers (LM Studio/Ollama) now properly destroyed (app.zig:1087-1101)
+  - Native agent definitions (allocated strings) now properly freed (agent_loader.zig:37-51)
+
+### Changed - Agent Builder System
+- **Agent Directory Structure** - Moved from `~/.config/localharness/.claude/agents/` to `~/.config/localharness/agents/`
+  - Consistent with other config files (config.json, policies.json)
+  - Directory is now created proactively on app startup
+  - Comprehensive README.md automatically created in agents directory with format examples and usage instructions
+- **Tool Checkbox Display** - Increased visible tools from 10 to 15
+  - Changed `max_visible` from 10 to 15 in `agent_builder_renderer.zig:292`
+  - Better UX for projects with many tools (Local Harness has 15+ tools)
+  - Scroll indicator shows count of remaining tools: "... and N more tools (scroll down to see all)"
+
+### Architecture Decisions
+- **No /delete-agent Command** - Users delete `.md` files manually (WILL NOT IMPLEMENT)
+  - Rationale: Simpler mental model, files are source of truth
+  - Avoids implementing dangerous file deletion feature in UI
+  - Standard file management tools work fine (`rm ~/.config/localharness/agents/<name>.md`)
+  - No risk of accidental deletion through application bugs
+
 ### Added
 - **Embedding Model Validation** - Provider-specific format validation with helpful warnings
 - **LM Studio Embeddings Robustness** - Error parsing, retry logic, connection recovery, debug support
@@ -11,12 +48,16 @@ All notable changes to Local Harness will be documented in this file.
 
 ### Changed
 - **GraphRAG Phase 2 Context** - Independent context for edge creation (30-40% token reduction)
+- **GraphRAG Phase 2 Node Format** - JSON array format for zero ambiguity (eliminates parsing confusion)
+- **Edge Tool Descriptions** - Reference JSON field names explicitly
 - **Indexing Queue Independence** - Queue created even if embedder fails (better error diagnosis)
-- **Documentation** - Updated docs to reflect Phase 2 optimization and model format requirements
+- **Documentation** - Updated docs to reflect Phase 2 optimization, JSON format, and storage timing
 
 ### Fixed
 - **LM Studio Embedding Format** - Default config documents provider-specific format requirements
 - **GraphRAG Silent Failures** - Queue dependency could disable system
+- **Phase 2 Edge Creation** - JSON format eliminates node name ambiguity (handles special characters safely)
+- **Edge Error Messages** - Show which node failed, what was tried, and list of valid nodes
 
 ## [Unreleased] - 2025-10-27
 

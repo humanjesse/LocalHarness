@@ -14,40 +14,80 @@ fn isDebugEnabled() bool {
     return std.posix.getenv("DEBUG_GRAPHRAG") != null;
 }
 
-/// Format nodes as a clean bullet list for prompts
+/// Escape string for JSON (handle quotes, backslashes, newlines)
 /// Caller must free the returned string
-fn formatNodesForPrompt(allocator: std.mem.Allocator, graph_builder: *const GraphBuilder) ![]const u8 {
-    if (graph_builder.getNodeCount() == 0) {
-        return try allocator.dupe(u8, "(no nodes created yet)");
+fn escapeJSONString(allocator: std.mem.Allocator, input: []const u8) ![]const u8 {
+    var escaped = try std.ArrayList(u8).initCapacity(allocator, input.len);
+    defer escaped.deinit(allocator);
+
+    for (input) |c| {
+        switch (c) {
+            '"' => try escaped.appendSlice(allocator, "\\\""),
+            '\\' => try escaped.appendSlice(allocator, "\\\\"),
+            '\n' => try escaped.appendSlice(allocator, "\\n"),
+            '\r' => try escaped.appendSlice(allocator, "\\r"),
+            '\t' => try escaped.appendSlice(allocator, "\\t"),
+            else => try escaped.append(allocator, c),
+        }
     }
 
-    var buffer = try std.ArrayList(u8).initCapacity(allocator, 0);
-    defer buffer.deinit(allocator);
+    return try escaped.toOwnedSlice(allocator);
+}
+
+/// Format nodes as JSON array for Phase 2 prompt
+/// Returns properly escaped JSON with zero ambiguity
+/// Caller must free the returned string
+fn formatNodesAsJSON(allocator: std.mem.Allocator, graph_builder: *const GraphBuilder) ![]const u8 {
+    if (graph_builder.getNodeCount() == 0) {
+        return try allocator.dupe(u8, "[]");
+    }
+
+    var json = try std.ArrayList(u8).initCapacity(allocator, 0);
+    defer json.deinit(allocator);
+    const writer = json.writer(allocator);
+
+    try writer.writeAll("[\n");
 
     var iter = graph_builder.nodes.iterator();
+    var first = true;
     while (iter.next()) |entry| {
         const node = entry.value_ptr.*;
 
-        // Format: "- {type}:{name} (lines {start}-{end}): {summary}"
-        try buffer.appendSlice(allocator, "- ");
-        try buffer.appendSlice(allocator, node.node_type.toString());
-        try buffer.appendSlice(allocator, ":");
-        try buffer.appendSlice(allocator, node.name);
+        if (!first) try writer.writeAll(",\n");
+        first = false;
 
+        try writer.writeAll("  {\n");
+
+        // Escape name for JSON
+        const escaped_name = try escapeJSONString(allocator, node.name);
+        defer allocator.free(escaped_name);
+        try writer.print("    \"name\": \"{s}\",\n", .{escaped_name});
+
+        try writer.print("    \"type\": \"{s}\",\n", .{node.node_type.toString()});
+
+        // Escape summary for JSON
+        const escaped_summary = try escapeJSONString(allocator, node.summary);
+        defer allocator.free(escaped_summary);
+        try writer.print("    \"summary\": \"{s}\",\n", .{escaped_summary});
+
+        // Lines (can be null)
         if (node.start_line) |start| {
             if (node.end_line) |end| {
-                const line_info = try std.fmt.allocPrint(allocator, " (lines {d}-{d})", .{start, end});
-                defer allocator.free(line_info);
-                try buffer.appendSlice(allocator, line_info);
+                try writer.print("    \"lines\": {{\"start\": {d}, \"end\": {d}}},\n", .{start, end});
+            } else {
+                try writer.writeAll("    \"lines\": null,\n");
             }
+        } else {
+            try writer.writeAll("    \"lines\": null,\n");
         }
 
-        try buffer.appendSlice(allocator, ": ");
-        try buffer.appendSlice(allocator, node.summary);
-        try buffer.appendSlice(allocator, "\n");
+        try writer.print("    \"is_public\": {s}\n", .{if (node.is_public) "true" else "false"});
+        try writer.writeAll("  }");
     }
 
-    return try buffer.toOwnedSlice(allocator);
+    try writer.writeAll("\n]");
+
+    return try json.toOwnedSlice(allocator);
 }
 
 /// Clean up and free all messages in the array
@@ -548,15 +588,15 @@ pub fn indexFile(
     }
     freeMessages(allocator, &messages);
 
-    // Format nodes for Phase 2 prompt
-    const nodes_summary = try formatNodesForPrompt(allocator, &graph_builder);
-    defer allocator.free(nodes_summary);
+    // Format nodes as JSON for Phase 2 prompt
+    const nodes_json = try formatNodesAsJSON(allocator, &graph_builder);
+    defer allocator.free(nodes_json);
 
     const edge_prompt = try std.fmt.allocPrint(
         allocator,
         \\Map relationships between entities extracted from: {s}
         \\
-        \\EXTRACTED ENTITIES:
+        \\EXTRACTED ENTITIES (JSON):
         \\{s}
         \\
         \\ORIGINAL DOCUMENT (for reference):
@@ -564,19 +604,13 @@ pub fn indexFile(
         \\{s}
         \\```
         \\
-        \\TASK: Create edges between these entities using create_edge tool.
+        \\TASK: Create edges using create_edge tool. Use exact "name" field from JSON for from_node/to_node.
         \\
-        \\Use these relationship values:
-        \\• "calls" - for function/method invocations
-        \\• "imports" - for import/dependency relationships
-        \\• "references" - for variable/type references
-        \\• "relates_to" - for conceptual connections
+        \\Relationship types: "calls", "imports", "references", "relates_to"
         \\
-        \\ONLY connect nodes from the EXTRACTED ENTITIES list above.
-        \\START CALLING create_edge NOW - do not explain, just call tools.
-        \\Each unique edge should be created ONCE only - no duplicates.
+        \\START CALLING create_edge NOW - do not explain, just call tools. No duplicates.
     ,
-        .{ file_path, nodes_summary, content },
+        .{ file_path, nodes_json, content },
     );
     // NOTE: Do NOT defer free edge_prompt here - ownership transferred to messages
 

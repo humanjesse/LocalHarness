@@ -11,7 +11,7 @@ const AgentCapabilities = agents_module.AgentCapabilities;
 const ProgressCallback = agents_module.ProgressCallback;
 
 /// System prompt for conversation-aware relevance curation
-const CURATOR_SYSTEM_PROMPT =
+pub const CURATOR_SYSTEM_PROMPT =
     \\You are a code context curator analyzing files for an ongoing conversation.
     \\
     \\IMPORTANT: The user prompt may include conversation context showing what the user

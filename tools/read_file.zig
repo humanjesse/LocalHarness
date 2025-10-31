@@ -261,6 +261,7 @@ fn formatWithCuration(
         .allocator = allocator,
         .llm_provider = context.llm_provider,
         .config = context.config,
+        .system_prompt = file_curator.CURATOR_SYSTEM_PROMPT,
         .capabilities = .{
             .allowed_tools = &.{},
             .max_iterations = 2,

@@ -22,6 +22,9 @@ pub const AppContext = struct {
     embedder: ?*embedder_interface.Embedder = null, // Generic interface - works with both Ollama and LM Studio
     indexing_queue: ?*IndexingQueue = null,
 
+    // Agent system (optional - only present if agents enabled)
+    agent_registry: ?*agents_module.AgentRegistry = null,
+
     // Recent conversation messages for context-aware tools
     // Populated before tool execution, null otherwise
     // Tools can use this to understand what the user is asking about

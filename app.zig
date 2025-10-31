@@ -30,6 +30,10 @@ const app_graphrag = @import("app_graphrag.zig");
 const config_editor_state = @import("config_editor_state.zig");
 const config_editor_renderer = @import("config_editor_renderer.zig");
 const config_editor_input = @import("config_editor_input.zig");
+const agent_loader = @import("agent_loader.zig");
+const agent_builder_state = @import("agent_builder_state.zig");
+const agent_builder_renderer = @import("agent_builder_renderer.zig");
+const agent_builder_input = @import("agent_builder_input.zig");
 
 // Re-export types for convenience
 pub const Message = types.Message;
@@ -245,6 +249,10 @@ pub const App = struct {
     indexing_queue: ?*IndexingQueue = null,
     // Config editor state (modal mode)
     config_editor: ?config_editor_state.ConfigEditorState = null,
+    // Agent system
+    agent_registry: agents_module.AgentRegistry,
+    agent_loader: agent_loader.AgentLoader,
+    agent_builder: ?agent_builder_state.AgentBuilderState = null,
 
     pub fn init(allocator: mem.Allocator, config: Config) !App {
         const tools = try createTools(allocator);
@@ -394,6 +402,16 @@ pub const App = struct {
         // Create LLM provider based on config
         const provider = try llm_provider_module.createProvider(config.provider, allocator, config);
 
+        // Initialize agent system
+        var agent_registry = agents_module.AgentRegistry.init(allocator);
+        errdefer agent_registry.deinit();
+
+        var loader = agent_loader.AgentLoader.init(allocator, &agent_registry);
+        errdefer loader.deinit();
+
+        // Load all agents (native + markdown)
+        try loader.loadAllAgents();
+
         var app = App{
             .allocator = allocator,
             .config = config,
@@ -413,6 +431,9 @@ pub const App = struct {
             .vector_store = vector_store_opt,
             .embedder = embedder_opt,
             .indexing_queue = indexing_queue_opt,
+            .agent_registry = agent_registry,
+            .agent_loader = loader,
+            .agent_builder = null,
         };
 
         // Add system prompt
@@ -440,6 +461,7 @@ pub const App = struct {
             .vector_store = self.vector_store,
             .embedder = self.embedder,
             .indexing_queue = self.indexing_queue,
+            .agent_registry = &self.agent_registry,
         };
 
         // No background worker thread - GraphRAG now runs sequentially after each response
@@ -907,12 +929,13 @@ pub const App = struct {
         // Set up agent progress streaming for sub-agents (like file curator)
         var agent_progress_ctx = ProgressDisplayContext{
             .app = self,
-            .task_name = "File Curator", // Default agent name (could be passed from tool)
+            .task_name = try self.allocator.dupe(u8, "Agent Analysis"), // Generic default (will be updated by run_agent tool)
             .task_icon = "🤔", // Default icon for file analysis
             .start_time = std.time.milliTimestamp(), // Start tracking execution time
         };
         defer agent_progress_ctx.thinking_buffer.deinit(self.allocator);
         defer agent_progress_ctx.content_buffer.deinit(self.allocator);
+        defer self.allocator.free(agent_progress_ctx.task_name);
 
         self.app_context.agent_progress_callback = agentProgressCallback;
         self.app_context.agent_progress_user_data = &agent_progress_ctx;
@@ -1062,7 +1085,18 @@ pub const App = struct {
         }
 
         if (self.embedder) |emb| {
-            emb.deinit();
+            // Clean up the underlying client first
+            switch (emb.*) {
+                .ollama => |client| {
+                    client.deinit();
+                    self.allocator.destroy(client);
+                },
+                .lmstudio => |client| {
+                    client.deinit();
+                    self.allocator.destroy(client);
+                },
+            }
+            // Then destroy the embedder wrapper
             self.allocator.destroy(emb);
         }
 
@@ -1070,6 +1104,15 @@ pub const App = struct {
         if (self.config_editor) |*editor| {
             editor.deinit();
         }
+
+        // Clean up agent builder if active
+        if (self.agent_builder) |*builder| {
+            builder.deinit();
+        }
+
+        // Clean up agent system
+        self.agent_loader.deinit();
+        self.agent_registry.deinit();
 
         // Clean up config (App owns it)
         self.config.deinit(self.allocator);
@@ -1165,6 +1208,57 @@ pub const App = struct {
                 }
 
                 continue; // Skip normal app logic - editor owns the screen
+            }
+
+            // AGENT BUILDER MODE (modal - similar to config editor)
+            if (self.agent_builder) |*builder| {
+                // Render builder
+                var stdout_buffer: [8192]u8 = undefined;
+                var buffered_writer = ui.BufferedStdoutWriter.init(&stdout_buffer);
+                const writer = buffered_writer.writer();
+
+                try agent_builder_renderer.render(
+                    builder,
+                    writer,
+                    self.terminal_size.width,
+                    self.terminal_size.height,
+                );
+                try buffered_writer.flush();
+
+                // Wait for input (blocking)
+                var read_buffer: [128]u8 = undefined;
+                const bytes_read = ui.c.read(ui.c.STDIN_FILENO, &read_buffer, read_buffer.len);
+
+                if (bytes_read > 0) {
+                    const input = read_buffer[0..@intCast(bytes_read)];
+                    const result = try agent_builder_input.handleInput(builder, input);
+
+                    switch (result) {
+                        .save_and_close => {
+                            // Save agent
+                            agent_builder_input.saveAgent(builder) catch |err| {
+                                std.debug.print("Failed to save agent: {}\n", .{err});
+                                // Show error to user (TODO: add error display)
+                            };
+
+                            // Close builder
+                            builder.deinit();
+                            self.agent_builder = null;
+
+                            // Reload agents to include the new one
+                            try self.agent_loader.loadAllAgents();
+                        },
+                        .cancel => {
+                            // Close without saving
+                            builder.deinit();
+                            self.agent_builder = null;
+                        },
+                        .redraw, .@"continue" => {
+                            // Just re-render next iteration
+                        },
+                    }
+                }
+                continue; // Skip normal app rendering
             }
 
             // Handle pending tool executions using state machine (async - doesn't block input)

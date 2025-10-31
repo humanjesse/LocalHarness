@@ -578,6 +578,17 @@ pub fn handleInput(
                         return false;
                     }
 
+                    // Check for /agents command
+                    if (mem.eql(u8, app.input_buffer.items, "/agents")) {
+                        const agent_builder_state = @import("agent_builder_state.zig");
+                        app.agent_builder = try agent_builder_state.AgentBuilderState.init(
+                            app.allocator,
+                        );
+                        app.input_buffer.clearRetainingCapacity();
+                        should_redraw.* = true;
+                        return false;
+                    }
+
                     // Don't send new messages while streaming is active
                     // User can type, but the message won't be sent until current stream finishes
                     if (app.streaming_active) {

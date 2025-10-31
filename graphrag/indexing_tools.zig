@@ -234,16 +234,53 @@ fn executeCreateEdge(
 
     // Use GraphBuilder's createEdge method (handles validation and duplicate detection)
     context.graph_builder.createEdge(arguments) catch |err| {
-        const msg = switch (err) {
-            error.NodeNotFound => try std.fmt.allocPrint(
+        // Parse edge to get node names for better error messages
+        var edge = Edge.fromToolCallArgs(allocator, arguments) catch |parse_err| {
+            const msg = try std.fmt.allocPrint(
                 allocator,
-                "Edge references unknown node. Both nodes must exist before creating edge.",
-                .{},
-            ),
+                "Failed to parse edge arguments: {}",
+                .{parse_err},
+            );
+            defer allocator.free(msg);
+            context.stats.errors += 1;
+            return IndexingToolResult.err(allocator, msg);
+        };
+        defer edge.deinit(allocator);
+
+        const msg = switch (err) {
+            error.NodeNotFound => blk: {
+                // Get list of valid node names for helpful error
+                const valid_nodes = try context.graph_builder.getNodeNamesList();
+                defer allocator.free(valid_nodes);
+
+                // Check which node(s) don't exist
+                const from_exists = context.graph_builder.hasNode(edge.from_node);
+                const to_exists = context.graph_builder.hasNode(edge.to_node);
+
+                if (!from_exists and !to_exists) {
+                    break :blk try std.fmt.allocPrint(
+                        allocator,
+                        "Cannot create edge: BOTH nodes not found!\n  from_node='{s}' ❌\n  to_node='{s}' ❌\n  Valid nodes: {s}",
+                        .{ edge.from_node, edge.to_node, valid_nodes },
+                    );
+                } else if (!from_exists) {
+                    break :blk try std.fmt.allocPrint(
+                        allocator,
+                        "Cannot create edge: from_node='{s}' not found ❌\n  Valid nodes: {s}",
+                        .{ edge.from_node, valid_nodes },
+                    );
+                } else {
+                    break :blk try std.fmt.allocPrint(
+                        allocator,
+                        "Cannot create edge: to_node='{s}' not found ❌\n  Valid nodes: {s}",
+                        .{ edge.to_node, valid_nodes },
+                    );
+                }
+            },
             error.InvalidRelationshipType => try std.fmt.allocPrint(
                 allocator,
-                "Invalid relationship type. Use: calls, imports, references, or relates_to",
-                .{},
+                "Invalid relationship type: '{s}'. Use: calls, imports, references, or relates_to",
+                .{edge.relationship.toString()},
             ),
             else => try std.fmt.allocPrint(
                 allocator,
@@ -303,11 +340,11 @@ pub fn getCreateEdgeDefinition(allocator: std.mem.Allocator) !IndexingToolDefini
                     \\  "properties": {
                     \\    "from_node": {
                     \\      "type": "string",
-                    \\      "description": "From"
+                    \\      "description": "Source node name (exact 'name' field from JSON)"
                     \\    },
                     \\    "to_node": {
                     \\      "type": "string",
-                    \\      "description": "To"
+                    \\      "description": "Target node name (exact 'name' field from JSON)"
                     \\    },
                     \\    "relationship": {
                     \\      "type": "string",

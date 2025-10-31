@@ -51,8 +51,9 @@ Secondary agentic loop that builds knowledge graphs from read files to compress 
 
 **Phase 2: Edge Creation (Fresh Context)**
 - Phase 1 history cleared - agent receives fresh context
-- Agent receives: System prompt + extracted nodes + document (for reference)
+- Agent receives: System prompt + extracted nodes (as JSON) + document (for reference)
 - Task: Map relationships between entities
+- Nodes passed as JSON array with explicit field structure for zero ambiguity
 - Iterates until completion
 - Tools: `create_edge`
 
@@ -66,9 +67,10 @@ Secondary agentic loop that builds knowledge graphs from read files to compress 
 
 ### 3. Graph Builder (`graphrag/graph_builder.zig`)
 In-memory graph construction during indexing:
+- Nodes/edges stored in HashMap/ArrayList (RAM only during Phase 1 & 2)
 - Validates edges reference existing nodes
 - Idempotent operations (duplicates ignored)
-- Prepares for vector DB storage
+- Batch storage to zvdb after Phase 2 completes (not during tool calls)
 
 ### 4. Embeddings (`embedder_interface.zig`)
 Unified embeddings interface with full provider support:
