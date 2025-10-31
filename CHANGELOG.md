@@ -248,7 +248,7 @@ Turn 2: User follow-up
 ```
 
 **Files Modified:**
-- `agents/file_curator.zig` (+160 lines) - Dual-mode agent support
+- `agents_hardcoded/file_curator.zig` (+160 lines) - Dual-mode agent support
 - `tools/read_file.zig` (complete rewrite) - Smart auto-detection
 - `tools.zig` (-1 tool import) - Registry cleanup
 - `config.zig` (+2 fields) - Threshold configuration

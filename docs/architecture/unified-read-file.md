@@ -125,7 +125,7 @@ Result: 140 lines shown (88% reduction, structural overview)
 
 ### Files Changed
 
-#### 1. `agents/file_curator.zig`
+#### 1. `agents_hardcoded/file_curator.zig`
 **Key Components:**
 - `CURATOR_SYSTEM_PROMPT` - guides LLM to filter by relevance (conversation-aware) or structure (fallback)
 - `curateForRelevance()` - public API for conversation-aware curation (works for all file sizes)
@@ -706,7 +706,7 @@ The curated mode returns structured JSON:
 
 ### Code Locations
 
-- `agents/file_curator.zig` - Core curation agent
+- `agents_hardcoded/file_curator.zig` - Core curation agent
 - `tools/read_file.zig` - Unified smart tool
 - `config.zig` - Threshold configuration
 

@@ -37,7 +37,7 @@ Runs agents in isolation:
 - **Statistics tracking**: Iterations used, tool calls made, execution time
 - **Streaming support**: Progress callbacks for UI updates
 
-### 4. `agents/file_curator.zig` - First Concrete Agent
+### 4. `agents_hardcoded/file_curator.zig` - First Concrete Agent
 
 Analyzes files and curates important line ranges:
 
@@ -114,7 +114,7 @@ GraphRAG Integration (app_graphrag.zig)
 
 Adding new agents is straightforward:
 
-1. Create `agents/my_agent.zig`
+1. Create `agents_hardcoded/my_agent.zig`
 2. Implement `getDefinition()` and `execute()`
 3. Define capabilities
 4. Use from tools or app logic

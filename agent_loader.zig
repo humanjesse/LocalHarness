@@ -3,7 +3,7 @@ const std = @import("std");
 const agents_module = @import("agents.zig");
 const agent_writer = @import("agent_writer.zig");
 const agent_executor = @import("agent_executor.zig");
-const file_curator = @import("agents/file_curator.zig");
+const file_curator = @import("agents_hardcoded/file_curator.zig");
 
 const AgentDefinition = agents_module.AgentDefinition;
 const AgentRegistry = agents_module.AgentRegistry;

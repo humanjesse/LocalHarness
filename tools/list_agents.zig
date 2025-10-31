@@ -90,9 +90,12 @@ pub fn execute(
         try writer.writeAll("\nUse 'run_agent(agent=\"name\", task=\"...\")' to execute an agent.\n");
     }
 
+    const output_slice = try output.toOwnedSlice(allocator);
+    defer allocator.free(output_slice);  // Free after ToolResult.ok() dups it
+
     return try ToolResult.ok(
         allocator,
-        try output.toOwnedSlice(allocator),
+        output_slice,
         start_time,
         null,
     );

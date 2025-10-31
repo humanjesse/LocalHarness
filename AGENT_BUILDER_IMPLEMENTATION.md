@@ -335,9 +335,9 @@ Once integrated, test in this order:
 │           ▲                    ▲                        │
 │           │                    │                        │
 │     ┌─────┴─────┐      ┌──────┴──────┐               │
-│     │  agents/  │      │   agents/   │               │
-│     │  *.zig    │      │   *.md      │               │
-│     │ (native)  │      │ (markdown)  │               │
+│     │  agents_  │      │   agents/   │               │
+│     │ hardcoded/│      │   *.md      │               │
+│     │  *.zig    │      │ (markdown)  │               │
 │     └───────────┘      └──────────────┘               │
 └─────────────────────────────────────────────────────────┘
 

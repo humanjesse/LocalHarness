@@ -5,7 +5,7 @@ const permission = @import("../permission.zig");
 const context_module = @import("../context.zig");
 const tools_module = @import("../tools.zig");
 const agents_module = @import("../agents.zig");
-const file_curator = @import("../agents/file_curator.zig");
+const file_curator = @import("../agents_hardcoded/file_curator.zig");
 
 const AppContext = context_module.AppContext;
 const ToolDefinition = tools_module.ToolDefinition;
