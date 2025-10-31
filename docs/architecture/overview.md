@@ -2,7 +2,7 @@
 
 ## Introduction
 
-Local Harness is a fast, lightweight terminal chat interface for Ollama written in Zig. This document provides a high-level overview of the system architecture.
+Local Harness is a fast, lightweight terminal chat interface for local LLMs (Ollama, LM Studio) written in Zig. This document provides a high-level overview of the system architecture.
 
 ## Core Design Principles
 

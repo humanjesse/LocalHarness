@@ -50,14 +50,16 @@ Analyzes files and curates important line ranges:
   - 16k context window
   - No extended thinking
 
-### 5. `tools/read_file_curated.zig` - Agent-Using Tool
+### 5. `tools/read_file.zig` - Unified File Reading with Agent Integration
 
-First tool to leverage the agent system:
+Smart file reading tool with automatic mode detection:
 
-- **Reads file** → **Invokes file curator agent** → **Parses curation** → **Formats output**
-- **Fallback**: Returns full file if curation fails
-- **GraphRAG integration**: Still indexes FULL file content (not curated view)
-- **Context efficiency**: Main conversation only sees curated ~30-50% of file
+- **Small files (<100 lines)**: Returns full content directly
+- **Medium files (100-500 lines)**: Invokes file curator agent for context-aware curation
+- **Large files (>500 lines)**: Extracts structure only (imports, types, function signatures)
+- **Fallback**: Returns full file if agent fails
+- **GraphRAG integration**: Always indexes FULL file content (not curated view)
+- **Context efficiency**: Main conversation only sees curated output (~30-50% for medium, ~12% for large files)
 
 ## Architecture Principles
 

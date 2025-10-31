@@ -22,7 +22,6 @@ Contributing to Local Harness:
 
 - [Deployment](development/deployment.md) - Release and deployment process
 - [Zig HTTP Client](development/zig-http-client.md) - Working with Zig's HTTP client
-- [Contributing](development/contributing.md) - How to contribute
 
 ## Architecture
 
@@ -56,6 +55,8 @@ localharness/
 ├── app.zig                # Core application
 ├── ui.zig                 # Terminal UI
 ├── ollama.zig             # Ollama API client
+├── lmstudio.zig           # LM Studio API client
+├── llm_provider.zig       # Provider abstraction layer
 ├── tools.zig              # Tool definitions
 ├── permission.zig         # Permission system
 └── docs/                  # Additional documentation (you are here)
@@ -67,6 +68,5 @@ localharness/
 
 ## Getting Help
 
-- **Issues:** https://github.com/humanjesse/localharness/issues
+- **Issues:** Report bugs and request features via GitHub Issues
 - **Discussions:** Use GitHub Discussions for questions
-- **Contributing:** See [Contributing Guide](development/contributing.md)

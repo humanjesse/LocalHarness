@@ -31,7 +31,7 @@ zig build
 
 - **Real-time streaming** with responsive, non-blocking UI
 - **Markdown rendering** - Code blocks, tables, lists, and emoji
-- **Tool calling** - 13 tools: read/write/edit files, search code, navigate directories, manage tasks
+- **Tool calling** - 15 tools: read/write/edit files, search code, navigate directories, manage tasks, run agents
 - **Experimental read file agent** - AI curates important file sections, reducing context
 - **GraphRAG** - Automatic knowledge graphs compress context (experimental, optional)
 - **Permission system** - Control tool access with persistent policies

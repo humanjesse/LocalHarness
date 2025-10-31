@@ -124,6 +124,10 @@ code here
 - **list_tasks**: View all tasks
 - **update_task**: Update task status
 
+#### Agent Tools
+- **run_agent**: Execute a custom agent by name with a given task prompt
+- **list_agents**: List all available custom agents and their capabilities
+
 **Example conversations:**
 ```
 You: "What files are in this project?"
