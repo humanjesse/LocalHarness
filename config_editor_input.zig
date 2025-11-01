@@ -208,7 +208,9 @@ fn handleEnterKey(state: *ConfigEditorState) !InputResult {
 /// Toggle a boolean field
 fn toggleField(state: *ConfigEditorState, field: *ConfigField) !void {
     const config = &state.temp_config;
+    const llm_provider = @import("llm_provider.zig");
 
+    // Check if this is a shared toggle field
     if (std.mem.eql(u8, field.key, "enable_thinking")) {
         config.enable_thinking = !config.enable_thinking;
     } else if (std.mem.eql(u8, field.key, "graph_rag_enabled")) {
@@ -217,6 +219,13 @@ fn toggleField(state: *ConfigEditorState, field: *ConfigField) !void {
         config.show_tool_json = !config.show_tool_json;
     } else if (std.mem.eql(u8, field.key, "indexing_enable_thinking")) {
         config.indexing_enable_thinking = !config.indexing_enable_thinking;
+    } else {
+        // Try provider-specific toggle fields
+        const current_value = config.getProviderField(config.provider, field.key);
+        if (current_value == .boolean) {
+            const new_value = llm_provider.ConfigValue{ .boolean = !current_value.boolean };
+            try config.setProviderField(state.allocator, config.provider, field.key, new_value);
+        }
     }
 }
 
@@ -398,8 +407,16 @@ fn setRadioValue(state: *ConfigEditorState, key: []const u8, value: []const u8) 
     const config = &state.temp_config;
 
     if (std.mem.eql(u8, key, "provider")) {
+        const old_provider = config.provider;
+        const changed = !std.mem.eql(u8, old_provider, value);
+
         state.allocator.free(config.provider);
         config.provider = try state.allocator.dupe(u8, value);
+
+        // Rebuild sections when provider changes to show provider-specific fields
+        if (changed) {
+            try state.rebuildSections();
+        }
     }
 }
 
@@ -407,11 +424,16 @@ fn setRadioValue(state: *ConfigEditorState, key: []const u8, value: []const u8) 
 fn getCurrentTextValue(state: *const ConfigEditorState, key: []const u8) []const u8 {
     const config = &state.temp_config;
 
-    if (std.mem.eql(u8, key, "ollama_host")) return config.ollama_host;
-    if (std.mem.eql(u8, key, "lmstudio_host")) return config.lmstudio_host;
+    // Shared fields
     if (std.mem.eql(u8, key, "model")) return config.model;
     if (std.mem.eql(u8, key, "embedding_model")) return config.embedding_model;
     if (std.mem.eql(u8, key, "indexing_model")) return config.indexing_model;
+
+    // Try provider-specific fields
+    const provider_value = config.getProviderField(config.provider, key);
+    if (provider_value == .text) {
+        return provider_value.text;
+    }
 
     return "";
 }
@@ -419,14 +441,10 @@ fn getCurrentTextValue(state: *const ConfigEditorState, key: []const u8) []const
 /// Set text value in config
 fn setTextValue(state: *ConfigEditorState, key: []const u8, value: []const u8) !void {
     const config = &state.temp_config;
+    const llm_provider = @import("llm_provider.zig");
 
-    if (std.mem.eql(u8, key, "ollama_host")) {
-        state.allocator.free(config.ollama_host);
-        config.ollama_host = try state.allocator.dupe(u8, value);
-    } else if (std.mem.eql(u8, key, "lmstudio_host")) {
-        state.allocator.free(config.lmstudio_host);
-        config.lmstudio_host = try state.allocator.dupe(u8, value);
-    } else if (std.mem.eql(u8, key, "model")) {
+    // Shared fields
+    if (std.mem.eql(u8, key, "model")) {
         state.allocator.free(config.model);
         config.model = try state.allocator.dupe(u8, value);
     } else if (std.mem.eql(u8, key, "embedding_model")) {
@@ -456,6 +474,10 @@ fn setTextValue(state: *ConfigEditorState, key: []const u8, value: []const u8) !
         } else {
             config.indexing_repeat_penalty = std.fmt.parseFloat(f32, value) catch null;
         }
+    } else {
+        // Try provider-specific text fields
+        const new_value = llm_provider.ConfigValue{ .text = value };
+        try config.setProviderField(state.allocator, config.provider, key, new_value);
     }
 }
 

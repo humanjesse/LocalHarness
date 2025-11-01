@@ -95,6 +95,25 @@ fn drawCentered(writer: anytype, text: []const u8, terminal_width: u16, y: usize
     try writer.print("\x1b[{d};{d}H{s}", .{ y, start_x, text });
 }
 
+/// Calculate visual width of a UTF-8 string (counts codepoints, not bytes)
+fn visualWidth(text: []const u8) usize {
+    var width: usize = 0;
+    var i: usize = 0;
+
+    while (i < text.len) {
+        const byte = text[i];
+
+        // Count UTF-8 characters by checking the leading byte
+        // UTF-8 continuation bytes start with 10xxxxxx, we skip those
+        if ((byte & 0b1100_0000) != 0b1000_0000) {
+            width += 1;
+        }
+        i += 1;
+    }
+
+    return width;
+}
+
 /// Truncate text to fit within max_width, adding ellipsis if needed
 fn truncateText(text: []const u8, max_width: usize, buffer: []u8) []const u8 {
     if (text.len <= max_width) {
@@ -175,7 +194,8 @@ fn drawField(
     }
 
     // Pad remaining space and draw right border
-    const used_width = display_content.len + 2; // +2 for "│ " prefix
+    // Use visual width (UTF-8 codepoint count) instead of byte length
+    const used_width = visualWidth(display_content) + 2; // +2 for "│ " prefix
     const padding_needed = box_width -| used_width -| 1; // -1 for right border
     for (0..padding_needed) |_| {
         try writer.writeAll(" ");
@@ -190,7 +210,8 @@ fn drawField(
         try writer.print("\x1b[{d};{d}H│ \x1b[2m{s}\x1b[0m", .{ y + 1, box_x, display_help });
 
         // Pad and draw right border for help text line
-        const help_used_width = display_help.len + 2; // +2 for "│ " prefix
+        // Use visual width (UTF-8 codepoint count) instead of byte length
+        const help_used_width = visualWidth(display_help) + 2; // +2 for "│ " prefix
         const help_padding_needed = box_width -| help_used_width -| 1;
         for (0..help_padding_needed) |_| {
             try writer.writeAll(" ");
@@ -285,10 +306,17 @@ fn getFieldValue(state: *const ConfigEditorState, key: []const u8) []const u8 {
 fn getFieldBoolValue(state: *const ConfigEditorState, key: []const u8) bool {
     const config = &state.temp_config;
 
+    // Check global boolean fields first
     if (std.mem.eql(u8, key, "enable_thinking")) return config.enable_thinking;
     if (std.mem.eql(u8, key, "graph_rag_enabled")) return config.graph_rag_enabled;
     if (std.mem.eql(u8, key, "show_tool_json")) return config.show_tool_json;
     if (std.mem.eql(u8, key, "indexing_enable_thinking")) return config.indexing_enable_thinking;
+
+    // Try provider-specific boolean fields
+    const provider_value = config.getProviderField(config.provider, key);
+    if (provider_value == .boolean) {
+        return provider_value.boolean;
+    }
 
     return false;
 }

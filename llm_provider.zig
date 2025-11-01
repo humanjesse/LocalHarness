@@ -8,6 +8,30 @@ pub const ConfigWarning = struct {
     message: []const u8,
 };
 
+/// Field types for provider-specific configuration
+pub const FieldType = enum {
+    text_input,
+    toggle,
+    number_input,
+};
+
+/// Configuration value union for provider fields
+pub const ConfigValue = union(enum) {
+    text: []const u8,
+    boolean: bool,
+    number: i64,
+    nullable_number: ?i64,
+};
+
+/// Provider-specific configuration field definition
+pub const ProviderConfigField = struct {
+    key: []const u8, // Field identifier (e.g., "host", "auto_start")
+    label: []const u8, // Display label
+    field_type: FieldType, // UI field type
+    help_text: []const u8, // Help description
+    default_value: ConfigValue, // Default value
+};
+
 /// Capabilities that different providers may or may not support
 pub const ProviderCapabilities = struct {
     /// Supports extended thinking mode (Ollama-specific)
@@ -39,6 +63,9 @@ pub const ProviderCapabilities = struct {
 
     /// Configuration warnings specific to this provider
     config_warnings: []const ConfigWarning,
+
+    /// Provider-specific configuration fields for UI
+    config_fields: []const ProviderConfigField,
 };
 
 /// Centralized registry of all supported providers and their capabilities
@@ -55,6 +82,29 @@ pub const ProviderRegistry = struct {
         .name = "Ollama",
         .default_port = 11434,
         .config_warnings = &[_]ConfigWarning{},
+        .config_fields = &[_]ProviderConfigField{
+            .{
+                .key = "host",
+                .label = "Ollama Host",
+                .field_type = .text_input,
+                .help_text = "HTTP endpoint for Ollama server (e.g., http://localhost:11434)",
+                .default_value = .{ .text = "http://localhost:11434" },
+            },
+            .{
+                .key = "endpoint",
+                .label = "API Endpoint",
+                .field_type = .text_input,
+                .help_text = "Ollama API path (usually /api/chat)",
+                .default_value = .{ .text = "/api/chat" },
+            },
+            .{
+                .key = "keep_alive",
+                .label = "Model Keep Alive",
+                .field_type = .text_input,
+                .help_text = "How long to keep model loaded (e.g., 15m, 1h, -1 for infinite)",
+                .default_value = .{ .text = "15m" },
+            },
+        },
     };
 
     /// LM Studio provider capabilities
@@ -70,6 +120,36 @@ pub const ProviderRegistry = struct {
         .default_port = 1234,
         .config_warnings = &[_]ConfigWarning{
             .{ .message = "Context size must be set in LM Studio UI." },
+        },
+        .config_fields = &[_]ProviderConfigField{
+            .{
+                .key = "host",
+                .label = "LM Studio Host",
+                .field_type = .text_input,
+                .help_text = "HTTP endpoint for LM Studio server (e.g., http://localhost:1234)",
+                .default_value = .{ .text = "http://localhost:1234" },
+            },
+            .{
+                .key = "auto_start",
+                .label = "Auto-Start Server",
+                .field_type = .toggle,
+                .help_text = "Automatically start LM Studio API server if not running (requires LM Studio app to be open)",
+                .default_value = .{ .boolean = true },
+            },
+            .{
+                .key = "auto_load_model",
+                .label = "Auto-Load Model",
+                .field_type = .toggle,
+                .help_text = "Automatically load model if none is loaded",
+                .default_value = .{ .boolean = true },
+            },
+            .{
+                .key = "gpu_offload",
+                .label = "GPU Offload",
+                .field_type = .text_input,
+                .help_text = "GPU acceleration: 'auto', 'max', or 0.0-1.0",
+                .default_value = .{ .text = "auto" },
+            },
         },
     };
 
@@ -384,6 +464,60 @@ pub fn createProvider(
             ),
         };
     } else if (std.mem.eql(u8, provider_type, "lmstudio")) {
+        // Try to initialize LM Studio manager for auto-management
+        const lmstudio_manager = @import("lmstudio_manager.zig");
+        var manager = lmstudio_manager.LMStudioManager.init(allocator) catch |err| {
+            std.debug.print("⚠ LM Studio CLI not found: {s}\n", .{@errorName(err)});
+            std.debug.print("   Auto-management disabled. Install with: npx lmstudio install-cli\n", .{});
+            std.debug.print("   Continuing without auto-management...\n\n", .{});
+
+            return LLMProvider{
+                .lmstudio = LMStudioProvider.init(
+                    allocator,
+                    config.lmstudio_host,
+                ),
+            };
+        };
+
+        // Auto-start server if configured
+        if (config.lmstudio_auto_start) {
+            const server_running = manager.isServerRunning() catch false;
+            if (!server_running) {
+                std.debug.print("🚀 Starting LM Studio server...\n", .{});
+                manager.startServer() catch |err| {
+                    std.debug.print("❌ Failed to start server: {s}\n", .{@errorName(err)});
+                    std.debug.print("   Please start LM Studio manually.\n\n", .{});
+                };
+
+                // Wait briefly for server to start
+                std.Thread.sleep(2 * std.time.ns_per_s);
+            } else {
+                std.debug.print("✓ LM Studio server already running\n", .{});
+            }
+        }
+
+        // Auto-load model if configured
+        if (config.lmstudio_auto_load_model) {
+            const loaded = manager.listLoadedModels() catch &[_]lmstudio_manager.LoadedModelInfo{};
+            defer manager.freeLoadedModels(loaded);
+
+            if (loaded.len == 0) {
+                std.debug.print("📦 Loading model: {s}...\n", .{config.model});
+                manager.loadModel(
+                    config.model,
+                    config.lmstudio_gpu_offload,
+                ) catch |err| {
+                    std.debug.print("❌ Failed to load model: {s}\n", .{@errorName(err)});
+                    std.debug.print("   Please load a model in LM Studio manually.\n\n", .{});
+                };
+            } else {
+                std.debug.print("✓ Model already loaded: {s}\n", .{loaded[0].identifier});
+            }
+        }
+
+        // Clean up manager (we don't need to keep it around after initialization)
+        manager.deinit();
+
         return LLMProvider{
             .lmstudio = LMStudioProvider.init(
                 allocator,

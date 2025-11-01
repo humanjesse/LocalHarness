@@ -79,6 +79,9 @@ pub const ConfigEditorState = struct {
             .ollama_host = try allocator.dupe(u8, current_config.ollama_host),
             .ollama_endpoint = try allocator.dupe(u8, current_config.ollama_endpoint),
             .lmstudio_host = try allocator.dupe(u8, current_config.lmstudio_host),
+            .lmstudio_auto_start = current_config.lmstudio_auto_start,
+            .lmstudio_auto_load_model = current_config.lmstudio_auto_load_model,
+            .lmstudio_gpu_offload = try allocator.dupe(u8, current_config.lmstudio_gpu_offload),
             .model = try allocator.dupe(u8, current_config.model),
             .model_keep_alive = try allocator.dupe(u8, current_config.model_keep_alive),
             .num_ctx = current_config.num_ctx,
@@ -132,6 +135,9 @@ pub const ConfigEditorState = struct {
 
         // Free sections and fields
         for (self.sections) |section| {
+            // Free section title (dynamically allocated in buildProviderSpecificSection)
+            self.allocator.free(section.title);
+
             for (section.fields) |field| {
                 if (field.edit_buffer) |buffer| {
                     self.allocator.free(buffer);
@@ -188,14 +194,37 @@ pub const ConfigEditorState = struct {
             }
         }
     }
+
+    /// Rebuild sections (call when provider changes to update provider-specific fields)
+    pub fn rebuildSections(self: *ConfigEditorState) !void {
+        // Free old sections
+        for (self.sections) |section| {
+            self.allocator.free(section.title);
+            for (section.fields) |field| {
+                if (field.edit_buffer) |buffer| {
+                    self.allocator.free(buffer);
+                }
+                if (field.options) |options| {
+                    self.allocator.free(options);
+                }
+            }
+            self.allocator.free(section.fields);
+        }
+        self.allocator.free(self.sections);
+
+        // Rebuild sections with new provider
+        self.sections = try buildFormSections(self.allocator, &self.temp_config);
+
+        // Reset focused field to top
+        self.focused_field_index = 0;
+    }
 };
 
 /// Build the form structure from config
 fn buildFormSections(allocator: std.mem.Allocator, temp_config: *const config_module.Config) ![]ConfigSection {
-    _ = temp_config; // Reserved for future use (initializing field values from config)
     var sections = std.ArrayListUnmanaged(ConfigSection){};
 
-    // Section 1: Provider Settings
+    // Section 1: Provider Selection
     {
         var fields = std.ArrayListUnmanaged(ConfigField){};
 
@@ -210,23 +239,7 @@ fn buildFormSections(allocator: std.mem.Allocator, temp_config: *const config_mo
             .options = provider_identifiers,
         });
 
-        // Ollama host (text input)
-        try fields.append(allocator, .{
-            .label = "Ollama Host",
-            .field_type = .text_input,
-            .key = "ollama_host",
-            .help_text = "HTTP endpoint for Ollama server",
-        });
-
-        // LM Studio host (text input)
-        try fields.append(allocator, .{
-            .label = "LM Studio Host",
-            .field_type = .text_input,
-            .key = "lmstudio_host",
-            .help_text = "HTTP endpoint for LM Studio server",
-        });
-
-        // Model (text input)
+        // Model (text input) - shared across all providers
         try fields.append(allocator, .{
             .label = "Default Model",
             .field_type = .text_input,
@@ -251,12 +264,18 @@ fn buildFormSections(allocator: std.mem.Allocator, temp_config: *const config_mo
         });
 
         try sections.append(allocator, .{
-            .title = "Provider Settings",
+            .title = try allocator.dupe(u8, "Provider Selection"),
             .fields = try fields.toOwnedSlice(allocator),
         });
     }
 
-    // Section 2: Features
+    // Section 2: Provider-Specific Settings (dynamically built)
+    {
+        const provider_section = try buildProviderSpecificSection(allocator, temp_config);
+        try sections.append(allocator, provider_section);
+    }
+
+    // Section 3: Features
     {
         var fields = std.ArrayListUnmanaged(ConfigField){};
 
@@ -289,12 +308,12 @@ fn buildFormSections(allocator: std.mem.Allocator, temp_config: *const config_mo
         });
 
         try sections.append(allocator, .{
-            .title = "Features",
+            .title = try allocator.dupe(u8, "Features"),
             .fields = try fields.toOwnedSlice(allocator),
         });
     }
 
-    // Section 3: Advanced
+    // Section 4: Advanced Settings
     {
         var fields = std.ArrayListUnmanaged(ConfigField){};
 
@@ -341,10 +360,51 @@ fn buildFormSections(allocator: std.mem.Allocator, temp_config: *const config_mo
         });
 
         try sections.append(allocator, .{
-            .title = "Advanced Settings",
+            .title = try allocator.dupe(u8, "Advanced Settings"),
             .fields = try fields.toOwnedSlice(allocator),
         });
     }
 
     return sections.toOwnedSlice(allocator);
+}
+
+/// Build provider-specific section dynamically from registry
+fn buildProviderSpecificSection(allocator: std.mem.Allocator, temp_config: *const config_module.Config) !ConfigSection {
+    const llm_provider = @import("llm_provider.zig");
+
+    // Get capabilities for the selected provider
+    const caps = llm_provider.ProviderRegistry.get(temp_config.provider) orelse {
+        // If provider not found, return empty section
+        return ConfigSection{
+            .title = "Provider Settings",
+            .fields = &[_]ConfigField{},
+        };
+    };
+
+    var fields = std.ArrayListUnmanaged(ConfigField){};
+
+    // Build fields from registry config_fields
+    for (caps.config_fields) |field_def| {
+        // Map registry FieldType to config editor FieldType
+        const field_type: FieldType = switch (field_def.field_type) {
+            .text_input => .text_input,
+            .toggle => .toggle,
+            .number_input => .number_input,
+        };
+
+        try fields.append(allocator, .{
+            .label = field_def.label,
+            .field_type = field_type,
+            .key = field_def.key,
+            .help_text = field_def.help_text,
+        });
+    }
+
+    // Create section title with provider name
+    const section_title = try std.fmt.allocPrint(allocator, "{s} Settings", .{caps.name});
+
+    return ConfigSection{
+        .title = section_title,
+        .fields = try fields.toOwnedSlice(allocator),
+    };
 }

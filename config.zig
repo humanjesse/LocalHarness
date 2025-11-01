@@ -11,6 +11,9 @@ pub const Config = struct {
     ollama_host: []const u8 = "http://localhost:11434",
     ollama_endpoint: []const u8 = "/api/chat",
     lmstudio_host: []const u8 = "http://localhost:1234", // LM Studio default port
+    lmstudio_auto_start: bool = true, // Auto-start LM Studio server if not running
+    lmstudio_auto_load_model: bool = true, // Auto-load model if none is loaded
+    lmstudio_gpu_offload: []const u8 = "auto", // GPU offload: "auto", "max", or 0.0-1.0
     model: []const u8 = "qwen3-coder:30b",
     model_keep_alive: []const u8 = "15m", // How long to keep model in memory (e.g., "5m", "15m", or "-1" for infinite)
     num_ctx: usize = 128000, // Context window size in tokens (default: 128k for full conversation history)
@@ -134,11 +137,67 @@ pub const Config = struct {
         }
     }
 
+    /// Get the value of a provider-specific field
+    pub fn getProviderField(
+        self: *const Config,
+        provider: []const u8,
+        field_key: []const u8,
+    ) @import("llm_provider.zig").ConfigValue {
+        if (mem.eql(u8, provider, "ollama")) {
+            if (mem.eql(u8, field_key, "host")) return .{ .text = self.ollama_host };
+            if (mem.eql(u8, field_key, "endpoint")) return .{ .text = self.ollama_endpoint };
+            if (mem.eql(u8, field_key, "keep_alive")) return .{ .text = self.model_keep_alive };
+        } else if (mem.eql(u8, provider, "lmstudio")) {
+            if (mem.eql(u8, field_key, "host")) return .{ .text = self.lmstudio_host };
+            if (mem.eql(u8, field_key, "auto_start")) return .{ .boolean = self.lmstudio_auto_start };
+            if (mem.eql(u8, field_key, "auto_load_model")) return .{ .boolean = self.lmstudio_auto_load_model };
+            if (mem.eql(u8, field_key, "gpu_offload")) return .{ .text = self.lmstudio_gpu_offload };
+        }
+
+        // Return default empty value if not found
+        return .{ .text = "" };
+    }
+
+    /// Set the value of a provider-specific field
+    pub fn setProviderField(
+        self: *Config,
+        allocator: mem.Allocator,
+        provider: []const u8,
+        field_key: []const u8,
+        value: @import("llm_provider.zig").ConfigValue,
+    ) !void {
+        if (mem.eql(u8, provider, "ollama")) {
+            if (mem.eql(u8, field_key, "host")) {
+                allocator.free(self.ollama_host);
+                self.ollama_host = try allocator.dupe(u8, value.text);
+            } else if (mem.eql(u8, field_key, "endpoint")) {
+                allocator.free(self.ollama_endpoint);
+                self.ollama_endpoint = try allocator.dupe(u8, value.text);
+            } else if (mem.eql(u8, field_key, "keep_alive")) {
+                allocator.free(self.model_keep_alive);
+                self.model_keep_alive = try allocator.dupe(u8, value.text);
+            }
+        } else if (mem.eql(u8, provider, "lmstudio")) {
+            if (mem.eql(u8, field_key, "host")) {
+                allocator.free(self.lmstudio_host);
+                self.lmstudio_host = try allocator.dupe(u8, value.text);
+            } else if (mem.eql(u8, field_key, "auto_start")) {
+                self.lmstudio_auto_start = value.boolean;
+            } else if (mem.eql(u8, field_key, "auto_load_model")) {
+                self.lmstudio_auto_load_model = value.boolean;
+            } else if (mem.eql(u8, field_key, "gpu_offload")) {
+                allocator.free(self.lmstudio_gpu_offload);
+                self.lmstudio_gpu_offload = try allocator.dupe(u8, value.text);
+            }
+        }
+    }
+
     pub fn deinit(self: *Config, allocator: mem.Allocator) void {
         allocator.free(self.provider);
         allocator.free(self.ollama_host);
         allocator.free(self.ollama_endpoint);
         allocator.free(self.lmstudio_host);
+        allocator.free(self.lmstudio_gpu_offload);
         allocator.free(self.model);
         allocator.free(self.model_keep_alive);
         for (self.editor) |arg| {
@@ -163,6 +222,9 @@ const ConfigFile = struct {
     ollama_host: ?[]const u8 = null,
     ollama_endpoint: ?[]const u8 = null,
     lmstudio_host: ?[]const u8 = null,
+    lmstudio_auto_start: ?bool = null,
+    lmstudio_auto_load_model: ?bool = null,
+    lmstudio_gpu_offload: ?[]const u8 = null,
     model: ?[]const u8 = null,
     model_keep_alive: ?[]const u8 = null,
     num_ctx: ?usize = null,
@@ -207,6 +269,9 @@ pub fn loadConfigFromFile(allocator: mem.Allocator) !Config {
         .ollama_host = try allocator.dupe(u8, "http://localhost:11434"),
         .ollama_endpoint = try allocator.dupe(u8, "/api/chat"),
         .lmstudio_host = try allocator.dupe(u8, "http://localhost:1234"),
+        .lmstudio_auto_start = true,
+        .lmstudio_auto_load_model = true,
+        .lmstudio_gpu_offload = try allocator.dupe(u8, "auto"),
         .model = try allocator.dupe(u8, "qwen3-coder:30b"),
         .model_keep_alive = try allocator.dupe(u8, "15m"),
         .editor = default_editor,
@@ -288,6 +353,19 @@ pub fn loadConfigFromFile(allocator: mem.Allocator) !Config {
     if (parsed.value.lmstudio_host) |lmstudio_host| {
         allocator.free(config.lmstudio_host);
         config.lmstudio_host = try allocator.dupe(u8, lmstudio_host);
+    }
+
+    if (parsed.value.lmstudio_auto_start) |lmstudio_auto_start| {
+        config.lmstudio_auto_start = lmstudio_auto_start;
+    }
+
+    if (parsed.value.lmstudio_auto_load_model) |lmstudio_auto_load_model| {
+        config.lmstudio_auto_load_model = lmstudio_auto_load_model;
+    }
+
+    if (parsed.value.lmstudio_gpu_offload) |lmstudio_gpu_offload| {
+        allocator.free(config.lmstudio_gpu_offload);
+        config.lmstudio_gpu_offload = try allocator.dupe(u8, lmstudio_gpu_offload);
     }
 
     if (parsed.value.model) |model| {
