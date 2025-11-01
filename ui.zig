@@ -569,6 +569,10 @@ pub fn handleInput(
 
                     // Check for /config command
                     if (mem.eql(u8, app.input_buffer.items, "/config")) {
+                        // Deinit existing config editor if present
+                        if (app.config_editor) |*editor| {
+                            editor.deinit();
+                        }
                         app.config_editor = try config_editor_state.ConfigEditorState.init(
                             app.allocator,
                             &app.config,
@@ -581,6 +585,10 @@ pub fn handleInput(
                     // Check for /agents command
                     if (mem.eql(u8, app.input_buffer.items, "/agents")) {
                         const agent_builder_state = @import("agent_builder_state.zig");
+                        // Deinit existing agent builder if present
+                        if (app.agent_builder) |*builder| {
+                            builder.deinit();
+                        }
                         app.agent_builder = try agent_builder_state.AgentBuilderState.init(
                             app.allocator,
                         );
@@ -592,6 +600,10 @@ pub fn handleInput(
                     // Check for /help command
                     if (mem.eql(u8, app.input_buffer.items, "/help")) {
                         const help_state = @import("help_state.zig");
+                        // Deinit existing help viewer if present
+                        if (app.help_viewer) |*viewer| {
+                            viewer.deinit();
+                        }
                         app.help_viewer = try help_state.HelpState.init(
                             app.allocator,
                         );
