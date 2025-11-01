@@ -82,6 +82,7 @@ pub const AgentConfig = struct {
     description: []const u8,
     tools: []const []const u8,
     system_prompt: []const u8,
+    max_iterations: ?usize,
 
     pub fn deinit(self: *AgentConfig, allocator: std.mem.Allocator) void {
         allocator.free(self.name);
@@ -113,6 +114,16 @@ fn parseMarkdown(allocator: std.mem.Allocator, content: []const u8) !AgentConfig
     var description: ?[]const u8 = null;
     var tools = std.ArrayListUnmanaged([]const u8){};
     var system_prompt: ?[]const u8 = null;
+    var max_iterations: ?usize = null;
+
+    // Clean up on error
+    errdefer {
+        if (name) |n| allocator.free(n);
+        if (description) |d| allocator.free(d);
+        for (tools.items) |tool| allocator.free(tool);
+        tools.deinit(allocator);
+        if (system_prompt) |sp| allocator.free(sp);
+    }
 
     // Find frontmatter boundaries
     const first_delim = std.mem.indexOf(u8, content, "---") orelse return error.InvalidFormat;
@@ -152,6 +163,8 @@ fn parseMarkdown(allocator: std.mem.Allocator, content: []const u8) !AgentConfig
                         try tools.append(allocator, try allocator.dupe(u8, tool_trimmed));
                     }
                 }
+            } else if (std.mem.eql(u8, key, "max_iterations")) {
+                max_iterations = try std.fmt.parseInt(usize, value, 10);
             }
         }
     }
@@ -166,6 +179,7 @@ fn parseMarkdown(allocator: std.mem.Allocator, content: []const u8) !AgentConfig
         .description = description.?,
         .tools = try tools.toOwnedSlice(allocator),
         .system_prompt = system_prompt.?,
+        .max_iterations = max_iterations,
     };
 }
 

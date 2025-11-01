@@ -37,8 +37,8 @@ pub const AgentLoader = struct {
     pub fn deinit(self: *AgentLoader) void {
         // Clean up markdown agents
         for (self.loaded_agents.items) |*loaded| {
-            var config = loaded.config;
-            config.deinit(self.allocator);
+            var cfg = &loaded.config;
+            cfg.deinit(self.allocator);
         }
         self.loaded_agents.deinit(self.allocator);
 
@@ -55,8 +55,8 @@ pub const AgentLoader = struct {
     pub fn loadAllAgents(self: *AgentLoader) !void {
         // Clean up previously loaded markdown agents before reloading (prevents memory leaks)
         for (self.loaded_agents.items) |*loaded| {
-            var config = loaded.config;
-            config.deinit(self.allocator);
+            var cfg = &loaded.config;
+            cfg.deinit(self.allocator);
         }
         self.loaded_agents.clearRetainingCapacity();
 
@@ -129,11 +129,8 @@ pub const AgentLoader = struct {
     /// Load a single markdown agent
     fn loadSingleAgent(self: *AgentLoader, file_path: []const u8) !void {
         // Parse agent config from markdown
-        const config = try agent_writer.parseAgentFile(self.allocator, file_path);
-        errdefer {
-            var cfg = config;
-            cfg.deinit(self.allocator);
-        }
+        var config = try agent_writer.parseAgentFile(self.allocator, file_path);
+        errdefer config.deinit(self.allocator);
 
         // Create AgentDefinition from config
         const definition = try self.createDefinitionFromConfig(&config);
@@ -155,7 +152,7 @@ pub const AgentLoader = struct {
         // Build capabilities
         const capabilities = AgentCapabilities{
             .allowed_tools = config.tools,
-            .max_iterations = 10, // Default for markdown agents
+            .max_iterations = config.max_iterations orelse 25, // Default for markdown agents
             .temperature = 0.7,
             .num_ctx = null, // Use default
             .num_predict = -1,
@@ -366,8 +363,6 @@ fn createAgentReadmeIfNeeded(allocator: std.mem.Allocator, agent_dir: []const u8
                 \\- Agents are reloaded automatically when you save a new agent via `/agent`
                 \\
             );
-
-            std.debug.print("Created agent directory README: {s}\n", .{readme_path});
         } else {
             // Other error accessing the file - propagate it
             return err;

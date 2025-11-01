@@ -14,6 +14,7 @@ pub const ToolExecutionState = enum {
     evaluating_policy, // Checking if tool needs permission
     awaiting_permission, // Waiting for user permission response
     executing,         // Executing the approved tool
+    creating_denial_result, // Creating error result for denied permission
     completed,         // All tools in batch completed
 };
 
@@ -225,7 +226,7 @@ pub const ToolExecutor = struct {
                 const metadata = perm_manager.registry.getMetadata(tool_call.function.name).?;
 
                 if (user_choice == .deny) {
-                    // Denied
+                    // Denied - create error result for LLM
                     try perm_manager.audit_logger.log(
                         tool_call.function.name,
                         tool_call.function.arguments,
@@ -235,8 +236,8 @@ pub const ToolExecutor = struct {
                     );
                     // Note: eval_result.reason is a string literal, don't free it
                     self.pending_permission_eval = null;
-                    self.current_index += 1;
-                    self.state = .evaluating_policy;
+                    // Transition to denial result state (App will create error message)
+                    self.state = .creating_denial_result;
                     return .render_requested;
                 }
 
@@ -294,6 +295,13 @@ pub const ToolExecutor = struct {
                 // This state is handled by caller (App) since it needs access to App methods
                 // We just mark that we're ready to execute
                 // The actual execution happens in App, which then calls advanceAfterExecution()
+                return .render_requested;
+            },
+
+            .creating_denial_result => {
+                // This state is handled by caller (App) since it needs to create messages
+                // App will create error ToolResult and display message
+                // Then call advanceAfterExecution() to move to next tool
                 return .render_requested;
             },
 

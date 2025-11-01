@@ -34,6 +34,9 @@ const agent_loader = @import("agent_loader.zig");
 const agent_builder_state = @import("agent_builder_state.zig");
 const agent_builder_renderer = @import("agent_builder_renderer.zig");
 const agent_builder_input = @import("agent_builder_input.zig");
+const help_state = @import("help_state.zig");
+const help_renderer = @import("help_renderer.zig");
+const help_input = @import("help_input.zig");
 
 // Re-export types for convenience
 pub const Message = types.Message;
@@ -253,6 +256,8 @@ pub const App = struct {
     agent_registry: agents_module.AgentRegistry,
     agent_loader: agent_loader.AgentLoader,
     agent_builder: ?agent_builder_state.AgentBuilderState = null,
+    // Help viewer state (modal mode)
+    help_viewer: ?help_state.HelpState = null,
 
     pub fn init(allocator: mem.Allocator, config: Config) !App {
         const tools = try createTools(allocator);
@@ -1110,6 +1115,11 @@ pub const App = struct {
             builder.deinit();
         }
 
+        // Clean up help viewer if active
+        if (self.help_viewer) |*viewer| {
+            viewer.deinit();
+        }
+
         // Clean up agent system
         self.agent_loader.deinit();
         self.agent_registry.deinit();
@@ -1261,6 +1271,45 @@ pub const App = struct {
                 continue; // Skip normal app rendering
             }
 
+            // HELP VIEWER MODE (modal - simple read-only display)
+            if (self.help_viewer) |*viewer| {
+                // Render help
+                var stdout_buffer: [8192]u8 = undefined;
+                var buffered_writer = ui.BufferedStdoutWriter.init(&stdout_buffer);
+                const writer = buffered_writer.writer();
+
+                try help_renderer.render(
+                    viewer,
+                    writer,
+                    self.terminal_size.width,
+                    self.terminal_size.height,
+                );
+                try buffered_writer.flush();
+
+                // Wait for input (blocking)
+                var read_buffer: [128]u8 = undefined;
+                const bytes_read = ui.c.read(ui.c.STDIN_FILENO, &read_buffer, read_buffer.len);
+
+                if (bytes_read > 0) {
+                    const input = read_buffer[0..@intCast(bytes_read)];
+                    // Calculate visible lines for scrolling
+                    const visible_lines = self.terminal_size.height -| 6; // Account for borders and footer
+                    const result = try help_input.handleInput(viewer, input, visible_lines);
+
+                    switch (result) {
+                        .close => {
+                            // Close help viewer
+                            viewer.deinit();
+                            self.help_viewer = null;
+                        },
+                        .redraw, .@"continue" => {
+                            // Just re-render next iteration
+                        },
+                    }
+                }
+                continue; // Skip normal app rendering
+            }
+
             // Handle pending tool executions using state machine (async - doesn't block input)
             if (self.tool_executor.hasPendingWork()) {
                 // Forward permission response from App to tool_executor if available
@@ -1370,6 +1419,81 @@ pub const App = struct {
                                 });
 
                                 // Receipt printer mode: auto-scroll to show tool result
+                                if (!self.user_scrolled_away) {
+                                    try self.maintainBottomAnchor();
+                                }
+                                _ = try message_renderer.redrawScreen(self);
+                                if (!self.user_scrolled_away) {
+                                    self.updateCursorToBottom();
+                                }
+
+                                // Tell executor to advance to next tool
+                                self.tool_executor.advanceAfterExecution();
+                            }
+                        } else if (self.tool_executor.getCurrentState() == .creating_denial_result) {
+                            // User denied permission - create error result for LLM
+                            if (self.tool_executor.getCurrentToolCall()) |tool_call| {
+                                const call_idx = self.tool_executor.current_index;
+
+                                // Create permission denied error result
+                                var result = try tools_module.ToolResult.err(
+                                    self.allocator,
+                                    .permission_denied,
+                                    "User denied permission for this operation",
+                                    std.time.milliTimestamp(),
+                                );
+                                defer result.deinit(self.allocator);
+
+                                // Create user-facing display message
+                                const display_content = try result.formatDisplay(
+                                    self.allocator,
+                                    tool_call.function.name,
+                                    tool_call.function.arguments,
+                                );
+                                const display_processed = try markdown.processMarkdown(self.allocator, display_content);
+
+                                try self.messages.append(self.allocator, .{
+                                    .role = .display_only_data,
+                                    .content = display_content,
+                                    .processed_content = display_processed,
+                                    .thinking_content = null,
+                                    .processed_thinking_content = null,
+                                    .thinking_expanded = false,
+                                    .timestamp = std.time.milliTimestamp(),
+                                    .tool_call_expanded = false,
+                                    .tool_name = try self.allocator.dupe(u8, tool_call.function.name),
+                                    .tool_success = false,
+                                    .tool_execution_time = result.metadata.execution_time_ms,
+                                });
+
+                                // Receipt printer mode: auto-scroll
+                                if (!self.user_scrolled_away) {
+                                    try self.maintainBottomAnchor();
+                                }
+                                _ = try message_renderer.redrawScreen(self);
+                                if (!self.user_scrolled_away) {
+                                    self.updateCursorToBottom();
+                                }
+
+                                // Create model-facing result (JSON for LLM)
+                                const tool_id_copy = if (tool_call.id) |id|
+                                    try self.allocator.dupe(u8, id)
+                                else
+                                    try std.fmt.allocPrint(self.allocator, "call_{d}", .{call_idx});
+
+                                const model_result = try result.toJSON(self.allocator);
+                                const result_processed = try markdown.processMarkdown(self.allocator, model_result);
+
+                                try self.messages.append(self.allocator, .{
+                                    .role = .tool,
+                                    .content = model_result,
+                                    .processed_content = result_processed,
+                                    .thinking_expanded = false,
+                                    .timestamp = std.time.milliTimestamp(),
+                                    .tool_call_id = tool_id_copy,
+                                });
+
+                                // Receipt printer mode: auto-scroll
                                 if (!self.user_scrolled_away) {
                                     try self.maintainBottomAnchor();
                                 }

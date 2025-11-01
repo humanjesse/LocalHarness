@@ -95,6 +95,27 @@ fn drawCentered(writer: anytype, text: []const u8, terminal_width: u16, y: usize
     try writer.print("\x1b[{d};{d}H{s}", .{ y, start_x, text });
 }
 
+/// Truncate text to fit within max_width, adding ellipsis if needed
+fn truncateText(text: []const u8, max_width: usize, buffer: []u8) []const u8 {
+    if (text.len <= max_width) {
+        @memcpy(buffer[0..text.len], text);
+        return buffer[0..text.len];
+    }
+
+    // Need to truncate with ellipsis
+    const ellipsis = "...";
+    if (max_width <= ellipsis.len) {
+        // Not enough space even for ellipsis, just return truncated
+        @memcpy(buffer[0..max_width], text[0..max_width]);
+        return buffer[0..max_width];
+    }
+
+    const text_len = max_width - ellipsis.len;
+    @memcpy(buffer[0..text_len], text[0..text_len]);
+    @memcpy(buffer[text_len..text_len + ellipsis.len], ellipsis);
+    return buffer[0..text_len + ellipsis.len];
+}
+
 /// Draw a single field
 fn drawField(
     writer: anytype,
@@ -105,7 +126,41 @@ fn drawField(
     box_width: u16,
     is_focused: bool,
 ) !void {
-    // Field container border (left)
+    // Calculate available content width (box_width - borders - padding)
+    // Format: "│ content │" so we need to subtract: left border (1) + spaces (2) + right border (1) = 4
+    const content_width = box_width -| 4;
+
+    // Create a buffer to accumulate the field content
+    var content_buffer: [512]u8 = undefined;
+    var content_stream = std.io.fixedBufferStream(&content_buffer);
+    const content_writer = content_stream.writer();
+
+    // Build the field content (label + value)
+    content_writer.print("{s}: ", .{field.label}) catch {};
+
+    // Field value based on type
+    switch (field.field_type) {
+        .radio => {
+            drawRadioFieldToWriter(content_writer, field, state) catch {};
+        },
+        .toggle => {
+            drawToggleFieldToWriter(content_writer, field, state) catch {};
+        },
+        .text_input => {
+            drawTextInputFieldToWriter(content_writer, field, state) catch {};
+        },
+        .number_input => {
+            drawNumberInputFieldToWriter(content_writer, field, state) catch {};
+        },
+    }
+
+    const content = content_stream.getWritten();
+
+    // Truncate content if it exceeds available width
+    var truncate_buffer: [512]u8 = undefined;
+    const display_content = truncateText(content, content_width, &truncate_buffer);
+
+    // Now render the line
     try writer.print("\x1b[{d};{d}H│ ", .{ y, box_x });
 
     // Highlight if focused
@@ -113,42 +168,39 @@ fn drawField(
         try writer.writeAll("\x1b[7m"); // Reverse video
     }
 
-    // Field label
-    try writer.print("{s}: ", .{field.label});
-
-    // Field value based on type
-    switch (field.field_type) {
-        .radio => {
-            try drawRadioField(writer, field, state);
-        },
-        .toggle => {
-            try drawToggleField(writer, field, state);
-        },
-        .text_input => {
-            try drawTextInputField(writer, field, state);
-        },
-        .number_input => {
-            try drawNumberInputField(writer, field, state);
-        },
-    }
+    try writer.writeAll(display_content);
 
     if (is_focused) {
         try writer.writeAll("\x1b[0m"); // Reset formatting
     }
 
-    // Right border padding
-    // Calculate how much space we've used and pad to box width
-    try writer.print("\x1b[{d}G│", .{box_x + box_width - 1});
+    // Pad remaining space and draw right border
+    const used_width = display_content.len + 2; // +2 for "│ " prefix
+    const padding_needed = box_width -| used_width -| 1; // -1 for right border
+    for (0..padding_needed) |_| {
+        try writer.writeAll(" ");
+    }
+    try writer.writeAll("│");
 
     // Help text line
     if (field.help_text) |help| {
-        try writer.print("\x1b[{d};{d}H│ \x1b[2m{s}\x1b[0m", .{ y + 1, box_x, help });
-        try writer.print("\x1b[{d}G│", .{box_x + box_width - 1});
+        var help_buffer: [512]u8 = undefined;
+        const display_help = truncateText(help, content_width, &help_buffer);
+
+        try writer.print("\x1b[{d};{d}H│ \x1b[2m{s}\x1b[0m", .{ y + 1, box_x, display_help });
+
+        // Pad and draw right border for help text line
+        const help_used_width = display_help.len + 2; // +2 for "│ " prefix
+        const help_padding_needed = box_width -| help_used_width -| 1;
+        for (0..help_padding_needed) |_| {
+            try writer.writeAll(" ");
+        }
+        try writer.writeAll("│");
     }
 }
 
-/// Draw radio button field (e.g., provider selection)
-fn drawRadioField(writer: anytype, field: *const ConfigField, state: *const ConfigEditorState) !void {
+/// Draw radio button field to any writer (for buffering)
+fn drawRadioFieldToWriter(writer: anytype, field: *const ConfigField, state: *const ConfigEditorState) !void {
     if (field.options) |options| {
         // Get current value from config
         const current_value = getFieldValue(state, field.key);
@@ -166,8 +218,8 @@ fn drawRadioField(writer: anytype, field: *const ConfigField, state: *const Conf
     }
 }
 
-/// Draw toggle field (checkbox)
-fn drawToggleField(writer: anytype, field: *const ConfigField, state: *const ConfigEditorState) !void {
+/// Draw toggle field to any writer (for buffering)
+fn drawToggleFieldToWriter(writer: anytype, field: *const ConfigField, state: *const ConfigEditorState) !void {
     const is_enabled = getFieldBoolValue(state, field.key);
 
     if (is_enabled) {
@@ -177,8 +229,8 @@ fn drawToggleField(writer: anytype, field: *const ConfigField, state: *const Con
     }
 }
 
-/// Draw text input field
-fn drawTextInputField(writer: anytype, field: *const ConfigField, state: *const ConfigEditorState) !void {
+/// Draw text input field to any writer (for buffering)
+fn drawTextInputFieldToWriter(writer: anytype, field: *const ConfigField, state: *const ConfigEditorState) !void {
     const current_value = getFieldValue(state, field.key);
 
     if (field.is_editing and field.edit_buffer != null) {
@@ -190,8 +242,8 @@ fn drawTextInputField(writer: anytype, field: *const ConfigField, state: *const 
     }
 }
 
-/// Draw number input field
-fn drawNumberInputField(writer: anytype, field: *const ConfigField, state: *const ConfigEditorState) !void {
+/// Draw number input field to any writer (for buffering)
+fn drawNumberInputFieldToWriter(writer: anytype, field: *const ConfigField, state: *const ConfigEditorState) !void {
     const config = &state.temp_config;
 
     if (field.is_editing and field.edit_buffer != null) {

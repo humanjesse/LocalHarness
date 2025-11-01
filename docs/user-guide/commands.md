@@ -6,6 +6,29 @@ Quick reference for all Local Harness commands and keyboard shortcuts.
 
 ## Chat Commands
 
+### `/help` - Help Viewer
+
+Display comprehensive help documentation in a full-screen modal viewer.
+
+**Usage:** Type `/help` and press Enter
+
+**Content:**
+- Slash commands reference
+- Keyboard shortcuts
+- Basic usage instructions
+- Links to detailed documentation
+
+**Navigation:**
+- `↑` / `↓` - Scroll content (3 lines)
+- `PgUp` / `PgDn` - Scroll faster (10 lines)
+- `Home` / `End` - Jump to top/bottom
+- `j` / `k` - Vim-style scrolling
+- `q` / `Esc` / `Ctrl+C` - Close help viewer
+
+**Tip:** The help viewer is read-only and provides a quick reference without leaving the application. For more detailed documentation, see the docs/ folder.
+
+---
+
 ### `/config` - Configuration Editor
 
 Open full-screen interactive configuration editor.

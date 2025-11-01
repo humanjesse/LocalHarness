@@ -112,7 +112,7 @@ fn freeMessages(allocator: std.mem.Allocator, messages: *std.ArrayListUnmanaged(
 /// System prompt for Phase 1: Node Extraction Agent
 /// This agent focuses ONLY on identifying and creating entity nodes
 const NODE_EXTRACTION_SYSTEM_PROMPT =
-    \\You are a node extraction specialist, create nodes using the create_node tool.
+    \\You are a node extraction specialist. Your job is to identify entities in code and create nodes using the create_node tool.
     \\
     \\VALID NODE TYPES (use exactly these):
     \\• function - Functions, methods, procedures
@@ -120,18 +120,20 @@ const NODE_EXTRACTION_SYSTEM_PROMPT =
     \\• section - Documentation sections, chapters
     \\• concept - Abstract concepts, ideas, patterns
     \\
-    \\RULES:
-    \\1. Call create_node tool immediately for each entity - do NOT explain your reasoning
-    \\2. Use concise summaries (1-2 sentences max per node)
-    \\3. Extract ALL significant entities - be thorough
-    \\4. Do NOT create edges - another agent will handle that
-    \\5. When finished extracting all entities, stop calling tools
+    \\GUIDELINES:
+    \\1. Use the create_node tool for each entity you find
+    \\2. Keep summaries concise (1-2 sentences max per node)
+    \\3. Work through the file systematically to extract all significant entities
+    \\4. Focus only on creating nodes - edges will be handled by a separate agent
+    \\5. Continue until you've identified all meaningful entities, then stop
+    \\
+    \\Take your time and be thorough - there's no rush.
 ;
 
 /// System prompt for Phase 2: Edge Creation Agent
 /// This agent focuses ONLY on mapping relationships between existing nodes
 const EDGE_CREATION_SYSTEM_PROMPT =
-    \\You are a relationship mapping specialist, create edges using the create_edge tool.
+    \\You are a relationship mapping specialist. Your job is to identify relationships between nodes and create edges using the create_edge tool.
     \\
     \\VALID RELATIONSHIP TYPES (use exactly these):
     \\• calls - Function/method invocations
@@ -139,12 +141,14 @@ const EDGE_CREATION_SYSTEM_PROMPT =
     \\• references - Variable/type references
     \\• relates_to - Conceptual connections
     \\
-    \\RULES:
-    \\1. Call create_edge tool immediately for each relationship - do NOT explain your reasoning
-    \\2. Only connect nodes that exist in the provided node list
-    \\3. Do NOT create duplicate edges - each unique relationship should be created once only
-    \\4. Be thorough - map ALL meaningful relationships
-    \\5. When finished mapping all relationships, stop calling tools
+    \\GUIDELINES:
+    \\1. Use the create_edge tool for each relationship you identify
+    \\2. Only create edges between nodes that exist in the provided node list
+    \\3. Avoid creating duplicate edges - each unique relationship should appear only once
+    \\4. Work through the relationships systematically to map all meaningful connections
+    \\5. Continue until you've identified all significant relationships, then stop
+    \\
+    \\Take your time and be thorough - there's no rush.
 ;
 
 // Use unified types from agents module (no duplication!)
@@ -270,15 +274,15 @@ pub fn indexFile(
     // User prompt for Phase 1 - focused on node extraction only
     const node_prompt = try std.fmt.allocPrint(
         allocator,
-        \\Analyze this file and create nodes for ALL significant entities using create_node tool.
+        \\Please analyze this file and create nodes for the significant entities you find.
         \\
-        \\Use these node_type values:
+        \\Available node_type values:
         \\• "function" - for functions, methods, procedures
         \\• "struct" - for data structures, classes, types
         \\• "section" - for documentation sections, chapters
         \\• "concept" - for abstract concepts, ideas, patterns, systems
         \\
-        \\START CALLING create_node NOW - do not explain, just call the tool for each entity.
+        \\Use the create_node tool for each entity. Work through the file carefully and extract all meaningful entities.
         \\
         \\File content:
         \\{s}
@@ -594,7 +598,7 @@ pub fn indexFile(
 
     const edge_prompt = try std.fmt.allocPrint(
         allocator,
-        \\Map relationships between entities extracted from: {s}
+        \\Please map relationships between the entities extracted from: {s}
         \\
         \\EXTRACTED ENTITIES (JSON):
         \\{s}
@@ -604,11 +608,11 @@ pub fn indexFile(
         \\{s}
         \\```
         \\
-        \\TASK: Create edges using create_edge tool. Use exact "name" field from JSON for from_node/to_node.
+        \\Use the create_edge tool to connect related entities. Make sure to use the exact "name" field from the JSON above for from_node and to_node.
         \\
-        \\Relationship types: "calls", "imports", "references", "relates_to"
+        \\Available relationship types: "calls", "imports", "references", "relates_to"
         \\
-        \\START CALLING create_edge NOW - do not explain, just call tools. No duplicates.
+        \\Work through the entities systematically and identify all meaningful relationships.
     ,
         .{ file_path, nodes_json, content },
     );

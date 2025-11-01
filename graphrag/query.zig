@@ -67,7 +67,13 @@ pub fn summarizeFileForHistory(
 
         // Include relationships
         const edges = try vector_store.getOutgoing(node_id, null);
-        defer allocator.free(edges);
+        defer {
+            for (edges) |*edge| {
+                var mut_edge = edge.*;
+                mut_edge.deinit(allocator);
+            }
+            allocator.free(edges);
+        }
 
         if (edges.len > 0) {
             try writer.writeAll("**Relationships**: ");

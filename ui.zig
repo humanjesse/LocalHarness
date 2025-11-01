@@ -589,6 +589,17 @@ pub fn handleInput(
                         return false;
                     }
 
+                    // Check for /help command
+                    if (mem.eql(u8, app.input_buffer.items, "/help")) {
+                        const help_state = @import("help_state.zig");
+                        app.help_viewer = try help_state.HelpState.init(
+                            app.allocator,
+                        );
+                        app.input_buffer.clearRetainingCapacity();
+                        should_redraw.* = true;
+                        return false;
+                    }
+
                     // Don't send new messages while streaming is active
                     // User can type, but the message won't be sent until current stream finishes
                     if (app.streaming_active) {
