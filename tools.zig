@@ -20,6 +20,17 @@ const list_todos = @import("tools/list_todos.zig");
 const update_todo = @import("tools/update_todo.zig");
 const run_agent = @import("tools/run_agent.zig");
 const list_agents = @import("tools/list_agents.zig");
+const git_status = @import("tools/git_status.zig");
+const git_diff = @import("tools/git_diff.zig");
+const git_log = @import("tools/git_log.zig");
+const git_add = @import("tools/git_add.zig");
+const git_commit = @import("tools/git_commit.zig");
+const git_branch = @import("tools/git_branch.zig");
+const git_checkout = @import("tools/git_checkout.zig");
+const git_stash = @import("tools/git_stash.zig");
+const git_push = @import("tools/git_push.zig");
+const git_pull = @import("tools/git_pull.zig");
+const git_reset = @import("tools/git_reset.zig");
 
 const AppContext = context_module.AppContext;
 
@@ -210,6 +221,19 @@ pub fn getAllToolDefinitions(allocator: std.mem.Allocator) ![]ToolDefinition {
     // System tools
     try tools.append(allocator, try current_time.getDefinition(allocator));
     try tools.append(allocator, try pwd.getDefinition(allocator));
+
+    // Git tools
+    try tools.append(allocator, try git_status.getDefinition(allocator));
+    try tools.append(allocator, try git_diff.getDefinition(allocator));
+    try tools.append(allocator, try git_log.getDefinition(allocator));
+    try tools.append(allocator, try git_add.getDefinition(allocator));
+    try tools.append(allocator, try git_commit.getDefinition(allocator));
+    try tools.append(allocator, try git_branch.getDefinition(allocator));
+    try tools.append(allocator, try git_checkout.getDefinition(allocator));
+    try tools.append(allocator, try git_stash.getDefinition(allocator));
+    try tools.append(allocator, try git_push.getDefinition(allocator));
+    try tools.append(allocator, try git_pull.getDefinition(allocator));
+    try tools.append(allocator, try git_reset.getDefinition(allocator));
 
     // Todo management tools (Phase 1)
     try tools.append(allocator, try add_todo.getDefinition(allocator));
