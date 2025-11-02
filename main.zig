@@ -72,6 +72,10 @@ pub fn main() !void {
     markdown.initColors(app.config.color_inline_code_bg);
     ui.initUIColors(app.config.color_status);
 
+    // Wait 5 seconds to allow reviewing initialization messages before TUI takes over
+    std.debug.print("\nStarting UI in 5 seconds...\n", .{});
+    std.Thread.sleep(5 * std.time.ns_per_s);
+
     var app_tui = ui.Tui{ .orig_termios = undefined };
     try app_tui.enableRawMode();
     defer app_tui.disableRawMode();

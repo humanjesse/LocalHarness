@@ -119,7 +119,7 @@ pub const ProviderRegistry = struct {
         .name = "LM Studio",
         .default_port = 1234,
         .config_warnings = &[_]ConfigWarning{
-            .{ .message = "Context size must be set in LM Studio UI." },
+            .{ .message = "Context size set at model load time (not per-request like Ollama)." },
         },
         .config_fields = &[_]ProviderConfigField{
             .{
@@ -149,6 +149,13 @@ pub const ProviderRegistry = struct {
                 .field_type = .text_input,
                 .help_text = "GPU acceleration: 'auto', 'max', or 0.0-1.0",
                 .default_value = .{ .text = "auto" },
+            },
+            .{
+                .key = "ttl",
+                .label = "Model TTL (seconds)",
+                .field_type = .number_input,
+                .help_text = "Auto-unload model after inactivity (0 = never unload)",
+                .default_value = .{ .number = 0 },
             },
         },
     };
@@ -498,20 +505,146 @@ pub fn createProvider(
 
         // Auto-load model if configured
         if (config.lmstudio_auto_load_model) {
-            const loaded = manager.listLoadedModels() catch &[_]lmstudio_manager.LoadedModelInfo{};
+            std.debug.print("\n🔍 Auto-load enabled, checking model status...\n", .{});
+
+            const loaded = manager.listLoadedModels() catch |err| blk: {
+                std.debug.print("⚠️  Warning: Failed to query loaded models: {s}\n", .{@errorName(err)});
+                std.debug.print("   Continuing with empty model list (will attempt to load)\n", .{});
+                break :blk &[_]lmstudio_manager.LoadedModelInfo{};
+            };
             defer manager.freeLoadedModels(loaded);
 
-            if (loaded.len == 0) {
-                std.debug.print("📦 Loading model: {s}...\n", .{config.model});
+            // Show currently loaded models for debugging
+            if (loaded.len > 0) {
+                std.debug.print("   Currently loaded models ({d}):\n", .{loaded.len});
+                for (loaded) |model| {
+                    std.debug.print("     - {s} (identifier: {s})\n", .{model.path, model.identifier});
+                }
+            } else {
+                std.debug.print("   No models currently loaded\n", .{});
+            }
+
+            // Helper function to check if a specific model is loaded
+            const isModelLoaded = struct {
+                fn check(models: []const lmstudio_manager.LoadedModelInfo, model_path: []const u8) bool {
+                    for (models) |model| {
+                        if (std.mem.eql(u8, model.path, model_path) or std.mem.eql(u8, model.identifier, model_path)) {
+                            return true;
+                        }
+                    }
+                    return false;
+                }
+            }.check;
+
+            // Check and load main model
+            if (!isModelLoaded(loaded, config.model)) {
+                // Validate model exists in available models first
+                std.debug.print("\n🔎 Checking if model exists: {s}\n", .{config.model});
+                const available = manager.queryAvailableModels() catch |err| blk: {
+                    std.debug.print("⚠️  Warning: Could not query available models: {s}\n", .{@errorName(err)});
+                    std.debug.print("   Will attempt to load anyway...\n", .{});
+                    break :blk &[_]lmstudio_manager.LoadedModelInfo{};
+                };
+                defer manager.freeLoadedModels(available);
+
+                var model_exists = false;
+                for (available) |model| {
+                    if (std.mem.eql(u8, model.path, config.model) or std.mem.eql(u8, model.identifier, config.model)) {
+                        model_exists = true;
+                        break;
+                    }
+                }
+
+                if (!model_exists and available.len > 0) {
+                    std.debug.print("❌ Model not found in LM Studio's downloaded models!\n", .{});
+                    std.debug.print("   Requested: {s}\n", .{config.model});
+                    std.debug.print("   Available models ({d}):\n", .{available.len});
+                    for (available) |model| {
+                        std.debug.print("     - {s}\n", .{model.path});
+                    }
+                    std.debug.print("\n💡 Please update your config to use one of the above models\n", .{});
+                    std.debug.print("   or download '{s}' in LM Studio first.\n\n", .{config.model});
+                } else if (model_exists) {
+                    std.debug.print("✓ Model found in available models\n", .{});
+                }
+
+                // Detect optimal context length
+                const optimal = manager.getOptimalContextLength(config.model, config.num_ctx);
+
+                // Show what we're doing
+                std.debug.print("\n📦 Loading main model: {s}...\n", .{config.model});
+                if (optimal.model_max) |max| {
+                    std.debug.print("   Model max context: {d} tokens\n", .{max});
+                    if (optimal.clamped) {
+                        std.debug.print("   Configured: {d} tokens → Using: {d} tokens (auto-clamped)\n",
+                            .{config.num_ctx, optimal.context});
+                    } else {
+                        std.debug.print("   Using: {d} tokens\n", .{optimal.context});
+                    }
+                }
+                // Note: num_predict (max output tokens) is set per API request
+                // LM Studio will validate/clamp if it exceeds model capabilities
+                std.debug.print("   Max output tokens: {d} (validated by LM Studio)\n", .{config.num_predict});
+
                 manager.loadModel(
                     config.model,
                     config.lmstudio_gpu_offload,
+                    optimal.context,
+                    if (config.lmstudio_ttl > 0) config.lmstudio_ttl else null,
                 ) catch |err| {
-                    std.debug.print("❌ Failed to load model: {s}\n", .{@errorName(err)});
-                    std.debug.print("   Please load a model in LM Studio manually.\n\n", .{});
+                    std.debug.print("\n❌ Auto-load failed for main model\n", .{});
+                    std.debug.print("   Model: {s}\n", .{config.model});
+                    std.debug.print("   Error: {s}\n", .{@errorName(err)});
+                    std.debug.print("   GPU Offload: {s}\n", .{config.lmstudio_gpu_offload});
+                    std.debug.print("   Context Length: {d}\n", .{optimal.context});
+                    if (config.lmstudio_ttl > 0) {
+                        std.debug.print("   TTL: {d} seconds\n", .{config.lmstudio_ttl});
+                    }
+                    std.debug.print("\n💡 The app will continue, but you may need to:\n", .{});
+                    std.debug.print("   1. Check that the model exists in LM Studio\n", .{});
+                    std.debug.print("   2. Verify the model path in config matches exactly\n", .{});
+                    std.debug.print("   3. Load the model manually in LM Studio\n\n", .{});
                 };
             } else {
-                std.debug.print("✓ Model already loaded: {s}\n", .{loaded[0].identifier});
+                std.debug.print("✓ Main model already loaded: {s}\n", .{config.model});
+            }
+
+            // Check and load embedding model if GraphRAG is enabled
+            if (config.graph_rag_enabled and !std.mem.eql(u8, config.embedding_model, config.model)) {
+                if (!isModelLoaded(loaded, config.embedding_model)) {
+                    // Detect optimal context length for embedding model
+                    const optimal = manager.getOptimalContextLength(config.embedding_model, config.num_ctx);
+
+                    std.debug.print("📦 Loading embedding model: {s}...\n", .{config.embedding_model});
+                    if (optimal.model_max) |max| {
+                        std.debug.print("   Model max context: {d} tokens\n", .{max});
+                        if (optimal.clamped) {
+                            std.debug.print("   Configured: {d} tokens → Using: {d} tokens (auto-clamped)\n",
+                                .{config.num_ctx, optimal.context});
+                        } else {
+                            std.debug.print("   Using: {d} tokens\n", .{optimal.context});
+                        }
+                    }
+
+                    manager.loadModel(
+                        config.embedding_model,
+                        config.lmstudio_gpu_offload,
+                        optimal.context,
+                        if (config.lmstudio_ttl > 0) config.lmstudio_ttl else null,
+                    ) catch |err| {
+                        std.debug.print("\n❌ Auto-load failed for embedding model\n", .{});
+                        std.debug.print("   Model: {s}\n", .{config.embedding_model});
+                        std.debug.print("   Error: {s}\n", .{@errorName(err)});
+                        std.debug.print("   GPU Offload: {s}\n", .{config.lmstudio_gpu_offload});
+                        std.debug.print("   Context Length: {d}\n", .{optimal.context});
+                        std.debug.print("\n💡 GraphRAG requires an embedding model. Please:\n", .{});
+                        std.debug.print("   1. Download a nomic-embed-text model in LM Studio\n", .{});
+                        std.debug.print("   2. Verify the embedding_model path in config\n", .{});
+                        std.debug.print("   3. Load it manually or restart the app\n\n", .{});
+                    };
+                } else {
+                    std.debug.print("✓ Embedding model already loaded: {s}\n", .{config.embedding_model});
+                }
             }
         }
 

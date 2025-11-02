@@ -293,19 +293,14 @@ pub const App = struct {
             if (vs) |store| {
                 errdefer allocator.destroy(store);
 
-                // Try to load existing index, fall back to creating new one
-                store.* = zvdb.HNSW(f32).load(allocator, config.zvdb_path) catch |err| blk: {
-                    if (err != error.FileNotFound) {
-                        std.debug.print("Warning: Failed to load vector store from {s}: {}\n", .{ config.zvdb_path, err });
-                    }
-                    // Create new index (m=16, ef_construction=200)
-                    break :blk zvdb.HNSW(f32).init(allocator, 16, 200);
-                };
+                // Create fresh index for this session (session-only storage, not persisted)
+                // m=16, ef_construction=200
+                store.* = zvdb.HNSW(f32).init(allocator, 16, 200);
 
                 vector_store_opt = store;
 
                 if (std.posix.getenv("DEBUG_GRAPHRAG")) |_| {
-                    std.debug.print("[INIT] Vector store initialized successfully\n", .{});
+                    std.debug.print("[INIT] Vector store initialized (session-only)\n", .{});
                 }
 
                 // Initialize embeddings client based on provider
@@ -977,6 +972,13 @@ pub const App = struct {
             // Note: msg.role and msg.content are NOT owned by the context
             // They are pointers to existing message data, so we only free the array
             self.allocator.free(ctx.messages);
+
+            // Free GraphRAG summaries (allocated in startStreaming)
+            for (ctx.graphrag_summaries) |summary| {
+                self.allocator.free(summary);
+            }
+            self.allocator.free(ctx.graphrag_summaries);
+
             self.allocator.destroy(ctx);
         }
 
@@ -1079,12 +1081,8 @@ pub const App = struct {
         // Phase 1: Clean up state
         self.state.deinit();
 
-        // Clean up Graph RAG components
+        // Clean up Graph RAG components (session-only, not persisted)
         if (self.vector_store) |vs| {
-            // Save index to disk before cleanup
-            vs.save(self.config.zvdb_path) catch |err| {
-                std.debug.print("Warning: Failed to save vector store: {}\n", .{err});
-            };
             vs.deinit();
             self.allocator.destroy(vs);
         }
@@ -1198,9 +1196,16 @@ pub const App = struct {
                             // Close editor (but DON'T deinit temp_config - we transferred it to app.config!)
                             // Manually free only the editor's sections and fields
                             for (editor.sections) |section| {
+                                // Free section title (dynamically allocated)
+                                self.allocator.free(section.title);
+
                                 for (section.fields) |field| {
                                     if (field.edit_buffer) |buffer| {
                                         self.allocator.free(buffer);
+                                    }
+                                    // Free options array (allocated by listIdentifiers, etc.)
+                                    if (field.options) |options| {
+                                        self.allocator.free(options);
                                     }
                                 }
                                 self.allocator.free(section.fields);

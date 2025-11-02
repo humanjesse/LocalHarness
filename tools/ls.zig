@@ -220,7 +220,9 @@ fn formatOutput(
     try writer.print("Sorted by: {s} ({s})\n", .{ sort_by, if (reverse) "descending" else "ascending" });
     try writer.print("Total: {d} entries ({d} files, {d} directories)\n", .{ entries.len, file_count, dir_count });
     if (file_count > 0) {
-        try writer.print("Total size: {s}\n", .{try formatSize(allocator, total_size)});
+        const total_size_str = try formatSize(allocator, total_size);
+        defer allocator.free(total_size_str);
+        try writer.print("Total size: {s}\n", .{total_size_str});
     }
     try writer.writeAll("\n");
 

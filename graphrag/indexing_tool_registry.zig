@@ -99,6 +99,7 @@ pub const IndexingContext = struct {
         nodes_created: usize = 0,
         edges_created: usize = 0,
         errors: usize = 0,
+        parse_failures: usize = 0,
     } = .{},
 };
 

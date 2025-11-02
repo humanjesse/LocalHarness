@@ -152,14 +152,37 @@ fn executeCreateNode(
 ) !IndexingToolResult {
     // Parse node from JSON arguments
     var node = Node.fromToolCallArgs(allocator, arguments) catch |err| {
-        const msg = try std.fmt.allocPrint(
+        context.stats.parse_failures += 1;
+
+        // Try to create detailed error message with JSON preview
+        const max_preview = 200;
+        const json_preview = if (arguments.len > max_preview)
+            arguments[0..max_preview]
+        else
+            arguments;
+
+        const msg = std.fmt.allocPrint(
             allocator,
-            "Failed to parse node arguments: {}",
-            .{err},
-        );
+            "Failed to parse node JSON: {}\nJSON preview: {s}{s}",
+            .{err, json_preview, if (arguments.len > max_preview) "..." else ""},
+        ) catch {
+            // Fallback: if we can't allocate detailed message, use simple one
+            return IndexingToolResult{
+                .success = false,
+                .message = allocator.dupe(u8, "JSON parse error (OOM creating error message)") catch "Parse failed",
+                .data = null,
+            };
+        };
         defer allocator.free(msg);
         context.stats.errors += 1;
-        return IndexingToolResult.err(allocator, msg);
+        return IndexingToolResult.err(allocator, msg) catch {
+            // Ultimate fallback: return static error
+            return IndexingToolResult{
+                .success = false,
+                .message = "JSON parse error",
+                .data = null,
+            };
+        };
     };
     errdefer node.deinit(allocator);
 
@@ -236,14 +259,37 @@ fn executeCreateEdge(
     context.graph_builder.createEdge(arguments) catch |err| {
         // Parse edge to get node names for better error messages
         var edge = Edge.fromToolCallArgs(allocator, arguments) catch |parse_err| {
-            const msg = try std.fmt.allocPrint(
+            context.stats.parse_failures += 1;
+
+            // Try to create detailed error message with JSON preview
+            const max_preview = 200;
+            const json_preview = if (arguments.len > max_preview)
+                arguments[0..max_preview]
+            else
+                arguments;
+
+            const msg = std.fmt.allocPrint(
                 allocator,
-                "Failed to parse edge arguments: {}",
-                .{parse_err},
-            );
+                "Failed to parse edge JSON: {}\nJSON preview: {s}{s}",
+                .{parse_err, json_preview, if (arguments.len > max_preview) "..." else ""},
+            ) catch {
+                // Fallback: if we can't allocate detailed message, use simple one
+                return IndexingToolResult{
+                    .success = false,
+                    .message = allocator.dupe(u8, "JSON parse error (OOM creating error message)") catch "Parse failed",
+                    .data = null,
+                };
+            };
             defer allocator.free(msg);
             context.stats.errors += 1;
-            return IndexingToolResult.err(allocator, msg);
+            return IndexingToolResult.err(allocator, msg) catch {
+                // Ultimate fallback: return static error
+                return IndexingToolResult{
+                    .success = false,
+                    .message = "JSON parse error",
+                    .data = null,
+                };
+            };
         };
         defer edge.deinit(allocator);
 

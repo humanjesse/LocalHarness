@@ -13,10 +13,11 @@ pub const Config = struct {
     lmstudio_host: []const u8 = "http://localhost:1234", // LM Studio default port
     lmstudio_auto_start: bool = true, // Auto-start LM Studio server if not running
     lmstudio_auto_load_model: bool = true, // Auto-load model if none is loaded
-    lmstudio_gpu_offload: []const u8 = "auto", // GPU offload: "auto", "max", or 0.0-1.0
+    lmstudio_gpu_offload: []const u8 = "auto", // GPU offload: "auto" (becomes "max"), "max", or 0.0-1.0
+    lmstudio_ttl: usize = 0, // Auto-unload model after inactivity (seconds, 0 = never unload)
     model: []const u8 = "qwen3-coder:30b",
     model_keep_alive: []const u8 = "15m", // How long to keep model in memory (e.g., "5m", "15m", or "-1" for infinite)
-    num_ctx: usize = 128000, // Context window size in tokens (default: 128k for full conversation history)
+    num_ctx: usize = 128000, // Context window size in tokens (Ollama: per-request; LM Studio: set at model load time)
     num_predict: isize = 8192, // Max tokens to generate per response (default: 8192 for detailed code generation)
     // GraphRAG indexing parameters (separate from main chat)
     indexing_temperature: ?f32 = null, // null = use model default; Ollama works at 0.1, LM Studio may need higher
@@ -152,6 +153,7 @@ pub const Config = struct {
             if (mem.eql(u8, field_key, "auto_start")) return .{ .boolean = self.lmstudio_auto_start };
             if (mem.eql(u8, field_key, "auto_load_model")) return .{ .boolean = self.lmstudio_auto_load_model };
             if (mem.eql(u8, field_key, "gpu_offload")) return .{ .text = self.lmstudio_gpu_offload };
+            if (mem.eql(u8, field_key, "ttl")) return .{ .number = @as(isize, @intCast(self.lmstudio_ttl)) };
         }
 
         // Return default empty value if not found
@@ -188,6 +190,8 @@ pub const Config = struct {
             } else if (mem.eql(u8, field_key, "gpu_offload")) {
                 allocator.free(self.lmstudio_gpu_offload);
                 self.lmstudio_gpu_offload = try allocator.dupe(u8, value.text);
+            } else if (mem.eql(u8, field_key, "ttl")) {
+                self.lmstudio_ttl = @as(usize, @intCast(@max(0, value.number)));
             }
         }
     }
@@ -225,6 +229,7 @@ const ConfigFile = struct {
     lmstudio_auto_start: ?bool = null,
     lmstudio_auto_load_model: ?bool = null,
     lmstudio_gpu_offload: ?[]const u8 = null,
+    lmstudio_ttl: ?usize = null,
     model: ?[]const u8 = null,
     model_keep_alive: ?[]const u8 = null,
     num_ctx: ?usize = null,
@@ -272,6 +277,7 @@ pub fn loadConfigFromFile(allocator: mem.Allocator) !Config {
         .lmstudio_auto_start = true,
         .lmstudio_auto_load_model = true,
         .lmstudio_gpu_offload = try allocator.dupe(u8, "auto"),
+        .lmstudio_ttl = 0,
         .model = try allocator.dupe(u8, "qwen3-coder:30b"),
         .model_keep_alive = try allocator.dupe(u8, "15m"),
         .editor = default_editor,
@@ -366,6 +372,10 @@ pub fn loadConfigFromFile(allocator: mem.Allocator) !Config {
     if (parsed.value.lmstudio_gpu_offload) |lmstudio_gpu_offload| {
         allocator.free(config.lmstudio_gpu_offload);
         config.lmstudio_gpu_offload = try allocator.dupe(u8, lmstudio_gpu_offload);
+    }
+
+    if (parsed.value.lmstudio_ttl) |lmstudio_ttl| {
+        config.lmstudio_ttl = lmstudio_ttl;
     }
 
     if (parsed.value.model) |model| {

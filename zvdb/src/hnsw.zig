@@ -719,6 +719,14 @@ pub fn HNSW(comptime T: type) type {
 
         /// Save the index to a file
         pub fn save(self: *Self, path: []const u8) !void {
+            // Ensure parent directory exists
+            if (std.fs.path.dirname(path)) |dir_path| {
+                std.fs.cwd().makePath(dir_path) catch |err| switch (err) {
+                    error.PathAlreadyExists => {}, // Directory already exists, that's fine
+                    else => return err,
+                };
+            }
+
             const file = try std.fs.cwd().createFile(path, .{});
             defer file.close();
 

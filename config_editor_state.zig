@@ -82,6 +82,7 @@ pub const ConfigEditorState = struct {
             .lmstudio_auto_start = current_config.lmstudio_auto_start,
             .lmstudio_auto_load_model = current_config.lmstudio_auto_load_model,
             .lmstudio_gpu_offload = try allocator.dupe(u8, current_config.lmstudio_gpu_offload),
+            .lmstudio_ttl = current_config.lmstudio_ttl,
             .model = try allocator.dupe(u8, current_config.model),
             .model_keep_alive = try allocator.dupe(u8, current_config.model_keep_alive),
             .num_ctx = current_config.num_ctx,
@@ -223,6 +224,22 @@ pub const ConfigEditorState = struct {
 /// Build the form structure from config
 fn buildFormSections(allocator: std.mem.Allocator, temp_config: *const config_module.Config) ![]ConfigSection {
     var sections = std.ArrayListUnmanaged(ConfigSection){};
+    errdefer {
+        // Clean up any partially built sections on error
+        for (sections.items) |section| {
+            allocator.free(section.title);
+            for (section.fields) |field| {
+                if (field.edit_buffer) |buffer| {
+                    allocator.free(buffer);
+                }
+                if (field.options) |options| {
+                    allocator.free(options);
+                }
+            }
+            allocator.free(section.fields);
+        }
+        sections.deinit(allocator);
+    }
 
     // Section 1: Provider Selection
     {

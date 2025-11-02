@@ -492,6 +492,12 @@ fn getCurrentNumberValue(state: *const ConfigEditorState, key: []const u8) isize
     if (std.mem.eql(u8, key, "file_read_small_threshold")) return @as(isize, @intCast(config.file_read_small_threshold));
     if (std.mem.eql(u8, key, "indexing_max_iterations")) return @as(isize, @intCast(config.indexing_max_iterations));
 
+    // Try provider-specific number fields
+    const provider_value = config.getProviderField(config.provider, key);
+    if (provider_value == .number) {
+        return provider_value.number;
+    }
+
     return 0;
 }
 
@@ -511,5 +517,10 @@ fn setNumberValue(state: *ConfigEditorState, key: []const u8, value: isize) !voi
         config.file_read_small_threshold = @as(usize, @intCast(@max(0, value)));
     } else if (std.mem.eql(u8, key, "indexing_max_iterations")) {
         config.indexing_max_iterations = @as(usize, @intCast(@max(1, value)));
+    } else {
+        // Try provider-specific number fields
+        const llm_provider = @import("llm_provider.zig");
+        const new_value = llm_provider.ConfigValue{ .number = value };
+        try config.setProviderField(state.allocator, config.provider, key, new_value);
     }
 }

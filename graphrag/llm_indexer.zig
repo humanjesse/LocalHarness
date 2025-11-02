@@ -551,11 +551,15 @@ pub fn indexFile(
         }
 
         if (isDebugEnabled()) {
-            std.debug.print("[INDEXER] Phase 1 Iteration {d} stats: {d} nodes, {d} errors\n", .{
+            std.debug.print("[INDEXER] Phase 1 Iteration {d} stats: {d} nodes, {d} errors", .{
                 phase1_iteration + 1,
                 indexing_ctx.stats.nodes_created,
                 indexing_ctx.stats.errors,
             });
+            if (indexing_ctx.stats.parse_failures > 0) {
+                std.debug.print(", {d} parse failures", .{indexing_ctx.stats.parse_failures});
+            }
+            std.debug.print("\n", .{});
         }
 
     }
@@ -569,15 +573,22 @@ pub fn indexFile(
     }
 
     if (isDebugEnabled()) {
-        std.debug.print("[INDEXER] Phase 1 complete: {d} nodes created in {d} iterations\n", .{
+        std.debug.print("[INDEXER] Phase 1 complete: {d} nodes created in {d} iterations", .{
             graph_builder.getNodeCount(),
             phase1_iteration,
         });
+        if (indexing_ctx.stats.parse_failures > 0) {
+            std.debug.print(" ({d} parse failures)", .{indexing_ctx.stats.parse_failures});
+        }
+        std.debug.print("\n", .{});
     }
 
     // Notify Phase 1 completion
     if (progress_callback) |callback| {
-        const msg = try std.fmt.allocPrint(allocator, "Phase 1 complete: {d} nodes extracted", .{graph_builder.getNodeCount()});
+        const msg = if (indexing_ctx.stats.parse_failures > 0)
+            try std.fmt.allocPrint(allocator, "Phase 1 complete: {d} nodes extracted ({d} parse failures)", .{graph_builder.getNodeCount(), indexing_ctx.stats.parse_failures})
+        else
+            try std.fmt.allocPrint(allocator, "Phase 1 complete: {d} nodes extracted", .{graph_builder.getNodeCount()});
         defer allocator.free(msg);
         callback(progress_user_data.?, .content, msg);
     }
@@ -608,9 +619,21 @@ pub fn indexFile(
         \\{s}
         \\```
         \\
-        \\Use the create_edge tool to connect related entities. Make sure to use the exact "name" field from the JSON above for from_node and to_node.
+        \\INSTRUCTIONS:
+        \\Use the create_edge tool to connect related entities. Copy the exact "name" field from the JSON for from_node and to_node.
         \\
-        \\Available relationship types: "calls", "imports", "references", "relates_to"
+        \\EXAMPLE - If you have these nodes in the JSON:
+        \\  {{"name": "initialize", "type": "function", ...}}
+        \\  {{"name": "Config", "type": "struct", ...}}
+        \\
+        \\And initialize() calls Config, use create_edge like this:
+        \\  {{"from_node": "initialize", "to_node": "Config", "relationship": "calls"}}
+        \\
+        \\RELATIONSHIP TYPES:
+        \\• "calls" - function/method invocations
+        \\• "imports" - module/file dependencies
+        \\• "references" - uses a variable/type/constant
+        \\• "relates_to" - conceptual/semantic connections
         \\
         \\Work through the entities systematically and identify all meaningful relationships.
     ,
@@ -829,26 +852,37 @@ pub fn indexFile(
         }
 
         if (isDebugEnabled()) {
-            std.debug.print("[INDEXER] Phase 2 Iteration {d} stats: {d} edges, {d} errors\n", .{
+            std.debug.print("[INDEXER] Phase 2 Iteration {d} stats: {d} edges, {d} errors", .{
                 phase2_iteration + 1,
                 indexing_ctx.stats.edges_created,
                 indexing_ctx.stats.errors,
             });
+            if (indexing_ctx.stats.parse_failures > 0) {
+                std.debug.print(", {d} parse failures", .{indexing_ctx.stats.parse_failures});
+            }
+            std.debug.print("\n", .{});
         }
 
     }
 
     // End of Phase 2
     if (isDebugEnabled()) {
-        std.debug.print("[INDEXER] Phase 2 complete: {d} edges created in {d} iterations\n", .{
+        std.debug.print("[INDEXER] Phase 2 complete: {d} edges created in {d} iterations", .{
             graph_builder.getEdgeCount(),
             phase2_iteration,
         });
+        if (indexing_ctx.stats.parse_failures > 0) {
+            std.debug.print(" ({d} parse failures)", .{indexing_ctx.stats.parse_failures});
+        }
+        std.debug.print("\n", .{});
     }
 
     // Notify Phase 2 completion
     if (progress_callback) |callback| {
-        const msg = try std.fmt.allocPrint(allocator, "Phase 2 complete: {d} edges mapped", .{graph_builder.getEdgeCount()});
+        const msg = if (indexing_ctx.stats.parse_failures > 0)
+            try std.fmt.allocPrint(allocator, "Phase 2 complete: {d} edges mapped ({d} parse failures)", .{graph_builder.getEdgeCount(), indexing_ctx.stats.parse_failures})
+        else
+            try std.fmt.allocPrint(allocator, "Phase 2 complete: {d} edges mapped", .{graph_builder.getEdgeCount()});
         defer allocator.free(msg);
         callback(progress_user_data.?, .content, msg);
     }
