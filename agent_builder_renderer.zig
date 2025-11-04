@@ -1,7 +1,7 @@
 // Agent Builder Renderer - Draws the agent builder UI to the terminal
 const std = @import("std");
-const agent_builder_state = @import("agent_builder_state.zig");
-const ui = @import("ui.zig");
+const agent_builder_state = @import("agent_builder_state");
+const ui = @import("ui");
 
 const AgentBuilderState = agent_builder_state.AgentBuilderState;
 const AgentField = agent_builder_state.AgentField;

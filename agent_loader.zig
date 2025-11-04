@@ -1,9 +1,11 @@
 // Agent Loader - Discovers and loads markdown-defined agents
 const std = @import("std");
-const agents_module = @import("agents.zig");
-const agent_writer = @import("agent_writer.zig");
-const agent_executor = @import("agent_executor.zig");
-const file_curator = @import("agents_hardcoded/file_curator.zig");
+const app_module = @import("app");
+const agents_module = app_module.agents_module; // Get agents from app which has it as a module
+const agent_writer = @import("agent_writer");
+const agent_executor = @import("agent_executor");
+const file_curator = @import("file_curator");
+const compression_agent = @import("compression_agent");
 
 const AgentDefinition = agents_module.AgentDefinition;
 const AgentRegistry = agents_module.AgentRegistry;
@@ -103,7 +105,10 @@ pub const AgentLoader = struct {
         // Store definition for cleanup (name and description are allocated)
         try self.native_agent_definitions.append(self.allocator, curator_def);
 
-        // Future native agents would be registered here
+        // Register compression_agent (native agent for conversation compression)
+        const compression_def = try compression_agent.getDefinition(self.allocator);
+        try self.registry.register(compression_def);
+        try self.native_agent_definitions.append(self.allocator, compression_def);
     }
 
     /// Load and register markdown-defined agents
@@ -184,7 +189,7 @@ fn genericMarkdownAgentExecute(
     defer executor.deinit();
 
     // Get tools that agent is allowed to use
-    const tools_module = @import("tools.zig");
+    const tools_module = @import("tools");
     const all_tools = try tools_module.getAllToolDefinitions(allocator);
     defer {
         for (all_tools) |tool| {
@@ -196,7 +201,7 @@ fn genericMarkdownAgentExecute(
     }
 
     // Filter tools by capability
-    var allowed_tools = std.ArrayListUnmanaged(@import("ollama.zig").Tool){};
+    var allowed_tools = std.ArrayListUnmanaged(@import("ollama").Tool){};
     defer allowed_tools.deinit(allocator);
 
     for (all_tools) |tool| {
@@ -204,7 +209,7 @@ fn genericMarkdownAgentExecute(
         for (context.capabilities.allowed_tools) |allowed_name| {
             if (std.mem.eql(u8, tool.ollama_tool.function.name, allowed_name)) {
                 // Duplicate the tool for agent use
-                const tool_copy = @import("ollama.zig").Tool{
+                const tool_copy = @import("ollama").Tool{
                     .type = try allocator.dupe(u8, tool.ollama_tool.type),
                     .function = .{
                         .name = try allocator.dupe(u8, tool.ollama_tool.function.name),

@@ -4,39 +4,40 @@ const fs = std.fs;
 const mem = std.mem;
 const json = std.json;
 const process = std.process;
-const ui = @import("ui.zig");
-const markdown = @import("markdown.zig");
-const ollama = @import("ollama.zig");
-const llm_provider_module = @import("llm_provider.zig");
-const permission = @import("permission.zig");
-const tools_module = @import("tools.zig");
-const types = @import("types.zig");
-const state_module = @import("state.zig");
-const context_module = @import("context.zig");
-const config_module = @import("config.zig");
-const render = @import("render.zig");
-const message_renderer = @import("message_renderer.zig");
-const tool_executor_module = @import("tool_executor.zig");
-const zvdb = @import("zvdb/src/zvdb.zig");
-const embeddings_module = @import("embeddings.zig");
-const embedder_interface = @import("embedder_interface.zig");
-const lmstudio = @import("lmstudio.zig");
-const agents_module = @import("agents.zig");
-const IndexingQueue = @import("graphrag/indexing_queue.zig").IndexingQueue;
-// TODO: Re-implement with LLM-based indexing
-// const graphrag_indexer = @import("graphrag/indexer.zig");
-const graphrag_query = @import("graphrag/query.zig");
-const app_graphrag = @import("app_graphrag.zig");
-const config_editor_state = @import("config_editor_state.zig");
-const config_editor_renderer = @import("config_editor_renderer.zig");
-const config_editor_input = @import("config_editor_input.zig");
-const agent_loader = @import("agent_loader.zig");
-const agent_builder_state = @import("agent_builder_state.zig");
-const agent_builder_renderer = @import("agent_builder_renderer.zig");
-const agent_builder_input = @import("agent_builder_input.zig");
-const help_state = @import("help_state.zig");
-const help_renderer = @import("help_renderer.zig");
-const help_input = @import("help_input.zig");
+const ui = @import("ui");
+const markdown = @import("markdown");
+const ollama = @import("ollama");
+const llm_provider_module = @import("llm_provider");
+const permission = @import("permission");
+const tools_module = @import("tools");
+const types = @import("types");
+const state_module = @import("state");
+const context_module = @import("context");
+const config_module = @import("config");
+const render = @import("render");
+const message_renderer = @import("message_renderer");
+const tool_executor_module = @import("tool_executor");
+const zvdb = @import("zvdb");
+const embeddings_module = @import("embeddings");
+const embedder_interface = @import("embedder_interface");
+const lmstudio = @import("lmstudio");
+pub const agents_module = @import("agents"); // Re-export for agent_loader and agent_executor
+const config_editor_state = @import("config_editor_state");
+const config_editor_renderer = @import("config_editor_renderer");
+const config_editor_input = @import("config_editor_input");
+const agent_loader = @import("agent_loader");
+const agent_builder_state = @import("agent_builder_state");
+const agent_builder_renderer = @import("agent_builder_renderer");
+const agent_builder_input = @import("agent_builder_input");
+const help_state = @import("help_state");
+const help_renderer = @import("help_renderer");
+const help_input = @import("help_input");
+
+// Context management imports
+const compression = @import("compression");
+const tracking = @import("tracking");
+const injection = @import("injection");
+const compressor = @import("compressor");
 
 // Re-export types for convenience
 pub const Message = types.Message;
@@ -58,8 +59,7 @@ const StreamThreadContext = struct {
     keep_alive: []const u8,
     num_ctx: usize,
     num_predict: isize,
-    // GraphRAG summaries that need to be freed after thread completes
-    graphrag_summaries: [][]const u8,
+    hot_context_content: ?[]const u8 = null, // Reference only (owned by messages.items[1])
 };
 
 // Agent progress context for streaming sub-agent progress to UI
@@ -73,7 +73,7 @@ fn finalizeAgentMessage(ctx: *ProgressDisplayContext) !void {
 }
 
 // Progress callback for sub-agents (e.g., file curator) - streams to UI in real-time
-fn agentProgressCallback(user_data: ?*anyopaque, update_type: @import("agents.zig").ProgressUpdateType, message: []const u8) void {
+fn agentProgressCallback(user_data: ?*anyopaque, update_type: agents_module.ProgressUpdateType, message: []const u8) void {
     const ctx = @as(*ProgressDisplayContext, @ptrCast(@alignCast(user_data orelse return)));
     const allocator = ctx.app.allocator;
 
@@ -98,7 +98,7 @@ fn agentProgressCallback(user_data: ?*anyopaque, update_type: @import("agents.zi
             // For now, just continue accumulating
         },
         .embedding, .storage => {
-            // GraphRAG-specific updates (agents don't use these)
+            // Embedding/storage updates not used in current architecture
             // Just ignore for agent callbacks
         },
     }
@@ -231,13 +231,6 @@ pub const App = struct {
     permission_manager: permission.PermissionManager,
     permission_pending: bool = false,
     permission_response: ?permission.PermissionMode = null, // Set by UI, consumed by tool_executor
-    // GraphRAG permission system
-    graphrag_choice_pending: bool = false,
-    graphrag_choice_response: ?types.GraphRagChoice = null,
-    line_input_pending: bool = false,
-    line_input_buffer: std.ArrayListUnmanaged(u8) = .{},
-    line_range_response: ?types.LineRange = null,
-    current_indexing_file: ?[]const u8 = null, // Track which file is being prompted for
     // Tool execution state machine
     tool_executor: tool_executor_module.ToolExecutor,
     // Phase 1: Task management state
@@ -246,10 +239,9 @@ pub const App = struct {
     max_iterations: usize = 10, // Master loop iteration limit
     // Auto-scroll state (receipt printer mode)
     user_scrolled_away: bool = false, // Tracks if user manually scrolled during streaming
-    // Graph RAG components
+    // Vector DB components (kept for future semantic search)
     vector_store: ?*zvdb.HNSW(f32) = null,
     embedder: ?*embedder_interface.Embedder = null, // Generic interface - works with both Ollama and LM Studio
-    indexing_queue: ?*IndexingQueue = null,
     // Config editor state (modal mode)
     config_editor: ?config_editor_state.ConfigEditorState = null,
     // Agent system
@@ -258,6 +250,16 @@ pub const App = struct {
     agent_builder: ?agent_builder_state.AgentBuilderState = null,
     // Help viewer state (modal mode)
     help_viewer: ?help_state.HelpState = null,
+    
+    // Context management system (Phase 1)
+    token_tracker: ?*compression.TokenTracker = null,
+    context_tracker: tracking.ContextTracker,
+    compression_config: compression.CompressionConfig = .{},
+
+    // Hot context caching (for KV cache optimization)
+    hot_context_hash: u64 = 0,
+    hot_context_last_updated: i64 = 0,
+    hot_context_ttl_seconds: i64 = 300, // 5 minutes - regenerate but only update if hash changes
 
     pub fn init(allocator: mem.Allocator, config: Config) !App {
         const tools = try createTools(allocator);
@@ -274,130 +276,10 @@ pub const App = struct {
             std.debug.print("Warning: Failed to load policies: {}\n", .{err});
         };
 
-        // Initialize Graph RAG components if enabled
-        var vector_store_opt: ?*zvdb.HNSW(f32) = null;
-        var embedder_opt: ?*embedder_interface.Embedder = null;
-        var indexing_queue_opt: ?*IndexingQueue = null;
-
-        if (config.graph_rag_enabled) {
-            if (std.posix.getenv("DEBUG_GRAPHRAG")) |_| {
-                std.debug.print("[INIT] Graph RAG enabled, initializing vector store and embedder...\n", .{});
-            }
-
-            // Initialize vector store
-            const vs = allocator.create(zvdb.HNSW(f32)) catch |err| blk: {
-                std.debug.print("Warning: Failed to create vector store: {}\n", .{err});
-                break :blk null;
-            };
-
-            if (vs) |store| {
-                errdefer allocator.destroy(store);
-
-                // Create fresh index for this session (session-only storage, not persisted)
-                // m=16, ef_construction=200
-                store.* = zvdb.HNSW(f32).init(allocator, 16, 200);
-
-                vector_store_opt = store;
-
-                if (std.posix.getenv("DEBUG_GRAPHRAG")) |_| {
-                    std.debug.print("[INIT] Vector store initialized (session-only)\n", .{});
-                }
-
-                // Initialize embeddings client based on provider
-                const emb = allocator.create(embedder_interface.Embedder) catch |err| blk: {
-                    std.debug.print("Warning: Failed to create embeddings client: {}\n", .{err});
-                    break :blk null;
-                };
-
-                if (emb) |embedder| {
-                    // Create provider-specific embeddings client
-                    if (mem.eql(u8, config.provider, "lmstudio")) {
-                        // LM Studio embeddings
-                        const lmstudio_client = allocator.create(lmstudio.LMStudioEmbeddingsClient) catch |err| blk: {
-                            std.debug.print("Warning: Failed to create LM Studio embeddings client: {}\n", .{err});
-                            allocator.destroy(embedder);
-                            break :blk null;
-                        };
-
-                        if (lmstudio_client) |client| {
-                            client.* = lmstudio.LMStudioEmbeddingsClient.init(allocator, config.lmstudio_host);
-                            embedder.* = .{ .lmstudio = client };
-                            embedder_opt = embedder;
-
-                            if (std.posix.getenv("DEBUG_GRAPHRAG")) |_| {
-                                std.debug.print("[INIT] LM Studio embeddings client initialized\n", .{});
-                                std.debug.print("       Host: {s}\n", .{config.lmstudio_host});
-                                std.debug.print("       Model: {s}\n", .{config.embedding_model});
-                                if (!mem.startsWith(u8, config.embedding_model, "text-embedding-")) {
-                                    std.debug.print("       ⚠️  Warning: Model name doesn't match LM Studio format!\n", .{});
-                                    std.debug.print("       Expected format: text-embedding-...\n", .{});
-                                }
-                            }
-                        } else {
-                            allocator.destroy(embedder);
-                        }
-                    } else {
-                        // Ollama embeddings (default)
-                        const ollama_client = allocator.create(embeddings_module.EmbeddingsClient) catch |err| blk: {
-                            std.debug.print("Warning: Failed to create Ollama embeddings client: {}\n", .{err});
-                            allocator.destroy(embedder);
-                            break :blk null;
-                        };
-
-                        if (ollama_client) |client| {
-                            client.* = embeddings_module.EmbeddingsClient.init(allocator, config.ollama_host);
-                            embedder.* = .{ .ollama = client };
-                            embedder_opt = embedder;
-
-                            if (std.posix.getenv("DEBUG_GRAPHRAG")) |_| {
-                                std.debug.print("[INIT] Ollama embeddings client initialized\n", .{});
-                                std.debug.print("       Host: {s}\n", .{config.ollama_host});
-                                std.debug.print("       Model: {s}\n", .{config.embedding_model});
-                                if (mem.startsWith(u8, config.embedding_model, "text-embedding-")) {
-                                    std.debug.print("       ⚠️  Warning: Model name looks like LM Studio format!\n", .{});
-                                    std.debug.print("       Ollama models typically don't have 'text-embedding-' prefix\n", .{});
-                                }
-                            }
-                        } else {
-                            allocator.destroy(embedder);
-                        }
-                    }
-                }
-
-                // Always initialize indexing queue if GraphRAG is enabled
-                // (independent of embedder since files can be queued even if embeddings aren't ready)
-                const queue = allocator.create(IndexingQueue) catch |err| blk: {
-                    std.debug.print("Warning: Failed to create indexing queue: {}\n", .{err});
-                    break :blk null;
-                };
-
-                if (queue) |q| {
-                    q.* = IndexingQueue.init(allocator);
-                    indexing_queue_opt = q;
-
-                    if (std.posix.getenv("DEBUG_GRAPHRAG")) |_| {
-                        std.debug.print("[INIT] Indexing queue initialized\n", .{});
-                    }
-
-                    // Note: We can't spawn the worker thread yet because app_context
-                    // isn't initialized until after App.init() completes
-                    // The thread will be spawned in fixContextPointers() instead
-                }
-
-                // Clean up vector store if embedder failed to initialize
-                if (embedder_opt == null) {
-                    store.deinit();
-                    allocator.destroy(store);
-                    vector_store_opt = null;
-
-                    if (std.posix.getenv("DEBUG_GRAPHRAG")) |_| {
-                        std.debug.print("[INIT] Embedder failed to initialize - vector store cleaned up\n", .{});
-                        std.debug.print("[INIT] Queue is available, but indexing will fail until embedder is fixed\n", .{});
-                    }
-                }
-            }
-        }
-
+        // Vector database components reserved for future semantic search
+        // Currently disabled - can be re-enabled for semantic code search
+        const vector_store_opt: ?*zvdb.HNSW(f32) = null;
+        const embedder_opt: ?*embedder_interface.Embedder = null;
 
         // Create LLM provider based on config
         const provider = try llm_provider_module.createProvider(config.provider, allocator, config);
@@ -411,6 +293,10 @@ pub const App = struct {
 
         // Load all agents (native + markdown)
         try loader.loadAllAgents();
+
+        // Initialize token tracker
+        const token_tracker_ptr = try allocator.create(compression.TokenTracker);
+        token_tracker_ptr.* = compression.TokenTracker.init(allocator, config.num_ctx);
 
         var app = App{
             .allocator = allocator,
@@ -430,13 +316,16 @@ pub const App = struct {
             .app_context = undefined, // Will be fixed by caller after struct is in final location
             .vector_store = vector_store_opt,
             .embedder = embedder_opt,
-            .indexing_queue = indexing_queue_opt,
             .agent_registry = agent_registry,
             .agent_loader = loader,
             .agent_builder = null,
+            // Context management (Phase 1)
+            .token_tracker = token_tracker_ptr,
+            .context_tracker = tracking.ContextTracker.init(allocator),
+            .compression_config = .{},
         };
 
-        // Add system prompt
+        // Add system prompt (Position 0 - stable)
         const system_prompt = "You are a helpful coding assistant.";
         const system_processed = try markdown.processMarkdown(allocator, system_prompt);
         try app.messages.append(allocator, .{
@@ -447,7 +336,42 @@ pub const App = struct {
             .timestamp = std.time.milliTimestamp(),
         });
 
+        // Add hot context placeholder (Position 1 - updated in-place for cache stability)
+        const hot_context_placeholder = "";
+        const hot_processed = try markdown.processMarkdown(allocator, hot_context_placeholder);
+        try app.messages.append(allocator, .{
+            .role = .system,
+            .content = try allocator.dupe(u8, hot_context_placeholder),
+            .processed_content = hot_processed,
+            .thinking_expanded = true,
+            .timestamp = std.time.milliTimestamp(),
+        });
+
         return app;
+    }
+
+    // Normalize hot context content for deterministic hashing
+    // Ensures byte-identical output for semantically identical content
+    fn normalizeHotContext(allocator: mem.Allocator, content: []const u8) ![]const u8 {
+        var normalized = std.ArrayListUnmanaged(u8){};
+        errdefer normalized.deinit(allocator);
+
+        // Normalize line endings (CRLF -> LF) and preserve content
+        var i: usize = 0;
+        while (i < content.len) : (i += 1) {
+            if (content[i] == '\r' and i + 1 < content.len and content[i + 1] == '\n') {
+                // Skip \r in CRLF sequence
+                continue;
+            }
+            try normalized.append(allocator, content[i]);
+        }
+
+        // Trim trailing whitespace for determinism
+        while (normalized.items.len > 0 and std.ascii.isWhitespace(normalized.items[normalized.items.len - 1])) {
+            _ = normalized.pop();
+        }
+
+        return try normalized.toOwnedSlice(allocator);
     }
 
     // Fix context pointers after App is in its final location
@@ -460,11 +384,10 @@ pub const App = struct {
             .llm_provider = &self.llm_provider,
             .vector_store = self.vector_store,
             .embedder = self.embedder,
-            .indexing_queue = self.indexing_queue,
             .agent_registry = &self.agent_registry,
+            // Context management
+            .context_tracker = &self.context_tracker,
         };
-
-        // No background worker thread - GraphRAG now runs sequentially after each response
     }
 
 
@@ -657,69 +580,8 @@ pub const App = struct {
 
 
     // Compress message history by replacing read_file results with Graph RAG summaries
-    // Tracks allocated summaries in the provided list so caller can free them
-    fn compressMessageHistoryWithTracking(
-        self: *App,
-        messages: []const ollama.ChatMessage,
-        allocated_summaries: *std.ArrayListUnmanaged([]const u8),
-    ) ![]ollama.ChatMessage {
-        // Skip compression if Graph RAG is disabled or not initialized
-        if (!self.config.graph_rag_enabled or self.vector_store == null) {
-            return try self.allocator.dupe(ollama.ChatMessage, messages);
-        }
-
-        var compressed = std.ArrayListUnmanaged(ollama.ChatMessage){};
-        errdefer compressed.deinit(self.allocator);
-
-        for (messages) |msg| {
-            // Check if this is a tool result from read_file
-            if (mem.eql(u8, msg.role, "tool") and app_graphrag.isReadFileResult(msg.content)) {
-                // Extract file path from content
-                const file_path = app_graphrag.extractFilePathFromResult(msg.content) orelse {
-                    // Can't extract path, keep original
-                    try compressed.append(self.allocator, msg);
-                    continue;
-                };
-
-                // Check if file was indexed
-                if (!self.state.wasFileIndexed(file_path)) {
-                    // Not indexed, keep original
-                    try compressed.append(self.allocator, msg);
-                    continue;
-                }
-
-                // Try to generate Graph RAG summary
-                const summary_opt = graphrag_query.summarizeFileForHistory(
-                    self.allocator,
-                    self.vector_store.?,
-                    file_path,
-                    self.config.max_chunks_in_history,
-                ) catch |err| blk: {
-                    // Fallback to simple summary on error
-                    std.debug.print("Warning: Graph RAG summarization failed: {}\n", .{err});
-                    break :blk graphrag_query.createFallbackSummary(self.allocator, file_path, msg.content) catch null;
-                };
-
-                if (summary_opt) |summary| {
-                    // Track this allocation so caller can free it
-                    try allocated_summaries.append(self.allocator, summary);
-
-                    // Replace content with summary
-                    var compressed_msg = msg;
-                    compressed_msg.content = summary;
-                    try compressed.append(self.allocator, compressed_msg);
-                } else {
-                    // Ultimate fallback: keep original
-                    try compressed.append(self.allocator, msg);
-                }
-            } else {
-                // Keep other messages as-is
-                try compressed.append(self.allocator, msg);
-            }
-        }
-
-        return compressed.toOwnedSlice(self.allocator);
-    }
+    // REMOVED: GraphRAG compression no longer needed
+    // Curator caching handles this better - instant cache hits for same conversation context
 
     // Internal method to start streaming with current message history
     fn startStreaming(self: *App, format: ?[]const u8) !void {
@@ -730,12 +592,82 @@ pub const App = struct {
         // Reset tool call depth when starting a new user message
         // (This will be set correctly by continueStreaming for tool calls)
 
-        // Prepare message history for Ollama with GraphRAG compression
+        // Phase A.5: Update hot context at position 1 BEFORE copying to ollama_messages (cache-friendly)
+        // Extract recent messages for relevance filtering
+        const recent_start = if (self.messages.items.len > 5) self.messages.items.len - 5 else 0;
+        const recent_msgs = self.messages.items[recent_start..];
+
+        // Generate hot context (always regenerate - TTL triggers this, hash determines if we update)
+        const hot_context = injection.generateHotContext(self.allocator, &self.context_tracker, &self.state, recent_msgs) catch |err| blk: {
+            if (std.posix.getenv("DEBUG_CONTEXT")) |_| {
+                std.debug.print("[CONTEXT] Failed to generate hot context: {}, keeping previous\n", .{err});
+            }
+            break :blk null; // Keep existing content at position 1
+        };
+
+        if (hot_context) |ctx| {
+            defer self.allocator.free(ctx);
+
+            // Normalize for deterministic hashing
+            const normalized_ctx = normalizeHotContext(self.allocator, ctx) catch ctx;
+            defer if (normalized_ctx.ptr != ctx.ptr) self.allocator.free(normalized_ctx);
+
+            // Hash normalized content
+            const new_hash = std.hash.Wyhash.hash(0, normalized_ctx);
+
+            // Check TTL
+            const now = @divTrunc(std.time.milliTimestamp(), 1000); // Convert to seconds
+            const time_since_update = now - self.hot_context_last_updated;
+            const ttl_expired = time_since_update > self.hot_context_ttl_seconds;
+
+            // Only update position 1 if hash changed (TTL just triggers regeneration)
+            const hash_changed = new_hash != self.hot_context_hash;
+
+            if (hash_changed and self.messages.items.len >= 2 and self.messages.items[1].role == .system) {
+                // Free old hot context content at position 1
+                self.allocator.free(self.messages.items[1].content);
+                for (self.messages.items[1].processed_content.items) |*item| {
+                    item.deinit(self.allocator);
+                }
+                self.messages.items[1].processed_content.deinit(self.allocator);
+
+                // Allocate new hot context content
+                const new_content = try self.allocator.dupe(u8, normalized_ctx);
+                const new_processed = try markdown.processMarkdown(self.allocator, new_content);
+
+                // Update position 1 in-place
+                self.messages.items[1].content = new_content;
+                self.messages.items[1].processed_content = new_processed;
+                self.messages.items[1].timestamp = std.time.milliTimestamp();
+
+                // Update hash and timestamp
+                self.hot_context_hash = new_hash;
+                self.hot_context_last_updated = now;
+
+                if (std.posix.getenv("DEBUG_CONTEXT")) |_| {
+                    // Calculate prefix hash for correlation
+                    var prefix_hasher = std.hash.Wyhash.init(0);
+                    for (self.messages.items[0..2]) |msg| {
+                        prefix_hasher.update(msg.content);
+                    }
+                    const prefix_hash = prefix_hasher.final();
+
+                    std.debug.print("[CONTEXT] Updated position 1: hash={x}, prefix_hash={x}, size={d}B, ttl_expired={}\n",
+                        .{new_hash, prefix_hash, normalized_ctx.len, ttl_expired});
+                }
+            } else if (std.posix.getenv("DEBUG_CONTEXT")) |_| {
+                if (!hash_changed) {
+                    std.debug.print("[CONTEXT] Skipped update: hash unchanged={x}, ttl={}s\n",
+                        .{new_hash, time_since_update});
+                } else {
+                    std.debug.print("[CONTEXT] WARNING: Position 1 not available or wrong type, skipping update\n", .{});
+                }
+            }
+        }
+
+        // Now copy messages to ollama_messages (hot context at position 1 is already updated)
         var ollama_messages = std.ArrayListUnmanaged(ollama.ChatMessage){};
         defer ollama_messages.deinit(self.allocator);
-
-        // Track allocated summaries - will be transferred to thread context
-        var allocated_summaries = std.ArrayListUnmanaged([]const u8){};
 
         for (self.messages.items) |msg| {
             // Skip display_only_data messages - they're UI-only notifications
@@ -754,19 +686,6 @@ pub const App = struct {
                 .tool_call_id = msg.tool_call_id,
                 .tool_calls = msg.tool_calls,
             });
-        }
-
-        // Apply GraphRAG compression to replace read_file results with summaries
-        if (self.config.graph_rag_enabled and self.vector_store != null) {
-            const compressed_messages = try self.compressMessageHistoryWithTracking(
-                ollama_messages.items,
-                &allocated_summaries,
-            );
-            defer self.allocator.free(compressed_messages);
-
-            // Replace ollama_messages with compressed version
-            ollama_messages.clearRetainingCapacity();
-            try ollama_messages.appendSlice(self.allocator, compressed_messages);
         }
 
         // DEBUG: Print what we're sending to the API
@@ -811,7 +730,6 @@ pub const App = struct {
 
         // Prepare thread context
         const messages_slice = try ollama_messages.toOwnedSlice(self.allocator);
-        const summaries_slice = try allocated_summaries.toOwnedSlice(self.allocator);
 
         const thread_ctx = try self.allocator.create(StreamThreadContext);
         thread_ctx.* = .{
@@ -825,7 +743,7 @@ pub const App = struct {
             .keep_alive = self.config.model_keep_alive,
             .num_ctx = self.config.num_ctx,
             .num_predict = self.config.num_predict,
-            .graphrag_summaries = summaries_slice,
+            .hot_context_content = null, // Hot context now owned by messages.items[1], not thread
         };
 
         // Start streaming in background thread
@@ -855,6 +773,78 @@ pub const App = struct {
             .thinking_expanded = true,
             .timestamp = std.time.milliTimestamp(),
         });
+
+        // Phase A.4: Track tokens for user message
+        if (self.token_tracker) |tracker| {
+            const msg_idx = self.messages.items.len - 1;
+            tracker.trackMessage(msg_idx, user_content, .user) catch {};
+            if (tracker.needsCompression(self.compression_config)) {
+                if (std.posix.getenv("DEBUG_CONTEXT")) |_| {
+                    std.debug.print("[CONTEXT] Token limit approaching: {d}/{d}\n", .{
+                        tracker.estimated_tokens_used,
+                        tracker.max_context_tokens,
+                    });
+                    std.debug.print("[CONTEXT] Triggering hybrid compression...\n", .{});
+                }
+                
+                // Phase 6: Trigger agent-based compression
+                if (compressor.compressWithAgent(
+                    self.allocator,
+                    &self.messages,
+                    &self.context_tracker,
+                    tracker,
+                    self.compression_config,
+                    &self.llm_provider,
+                    &self.config,
+                    &self.agent_registry,
+                )) |stats| {
+
+                    // Recalculate token tracker with compressed messages
+                    const tokens_before = tracker.estimated_tokens_used;
+                    tracker.reset();
+                    for (self.messages.items, 0..) |msg, idx| {
+                        if (msg.role == .display_only_data) continue;
+
+                        const role_enum: compression.MessageRole = switch (msg.role) {
+                            .user => .user,
+                            .assistant => .assistant,
+                            .system => .system,
+                            .tool => .tool,
+                            .display_only_data => .display_only_data,
+                        };
+                        tracker.trackMessage(idx, msg.content, role_enum) catch {};
+                    }
+
+                    if (std.posix.getenv("DEBUG_CONTEXT")) |_| {
+                        const tokens_after = tracker.estimated_tokens_used;
+                        const tokens_saved = if (tokens_before > tokens_after) tokens_before - tokens_after else 0;
+                        const reduction_pct = if (tokens_before > 0)
+                            (@as(f32, @floatFromInt(tokens_saved)) / @as(f32, @floatFromInt(tokens_before))) * 100.0
+                        else
+                            0.0;
+
+                        std.debug.print(
+                            "[CONTEXT] Compression complete:\n" ++
+                            "  Messages: {d} → {d}\n" ++
+                            "  Tokens: {d} → {d} ({d} saved, {d:.1}% reduction)\n" ++
+                            "  Tool results compressed: {d}\n" ++
+                            "  Protected messages: {d}\n",
+                            .{
+                                stats.original_message_count, stats.compressed_message_count,
+                                tokens_before, tokens_after, tokens_saved, reduction_pct,
+                                stats.tool_results_compressed,
+                                stats.messages_protected,
+                            }
+                        );
+                    }
+                } else |err| {
+                    if (std.posix.getenv("DEBUG_CONTEXT")) |_| {
+                        std.debug.print("[CONTEXT] Compression failed: {}\n", .{err});
+                    }
+                    // Continue without compression
+                }
+            }
+        }
 
         // Show user message right away (receipt printer mode)
         if (!self.user_scrolled_away) {
@@ -956,11 +946,7 @@ pub const App = struct {
 
 
     pub fn deinit(self: *App) void {
-        // Clean up indexing queue
-        if (self.indexing_queue) |queue| {
-            queue.deinit();
-            self.allocator.destroy(queue);
-        }
+        // GraphRAG indexing queue removed - context queue handles async tasks now
 
         // Wait for streaming thread to finish if active
         if (self.stream_thread) |thread| {
@@ -969,15 +955,11 @@ pub const App = struct {
 
         // Clean up thread context if it exists
         if (self.stream_thread_ctx) |ctx| {
-            // Note: msg.role and msg.content are NOT owned by the context
+            // Note: hot_context_content is now owned by messages.items[1], not thread context
+            // It will be freed when messages array is cleaned up in deinit()
+            // msg.role and msg.content are NOT owned by the context
             // They are pointers to existing message data, so we only free the array
             self.allocator.free(ctx.messages);
-
-            // Free GraphRAG summaries (allocated in startStreaming)
-            for (ctx.graphrag_summaries) |summary| {
-                self.allocator.free(summary);
-            }
-            self.allocator.free(ctx.graphrag_summaries);
 
             self.allocator.destroy(ctx);
         }
@@ -988,12 +970,6 @@ pub const App = struct {
             if (chunk.content) |c| self.allocator.free(c);
         }
         self.stream_chunks.deinit(self.allocator);
-
-        // Clean up GraphRAG permission state
-        self.line_input_buffer.deinit(self.allocator);
-        if (self.current_indexing_file) |file| {
-            self.allocator.free(file);
-        }
 
         for (self.messages.items) |*message| {
             self.allocator.free(message.content);
@@ -1121,6 +1097,13 @@ pub const App = struct {
         // Clean up agent system
         self.agent_loader.deinit();
         self.agent_registry.deinit();
+
+        // Clean up context management (Phase 1)
+        if (self.token_tracker) |tracker| {
+            tracker.deinit();
+            self.allocator.destroy(tracker);
+        }
+        self.context_tracker.deinit();
 
         // Clean up config (App owns it)
         self.config.deinit(self.allocator);
@@ -1434,6 +1417,14 @@ pub const App = struct {
 
                                 // Tell executor to advance to next tool
                                 self.tool_executor.advanceAfterExecution();
+                                
+                                // DEBUG: Log state after advancing
+                                if (std.posix.getenv("DEBUG_TOOLS")) |_| {
+                                    std.debug.print("[TOOL_EXEC] After advance: state={s}, hasPending={}\n", .{
+                                        @tagName(self.tool_executor.getCurrentState()),
+                                        self.tool_executor.hasPendingWork(),
+                                    });
+                                }
                             }
                         } else if (self.tool_executor.getCurrentState() == .creating_denial_result) {
                             // User denied permission - create error result for LLM
@@ -1570,20 +1561,6 @@ pub const App = struct {
                 }
             }
 
-            // Handle GraphRAG file processing
-            // This runs when user has made a choice or when there are files queued
-            if (!self.streaming_active and !self.tool_executor.hasPendingWork()) {
-                // Check if we have a pending GraphRAG operation or queued files
-                const has_graphrag_work = (self.graphrag_choice_pending or
-                    self.graphrag_choice_response != null or
-                    (self.indexing_queue != null and !self.indexing_queue.?.isEmpty()));
-
-                if (has_graphrag_work) {
-                    // Call processQueuedFiles to advance the state machine
-                    try app_graphrag.processQueuedFiles(self);
-                }
-            }
-
             // Process stream chunks if streaming is active
             if (self.streaming_active) {
                 self.stream_mutex.lock();
@@ -1614,13 +1591,11 @@ pub const App = struct {
 
                             // Free thread context and its data
                             if (self.stream_thread_ctx) |ctx| {
-                                // Free GraphRAG summaries that were allocated during compression
-                                for (ctx.graphrag_summaries) |summary| {
-                                    self.allocator.free(summary);
+                                // Free hot context content if it was allocated
+                                if (ctx.hot_context_content) |content| {
+                                    self.allocator.free(content);
                                 }
-                                self.allocator.free(ctx.graphrag_summaries);
-
-                                // Note: msg.role and msg.content are NOT owned by the context
+                                // Note: msg.role and msg.content are NOT owned by the context (except hot_context_content)
                                 // They are pointers to existing message data, so we only free the array
                                 self.allocator.free(ctx.messages);
                                 self.allocator.destroy(ctx);
@@ -1692,12 +1667,6 @@ pub const App = struct {
                             }
 
                             self.stream_mutex.unlock();
-
-                            app_graphrag.processQueuedFiles(self) catch |err| {
-                                if (std.posix.getenv("DEBUG_GRAPHRAG")) |_| {
-                                    std.debug.print("[GRAPHRAG] Error in secondary loop: {}\n", .{err});
-                                }
-                            };
 
                             self.stream_mutex.lock();
                         }
@@ -1903,11 +1872,6 @@ pub const App = struct {
                 std.Thread.sleep(10 * std.time.ns_per_ms); // 10ms
             } else {
                 // Normal blocking mode when not streaming
-
-                // Process pending Graph RAG indexing during idle time (post-response)
-                if (self.state.hasPendingIndexing()) {
-                    try app_graphrag.processPendingIndexing(self);
-                }
 
                 var should_redraw = false;
                 while (!should_redraw) {

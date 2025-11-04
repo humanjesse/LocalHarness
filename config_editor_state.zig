@@ -1,6 +1,6 @@
 // Config Editor State - Manages the full-screen configuration UI state
 const std = @import("std");
-const config_module = @import("config.zig");
+const config_module = @import("config");
 
 /// Represents different types of configuration fields
 pub const FieldType = enum {
@@ -87,11 +87,6 @@ pub const ConfigEditorState = struct {
             .model_keep_alive = try allocator.dupe(u8, current_config.model_keep_alive),
             .num_ctx = current_config.num_ctx,
             .num_predict = current_config.num_predict,
-            .indexing_temperature = current_config.indexing_temperature,
-            .indexing_num_predict = current_config.indexing_num_predict,
-            .indexing_repeat_penalty = current_config.indexing_repeat_penalty,
-            .indexing_max_iterations = current_config.indexing_max_iterations,
-            .indexing_enable_thinking = current_config.indexing_enable_thinking,
             .editor = blk: {
                 const editor = try allocator.alloc([]const u8, current_config.editor.len);
                 for (current_config.editor, 0..) |arg, i| {
@@ -107,11 +102,6 @@ pub const ConfigEditorState = struct {
             .color_inline_code_bg = try allocator.dupe(u8, current_config.color_inline_code_bg),
             .enable_thinking = current_config.enable_thinking,
             .show_tool_json = current_config.show_tool_json,
-            .graph_rag_enabled = current_config.graph_rag_enabled,
-            .embedding_model = try allocator.dupe(u8, current_config.embedding_model),
-            .indexing_model = try allocator.dupe(u8, current_config.indexing_model),
-            .max_chunks_in_history = current_config.max_chunks_in_history,
-            .zvdb_path = try allocator.dupe(u8, current_config.zvdb_path),
             .file_read_small_threshold = current_config.file_read_small_threshold,
         };
 
@@ -246,7 +236,7 @@ fn buildFormSections(allocator: std.mem.Allocator, temp_config: *const config_mo
         var fields = std.ArrayListUnmanaged(ConfigField){};
 
         // Provider selection (radio buttons) - dynamically populated from registry
-        const llm_provider = @import("llm_provider.zig");
+        const llm_provider = @import("llm_provider");
         const provider_identifiers = try llm_provider.ProviderRegistry.listIdentifiers(allocator);
         try fields.append(allocator, .{
             .label = "Provider",
@@ -265,21 +255,6 @@ fn buildFormSections(allocator: std.mem.Allocator, temp_config: *const config_mo
         });
 
         // Embedding Model (text input) - for GraphRAG vector search
-        try fields.append(allocator, .{
-            .label = "Embedding Model",
-            .field_type = .text_input,
-            .key = "embedding_model",
-            .help_text = "Ollama: 'nomic-embed-text' | LM Studio: 'text-embedding-nomic-embed-text-v1.5' (must be loaded first!)",
-        });
-
-        // Indexing Model (text input) - for LLM-based file analysis
-        try fields.append(allocator, .{
-            .label = "Indexing Model",
-            .field_type = .text_input,
-            .key = "indexing_model",
-            .help_text = "Model for analyzing files during GraphRAG indexing",
-        });
-
         try sections.append(allocator, .{
             .title = try allocator.dupe(u8, "Provider Selection"),
             .fields = try fields.toOwnedSlice(allocator),
@@ -304,24 +279,10 @@ fn buildFormSections(allocator: std.mem.Allocator, temp_config: *const config_mo
         });
 
         try fields.append(allocator, .{
-            .label = "Graph RAG",
-            .field_type = .toggle,
-            .key = "graph_rag_enabled",
-            .help_text = "Enable code context compression",
-        });
-
-        try fields.append(allocator, .{
             .label = "Show Tool JSON",
             .field_type = .toggle,
             .key = "show_tool_json",
             .help_text = "Display raw tool call JSON",
-        });
-
-        try fields.append(allocator, .{
-            .label = "GraphRAG Indexing Thinking",
-            .field_type = .toggle,
-            .key = "indexing_enable_thinking",
-            .help_text = "Enable thinking mode during file indexing (both Ollama and LM Studio)",
         });
 
         try sections.append(allocator, .{
@@ -348,34 +309,6 @@ fn buildFormSections(allocator: std.mem.Allocator, temp_config: *const config_mo
             .help_text = "Maximum response length (default: 8192)",
         });
 
-        try fields.append(allocator, .{
-            .label = "GraphRAG Indexing Temperature",
-            .field_type = .text_input,
-            .key = "indexing_temperature",
-            .help_text = "Temperature for entity extraction (null=default, 0.1=focused, 0.5=balanced)",
-        });
-
-        try fields.append(allocator, .{
-            .label = "GraphRAG Max Tokens",
-            .field_type = .text_input,
-            .key = "indexing_num_predict",
-            .help_text = "Max tokens for indexing (null=use main config, default: 10240)",
-        });
-
-        try fields.append(allocator, .{
-            .label = "GraphRAG Repeat Penalty",
-            .field_type = .text_input,
-            .key = "indexing_repeat_penalty",
-            .help_text = "Penalize repetition in indexing (null=default, 1.3=reduce verbosity)",
-        });
-
-        try fields.append(allocator, .{
-            .label = "GraphRAG Max Iterations",
-            .field_type = .number_input,
-            .key = "indexing_max_iterations",
-            .help_text = "Max analysis passes for indexing (default: 20, increase for models generating 1 tool call at a time)",
-        });
-
         try sections.append(allocator, .{
             .title = try allocator.dupe(u8, "Advanced Settings"),
             .fields = try fields.toOwnedSlice(allocator),
@@ -387,7 +320,7 @@ fn buildFormSections(allocator: std.mem.Allocator, temp_config: *const config_mo
 
 /// Build provider-specific section dynamically from registry
 fn buildProviderSpecificSection(allocator: std.mem.Allocator, temp_config: *const config_module.Config) !ConfigSection {
-    const llm_provider = @import("llm_provider.zig");
+    const llm_provider = @import("llm_provider");
 
     // Get capabilities for the selected provider
     const caps = llm_provider.ProviderRegistry.get(temp_config.provider) orelse {

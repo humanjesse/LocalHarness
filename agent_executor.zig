@@ -1,10 +1,11 @@
 // Agent Executor - Isolated execution engine for agents with tool calling
 const std = @import("std");
-const ollama = @import("ollama.zig");
-const agents_module = @import("agents.zig");
-const llm_helper = @import("llm_helper.zig");
-const tools_module = @import("tools.zig");
-const context_module = @import("context.zig");
+const ollama = @import("ollama");
+const app_module = @import("app");
+const agents_module = app_module.agents_module; // Get agents from app which has it as a module
+const llm_helper = @import("llm_helper");
+const tools_module = @import("tools");
+const context_module = @import("context");
 
 const AgentContext = agents_module.AgentContext;
 const AgentResult = agents_module.AgentResult;
@@ -183,6 +184,7 @@ pub const AgentExecutor = struct {
                 .num_ctx = self.capabilities.num_ctx,
                 .num_predict = self.capabilities.num_predict,
                 .think = self.capabilities.enable_thinking,
+                .format = self.capabilities.format,
             };
 
             llm_helper.chatStream(
@@ -339,7 +341,9 @@ pub const AgentExecutor = struct {
             .llm_provider = agent_context.llm_provider,
             .vector_store = agent_context.vector_store,
             .embedder = agent_context.embedder,
-            .indexing_queue = null, // Agents don't queue for indexing
+            .messages_list = agent_context.messages_list, // Pass through for compression tools
+            .recent_messages = agent_context.recent_messages, // Pass through for context-aware tools (file_curator needs this!)
+            .context_tracker = null, // Agents don't track context themselves
         };
 
         // Execute tool (look up in tools module)

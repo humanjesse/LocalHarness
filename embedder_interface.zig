@@ -2,8 +2,8 @@
 // Allows GraphRAG to use Ollama or LM Studio embeddings seamlessly
 
 const std = @import("std");
-const embeddings = @import("embeddings.zig");
-const lmstudio = @import("lmstudio.zig");
+const embeddings = @import("embeddings");
+const lmstudio = @import("lmstudio");
 
 /// Generic embedder that dispatches to the correct provider implementation
 pub const Embedder = union(enum) {

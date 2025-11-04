@@ -2,11 +2,11 @@
 // Manages terminal state, input, and drawing.
 const std = @import("std");
 const mem = std.mem;
-const app_module = @import("app.zig");
-const types_module = @import("types.zig");
-const tree = @import("tools/tree.zig");
-const markdown = @import("markdown.zig");
-const config_editor_state = @import("config_editor_state.zig");
+const app_module = @import("app");
+const types_module = @import("types");
+const tree = @import("tree");
+const markdown = @import("markdown");
+const config_editor_state = @import("config_editor_state");
 
 // --- START: Merged from c_api.zig ---
 pub const c = @cImport({
@@ -304,14 +304,7 @@ pub fn drawTaskbar(app: *const app_module.App, writer: anytype) !void {
     try writer.print("\x1b[{d};1H", .{app.terminal_size.height});
     try writer.print("\x1b[2K", .{});
 
-    if (app.line_input_pending) {
-        // Show line range input prompt
-        try writer.print("\x1b[36m📝 Enter line range (start-end):\x1b[0m {s}_", .{app.line_input_buffer.items});
-    } else if (app.graphrag_choice_pending) {
-        // Show GraphRAG choice prompt
-        const filename = app.current_indexing_file orelse "unknown";
-        try writer.print("\x1b[36m📊 [{s}]\x1b[0m \x1b[32m1\x1b[0m=Graph RAG | \x1b[33m2\x1b[0m=Custom Lines | \x1b[31m3\x1b[0m=Metadata Only", .{filename});
-    } else if (app.permission_pending) {
+    if (app.permission_pending) {
         try writer.print("\x1b[33m⚠️  Permission Required:\x1b[0m Press \x1b[32mA\x1b[0m/\x1b[32mS\x1b[0m/\x1b[36mR\x1b[0m/\x1b[31mD\x1b[0m to respond", .{});
     } else if (app.streaming_active) {
         try writer.print("{s}AI is responding...\x1b[0m (wait for response to finish before sending) | Type '/quit' + Enter to exit", .{status_color});
@@ -381,117 +374,9 @@ pub fn handleInput(
     input: []const u8,
     should_redraw: *bool,
 ) !bool { // Returns true if the app should quit.
-    const types = @import("types.zig");
-
-    // Handle line range input (highest priority when active)
-    if (app.line_input_pending and input.len == 1) {
-        switch (input[0]) {
-            '\r', '\n' => {
-                // Enter - parse the line range
-                const input_str = app.line_input_buffer.items;
-
-                // Try to parse "start-end" format
-                if (mem.indexOf(u8, input_str, "-")) |dash_pos| {
-                    const start_str = input_str[0..dash_pos];
-                    const end_str = input_str[dash_pos + 1 ..];
-
-                    const start = std.fmt.parseInt(usize, start_str, 10) catch {
-                        // Invalid format - show error and stay in input mode
-                        app.line_input_buffer.clearRetainingCapacity();
-                        try app.line_input_buffer.appendSlice(app.allocator, "Invalid format! Use: start-end");
-                        should_redraw.* = true;
-                        return false;
-                    };
-
-                    const end = std.fmt.parseInt(usize, end_str, 10) catch {
-                        app.line_input_buffer.clearRetainingCapacity();
-                        try app.line_input_buffer.appendSlice(app.allocator, "Invalid format! Use: start-end");
-                        should_redraw.* = true;
-                        return false;
-                    };
-
-                    if (start > end or start == 0) {
-                        app.line_input_buffer.clearRetainingCapacity();
-                        try app.line_input_buffer.appendSlice(app.allocator, "Invalid range! start must be > 0 and <= end");
-                        should_redraw.* = true;
-                        return false;
-                    }
-
-                    // Valid range - store it
-                    app.line_range_response = types.LineRange{ .start = start, .end = end };
-                    app.line_input_pending = false;
-                    app.line_input_buffer.clearRetainingCapacity();
-                    should_redraw.* = true;
-                } else {
-                    // No dash found
-                    app.line_input_buffer.clearRetainingCapacity();
-                    try app.line_input_buffer.appendSlice(app.allocator, "Invalid format! Use: start-end");
-                    should_redraw.* = true;
-                }
-                return false;
-            },
-            0x7F, 0x08 => { // Backspace
-                if (app.line_input_buffer.items.len > 0) {
-                    _ = app.line_input_buffer.pop();
-                    should_redraw.* = true;
-                }
-                return false;
-            },
-            0x1B => { // Escape - cancel line input
-                app.line_input_pending = false;
-                app.line_input_buffer.clearRetainingCapacity();
-                // Default to full indexing when canceled
-                app.graphrag_choice_response = types.GraphRagChoice.full_indexing;
-                should_redraw.* = true;
-                return false;
-            },
-            '0'...'9', '-' => {
-                // Accumulate digits and dash
-                try app.line_input_buffer.append(app.allocator, input[0]);
-                should_redraw.* = true;
-                return false;
-            },
-            else => {
-                // Ignore other characters
-                return false;
-            },
-        }
-    }
-
-    // Handle GraphRAG choice (second priority)
-    if (app.graphrag_choice_pending and input.len == 1) {
-        switch (input[0]) {
-            '1' => {
-                app.graphrag_choice_response = types.GraphRagChoice.full_indexing;
-                app.graphrag_choice_pending = false;
-                should_redraw.* = true;
-                return false;
-            },
-            '2' => {
-                app.graphrag_choice_response = types.GraphRagChoice.custom_lines;
-                app.graphrag_choice_pending = false;
-                // Start line input mode
-                app.line_input_pending = true;
-                app.line_input_buffer.clearRetainingCapacity();
-                should_redraw.* = true;
-                return false;
-            },
-            '3' => {
-                app.graphrag_choice_response = types.GraphRagChoice.metadata_only;
-                app.graphrag_choice_pending = false;
-                should_redraw.* = true;
-                return false;
-            },
-            else => {
-                // Ignore other keys when GraphRAG choice is pending
-                return false;
-            },
-        }
-    }
-
     // Handle permission responses first (takes priority over normal input)
     if (app.permission_pending and input.len == 1) {
-        const permission = @import("permission.zig");
+        const permission = @import("permission");
         switch (input[0]) {
             '1' => {
                 app.permission_response = permission.PermissionMode.allow_once;
@@ -584,7 +469,7 @@ pub fn handleInput(
 
                     // Check for /agents command
                     if (mem.eql(u8, app.input_buffer.items, "/agents")) {
-                        const agent_builder_state = @import("agent_builder_state.zig");
+                        const agent_builder_state = @import("agent_builder_state");
                         // Deinit existing agent builder if present
                         if (app.agent_builder) |*builder| {
                             builder.deinit();
@@ -599,7 +484,7 @@ pub fn handleInput(
 
                     // Check for /help command
                     if (mem.eql(u8, app.input_buffer.items, "/help")) {
-                        const help_state = @import("help_state.zig");
+                        const help_state = @import("help_state");
                         // Deinit existing help viewer if present
                         if (app.help_viewer) |*viewer| {
                             viewer.deinit();

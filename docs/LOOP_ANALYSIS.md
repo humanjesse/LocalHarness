@@ -1,11 +1,13 @@
-# Main Chat Loop and GraphRAG Loop Analysis
+# Main Chat Loop Analysis
 
 ## Overview
-This is a Zig-based application with two main execution loops:
-1. **Main Chat Loop** - `app.zig:run()` function
-2. **GraphRAG Secondary Loop** - `app_graphrag.zig:processQueuedFiles()` function
+This is a Zig-based application with a unified main execution loop in `app.zig:run()` that handles:
+1. **Chat & Streaming** - Real-time LLM response streaming
+2. **Tool Calling** - Agentic tool execution with permission system
+3. **Context Management** - Automatic hot context injection and compression
+4. **Modal Management** - Config editor, agent builder, help viewer
 
-Both loops support tool calling with different handling for Ollama vs LM Studio.
+The system supports tool calling with different handling for Ollama vs LM Studio.
 
 ---
 
@@ -38,17 +40,21 @@ The main loop is a `while (true)` loop (line 1030) with multiple sub-sections:
   - `.iteration_complete` - all tools done, continue to next streaming
   - `.iteration_limit_reached` - max iterations hit, stop
 
-#### 1.3 GraphRAG Secondary Loop Trigger (Lines 1289-1301)
-**Entry point to GraphRAG processing**
+#### 1.3 Compression Checkpoint (After Tool Execution)
+**Token management checkpoint - triggers compression when needed**
 ```zig
-if (!self.streaming_active and !self.tool_executor.hasPendingWork()) {
-    const has_graphrag_work = (self.graphrag_choice_pending or
-        self.graphrag_choice_response != null or
-        (self.indexing_queue != null and !self.indexing_queue.?.isEmpty()));
-    
-    if (has_graphrag_work) {
-        try app_graphrag.processQueuedFiles(self);
-    }
+// After all tool executions complete, check if compression is needed
+if (context_tracker.estimated_tokens_used > compression_trigger_threshold) {
+    // Trigger compression agent to reduce token usage
+    // Target: reduce from 70% (56k/80k) to 40% (32k/80k)
+    const compression_result = try compressor.compressWithAgent(
+        allocator,
+        &messages,
+        context_tracker,
+        llm_provider,
+        config,
+    );
+    // Update token tracker with compressed messages
 }
 ```
 
@@ -65,7 +71,7 @@ if (!self.streaming_active and !self.tool_executor.hasPendingWork()) {
 ```zig
 if (chunk.done) {
     // Streaming complete
-    
+
     // Check for tool calls
     if (tool_calls_to_execute) |tool_calls| {
         if (self.tool_call_depth < self.max_tool_depth) {
@@ -76,8 +82,10 @@ if (chunk.done) {
         }
     } else {
         // No tool calls - response is complete
-        // SECONDARY LOOP: Process GraphRAG queue
-        app_graphrag.processQueuedFiles(self) catch |err| { ... };
+        // Check if compression is needed (inline checkpoint, not secondary loop)
+        if (context_tracker.shouldCompress()) {
+            compressor.compressWithAgent(...) catch |err| { ... };
+        }
     }
 }
 ```
@@ -164,102 +172,124 @@ fn streamingThreadFn(ctx: *StreamThreadContext) void {
 
 ---
 
-## 3. GRAPHRAG SECONDARY LOOP (`app_graphrag.zig`)
+## 3. AUTOMATIC COMPRESSION SYSTEM
 
 ### Location
-File: `/home/wassie/Desktop/localharness/app_graphrag.zig`
-Lines: 424-714
+Files:
+- `context_management/compressor.zig` - Compression logic and LLM-based summarization
+- `agents_hardcoded/compression_agent.zig` - Compression agent with specialized tools
+- `tools/compress_*.zig` - Compression tools (4 specialized tools)
+- `app.zig` - Integration point (checkpoints after tool execution)
 
 ### Entry Point
 ```zig
-pub fn processQueuedFiles(app: *App) !void
+// In app.zig main loop, after tool execution completes
+if (self.context_tracker) |tracker| {
+    if (tracker.shouldCompress(self.config)) {
+        // Inline compression - blocks until complete
+        const result = try compressor.compressWithAgent(...);
+    }
+}
 ```
 
-### Loop Architecture
-**State Machine Pattern** - Not a traditional loop, but a state machine that works with the main loop:
+### Compression Architecture
+**Inline Checkpoint Pattern** - Integrated into main loop, not a separate thread:
 
 ```
 Main Loop
     ↓
-Check: streaming_active && !tool_executor.hasPendingWork() && has_graphrag_work
+User Message → LLM Response → Tool Execution
     ↓
-Call: app_graphrag.processQueuedFiles()
-    ├─ Wait for user choice? Return to main loop
-    ├─ Got choice? Process it
-    └─ Continue to next file or complete
+[Compression Checkpoint]
+    ├─ Check: tokens > 70% threshold?
+    ├─ Yes → Run compression agent (inline, synchronous)
+    │   ├─ Compress old messages (preserve last 5 pairs)
+    │   ├─ Update message history
+    │   └─ Reset token tracker
+    └─ No → Continue to next iteration
 ```
 
 ### State Variables (in `App`)
 ```zig
-graphrag_choice_pending: bool = false,     // Waiting for user input
-graphrag_choice_response: ?types.GraphRagChoice = null,  // User's choice
-current_indexing_file: ?[]const u8 = null, // Current file being processed
-line_range_response: ?types.LineRange = null,  // Custom lines chosen
-line_input_pending: bool = false,          // Waiting for line input
-indexing_queue: ?*IndexingQueue = null,    // Queue of files to index
+context_tracker: ?*ContextTracker = null,  // Tracks files, modifications, todos, token usage
+messages: std.ArrayListUnmanaged(Message), // Message history (compressed in-place when needed)
+streaming_active: bool,                    // Is LLM currently streaming?
+tool_executor: ToolExecutor,               // Manages tool execution state machine
 ```
 
-### GraphRAG Processing Flow (Lines 438-714)
+### Compression Flow
 
-#### Step 1: Check if Waiting (Lines 460-463)
+#### Step 1: Token Usage Check
 ```zig
-if (app.graphrag_choice_pending) {
-    // Still waiting for user response - do nothing
-    return;
+pub fn shouldCompress(self: *ContextTracker, config: *const Config) bool {
+    const threshold = @as(f32, @floatFromInt(config.num_ctx)) * 0.70;
+    return @as(f32, @floatFromInt(self.estimated_tokens_used)) > threshold;
 }
 ```
 
-#### Step 2: Process Previous Response (Lines 466-653)
+#### Step 2: Run Compression Agent
 ```zig
-if (app.graphrag_choice_response) |choice| {
-    const file_path = app.current_indexing_file orelse return error.NoCurrentFile;
-    
-    switch (choice) {
-        .full_indexing => {
-            // Index entire file using LLM
-            // Calls: llm_indexer.indexFile()
-            // With progress callback
+pub fn compressWithAgent(
+    allocator: mem.Allocator,
+    messages: *std.ArrayListUnmanaged(Message),
+    tracker: *ContextTracker,
+    llm_provider: *LLMProvider,
+    config: *const Config,
+) !CompressionStats {
+    // Build agent context with compression tools
+    const agent_context = AgentContext{
+        .capabilities = .{
+            .allowed_tools = &.{
+                "get_compression_metadata",
+                "compress_tool_result",
+                "compress_conversation_segment",
+                "verify_compression_target",
+            },
+            .max_iterations = 15,
+            .temperature = 0.7,
         },
-        .custom_lines => {
-            // Wait for line range
-            // Update message history with selected lines
-        },
-        .metadata_only => {
-            // Replace content with minimal metadata
-        },
+        .messages_list = messages,
+        // ...
+    };
+
+    // Run compression agent
+    var result = try compression_agent.execute(...);
+    defer result.deinit(allocator);
+
+    return stats;
+}
+```
+
+#### Step 3: Protected Message Preservation
+```zig
+// Always preserve last 5 user+assistant pairs
+const protected_count = 5;
+var preserved: usize = 0;
+var i = messages.items.len;
+
+while (i > 0 and preserved < protected_count * 2) : (i -= 1) {
+    const msg = messages.items[i - 1];
+    if (msg.role == .user or msg.role == .assistant) {
+        preserved += 1;
+        // Mark as protected - skip compression
     }
-    
-    // Clear state for next file
-    app.graphrag_choice_response = null;
-    app.line_range_response = null;
-    // Free file path...
 }
 ```
 
-#### Step 3: Check if Queue Empty (Lines 656-676)
-```zig
-if (queue.isEmpty()) {
-    const complete_msg = try app.allocator.dupe(u8, "✓ All files processed\n");
-    // ... show completion message ...
-    return;
-}
-```
+#### Step 4: Compression Methods
+**Tool Results:**
+- Use tracked metadata for intelligent summarization
+- Compress based on result type (file read, modification, query, etc.)
 
-#### Step 4: Show Prompt for Next File (Lines 678-714)
-```zig
-const next_task = queue.peek() orelse return;
+**User Messages:**
+- Target: ~50 tokens
+- LLM compression (temperature 0.3): "Compress to 1-2 sentences, preserve: question, intent, key details"
+- Fallback: Truncate to first 50 tokens
 
-// Count lines and show prompt
-const prompt_msg = try std.fmt.allocPrint(
-    app.allocator,
-    "\n📁 File: {s} ({d} lines)\nHow should this be handled?\n",
-    .{ next_task.file_path, line_count },
-);
-
-// Store state for main loop
-app.current_indexing_file = try app.allocator.dupe(u8, next_task.file_path);
-app.graphrag_choice_pending = true;  // <-- Signal main loop to wait for input
-```
+**Assistant Messages:**
+- Target: ~200 tokens
+- LLM compression (temperature 0.3): "Compress to 2-3 sentences, preserve: explanations, code changes, decisions"
+- Fallback: Truncate to first 200 tokens
 
 ---
 
@@ -468,7 +498,7 @@ choices: ?[]struct {
 // Convert app messages to Ollama format
 for (self.messages.items) |msg| {
     if (msg.role == .display_only_data) continue;  // Skip UI-only
-    
+
     const role_str = switch (msg.role) {
         .user => "user",
         .assistant => "assistant",
@@ -478,20 +508,14 @@ for (self.messages.items) |msg| {
     };
     try ollama_messages.append(self.allocator, .{
         .role = role_str,
-        .content = msg.content,
+        .content = msg.content,  // May contain compressed content (💬 [Compressed] prefix)
         .tool_call_id = msg.tool_call_id,
         .tool_calls = msg.tool_calls,
     });
 }
 
-// Apply GraphRAG compression if enabled
-if (self.config.graph_rag_enabled and self.vector_store != null) {
-    const compressed_messages = try self.compressMessageHistoryWithTracking(
-        ollama_messages.items,
-        &allocated_summaries,
-    );
-    // ... replace with compressed version
-}
+// Hot context injection happens here (see context_management/injection.zig)
+// Automatically adds workflow awareness before LLM call
 ```
 
 ### 5.2 Tool Execution Flow
@@ -557,16 +581,16 @@ tick() → (show result) → iteration_complete
 
 ## 8. SUMMARY TABLE
 
-| Feature | Ollama | LM Studio | Main Loop | GraphRAG Loop |
-|---------|--------|-----------|-----------|---------------|
-| **Tool Calling** | ✓ | ✓ | Both use same `tools` array | Uses main loop results |
+| Feature | Ollama | LM Studio | Main Loop | Compression System |
+|---------|--------|-----------|-----------|-------------------|
+| **Tool Calling** | ✓ | ✓ | Both use same `tools` array | Uses specialized compression tools |
 | **Thinking/Reasoning** | Extended thinking | Not supported | Capability-checked | N/A |
 | **Keep-Alive** | Supported | Not supported | Capability-checked | N/A |
-| **Streaming** | Message chunks | Delta-based | Both supported | Uses streaming chunks |
-| **Tool Response Parsing** | Complete messages | Streamed deltas | Same callback format | Processes indexed results |
-| **Loop Type** | Streaming + Tool iteration | Streaming + Tool iteration | while(true) with sub-states | State machine (cooperative) |
-| **Tool Depth** | Limited by `max_tool_depth` | Limited by `max_tool_depth` | Global counter | N/A |
-| **Entry Points** | Main: `app.run()` | Main: `app.run()` | Triggered by `sendMessage()` | Triggered when no streaming/tools |
+| **Streaming** | Message chunks | Delta-based | Both supported | Compression runs inline (blocking) |
+| **Tool Response Parsing** | Complete messages | Streamed deltas | Same callback format | N/A |
+| **Loop Type** | Streaming + Tool iteration | Streaming + Tool iteration | while(true) with sub-states | Inline checkpoint (not separate loop) |
+| **Tool Depth** | Limited by `max_tool_depth` | Limited by `max_tool_depth` | Global counter | Uses compression_agent (15 max iterations) |
+| **Entry Points** | Main: `app.run()` | Main: `app.run()` | Triggered by `sendMessage()` | Triggered at 70% token usage |
 
 ---
 
@@ -575,9 +599,11 @@ tick() → (show result) → iteration_complete
 | File | Purpose | Key Functions |
 |------|---------|----------------|
 | `app.zig` | Main app + chat loop | `run()`, `startStreaming()`, `streamingThreadFn()`, `sendMessage()` |
-| `app_graphrag.zig` | GraphRAG secondary loop | `processQueuedFiles()` |
 | `llm_provider.zig` | Provider abstraction | `createProvider()`, `chatStream()` (unified interface) |
 | `ollama.zig` | Ollama client | `chatStream()` (Ollama-specific), tool payload building |
 | `lmstudio.zig` | LM Studio client | `chatStream()` (LM Studio-specific), SSE parsing, tool accumulation |
 | `tool_executor.zig` | Tool execution state machine | `tick()`, `startExecution()` |
+| `context_management/tracking.zig` | Context tracking | File/modification/todo tracking |
+| `context_management/compressor.zig` | Automatic compression | `compressWithAgent()`, token tracking |
+| `agents_hardcoded/compression_agent.zig` | Compression agent | LLM-based message compression |
 

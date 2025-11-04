@@ -274,20 +274,20 @@ $EDITOR ~/.config/localharness/config.json
 }
 ```
 
-### Enable Graph RAG
+### Configure Settings
 
-**Method 1: Config Editor**
+**Method 1: Config Editor (Recommended)**
 1. Type `/config`
-2. Navigate to "Graph RAG"
-3. Press `Space` to toggle ON
-4. Press `Ctrl+S`
+2. Navigate to desired setting
+3. Press `Enter` to edit or `Space` to toggle
+4. Press `Ctrl+S` to save
 
 **Method 2: Edit Config**
 ```json
 {
-  "graph_rag_enabled": true,
-  "embedding_model": "nomic-embed-text",
-  "indexing_model": "qwen3-coder:30b"
+  "enable_thinking": true,
+  "show_tool_json": false,
+  "num_ctx": 128000
 }
 ```
 

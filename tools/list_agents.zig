@@ -1,8 +1,8 @@
 // list_agents tool - List all available agents
 const std = @import("std");
-const ollama = @import("../ollama.zig");
+const ollama = @import("ollama");
 const tools_module = @import("../tools.zig");
-const context_module = @import("../context.zig");
+const context_module = @import("context");
 
 const ToolDefinition = tools_module.ToolDefinition;
 const ToolResult = tools_module.ToolResult;

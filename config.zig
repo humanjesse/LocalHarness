@@ -2,7 +2,7 @@
 const std = @import("std");
 const fs = std.fs;
 const mem = std.mem;
-const permission = @import("permission.zig");
+const permission = @import("permission");
 
 /// Application configuration
 pub const Config = struct {
@@ -19,12 +19,6 @@ pub const Config = struct {
     model_keep_alive: []const u8 = "15m", // How long to keep model in memory (e.g., "5m", "15m", or "-1" for infinite)
     num_ctx: usize = 128000, // Context window size in tokens (Ollama: per-request; LM Studio: set at model load time)
     num_predict: isize = 8192, // Max tokens to generate per response (default: 8192 for detailed code generation)
-    // GraphRAG indexing parameters (separate from main chat)
-    indexing_temperature: ?f32 = null, // null = use model default; Ollama works at 0.1, LM Studio may need higher
-    indexing_num_predict: ?isize = null, // null = use config.num_predict; default for indexing is 10240
-    indexing_repeat_penalty: ?f32 = null, // null = use model default; helps reduce verbosity in entity extraction
-    indexing_max_iterations: usize = 20, // Max analysis passes for GraphRAG indexing (increase for models that generate 1 tool call at a time)
-    indexing_enable_thinking: bool = false, // Enable thinking mode during GraphRAG indexing (separate from main chat; both Ollama and LM Studio)
     editor: []const []const u8 = &.{"nvim"},
     // UI customization
     scroll_lines: usize = 3, // Number of lines to scroll per wheel movement
@@ -38,18 +32,12 @@ pub const Config = struct {
     enable_thinking: bool = true, // Enable extended thinking mode for complex reasoning
     // Tool call display
     show_tool_json: bool = false, // Show raw JSON tool calls (for debugging, default hidden)
-    // Graph RAG configuration
-    graph_rag_enabled: bool = false, // Enable Graph RAG for code context compression
-    embedding_model: []const u8 = "nomic-embed-text", // Embedding model for vector search (format depends on provider: Ollama uses "nomic-embed-text", LM Studio uses "text-embedding-nomic-embed-text-v1.5")
-    indexing_model: []const u8 = "llama3.1:8b", // Model for analyzing files and building graphs (smaller/faster model with reliable tool calling)
-    max_chunks_in_history: usize = 5, // Max number of code chunks to include in compressed history
-    zvdb_path: []const u8 = ".localharness/graphrag.zvdb", // Path to vector database file
     // File reading thresholds (smart auto-detection)
     file_read_small_threshold: usize = 200, // Files <= this: show full content (no agent overhead). Files > this: use conversation-aware curation agent
 
     /// Validate configuration values and warn about incompatibilities
     pub fn validate(self: *const Config) !void {
-        const llm_provider = @import("llm_provider.zig");
+        const llm_provider = @import("llm_provider");
 
         // Validate provider exists
         const caps = llm_provider.ProviderRegistry.get(self.provider) orelse {
@@ -75,12 +63,6 @@ pub const Config = struct {
             return error.InvalidPredictSize;
         }
 
-        // Validate indexing_max_iterations range
-        if (self.indexing_max_iterations < 1 or self.indexing_max_iterations > 100) {
-            std.debug.print("❌ Invalid indexing_max_iterations: {d}. Must be between 1 and 100\n", .{self.indexing_max_iterations});
-            return error.InvalidIterations;
-        }
-
         // Validate URLs
         if (!mem.startsWith(u8, self.ollama_host, "http://") and !mem.startsWith(u8, self.ollama_host, "https://")) {
             std.debug.print("⚠ Warning: ollama_host should start with http:// or https://\n", .{});
@@ -98,44 +80,6 @@ pub const Config = struct {
         for (caps.config_warnings) |warning| {
             std.debug.print("⚠ Note ({s}): {s}\n", .{ caps.name, warning.message });
         }
-
-        // Validate GraphRAG configuration if enabled
-        if (self.graph_rag_enabled) {
-            if (self.embedding_model.len == 0) {
-                std.debug.print("⚠ Warning: GraphRAG enabled but embedding_model is empty\n", .{});
-            }
-            if (self.indexing_model.len == 0) {
-                std.debug.print("⚠ Warning: GraphRAG enabled but indexing_model is empty\n", .{});
-            }
-
-            // Provider-specific model name validation
-            if (mem.eql(u8, self.provider, "lmstudio")) {
-                // Check if embedding model looks like Ollama format
-                if (!mem.startsWith(u8, self.embedding_model, "text-embedding-") and
-                    self.embedding_model.len > 0)
-                {
-                    std.debug.print("\n⚠ Warning: LM Studio embedding model should start with 'text-embedding-'\n", .{});
-                    std.debug.print("   Current: {s}\n", .{self.embedding_model});
-                    std.debug.print("   Example: text-embedding-nomic-embed-text-v1.5\n", .{});
-                    std.debug.print("   Note: Download and load model in LM Studio first!\n\n", .{});
-                }
-
-                // Provider-specific setup guidance
-                std.debug.print("ℹ LM Studio Embedding Setup:\n", .{});
-                std.debug.print("   1. Download a BERT/nomic-bert model in LM Studio\n", .{});
-                std.debug.print("   2. Load it in the 'Embedding Model Settings' dropdown\n", .{});
-                std.debug.print("   3. Start the server (default port 1234)\n", .{});
-                std.debug.print("   4. Use OpenAI-style model name (e.g., 'text-embedding-...')\n\n", .{});
-            } else if (mem.eql(u8, self.provider, "ollama")) {
-                // Check if embedding model looks like LM Studio format
-                if (mem.startsWith(u8, self.embedding_model, "text-embedding-")) {
-                    std.debug.print("\n⚠ Warning: Ollama embedding model should NOT start with 'text-embedding-'\n", .{});
-                    std.debug.print("   Current: {s}\n", .{self.embedding_model});
-                    std.debug.print("   Example: nomic-embed-text\n", .{});
-                    std.debug.print("   Note: Pull model with 'ollama pull nomic-embed-text' first!\n\n", .{});
-                }
-            }
-        }
     }
 
     /// Get the value of a provider-specific field
@@ -143,7 +87,7 @@ pub const Config = struct {
         self: *const Config,
         provider: []const u8,
         field_key: []const u8,
-    ) @import("llm_provider.zig").ConfigValue {
+    ) @import("llm_provider").ConfigValue {
         if (mem.eql(u8, provider, "ollama")) {
             if (mem.eql(u8, field_key, "host")) return .{ .text = self.ollama_host };
             if (mem.eql(u8, field_key, "endpoint")) return .{ .text = self.ollama_endpoint };
@@ -166,7 +110,7 @@ pub const Config = struct {
         allocator: mem.Allocator,
         provider: []const u8,
         field_key: []const u8,
-        value: @import("llm_provider.zig").ConfigValue,
+        value: @import("llm_provider").ConfigValue,
     ) !void {
         if (mem.eql(u8, provider, "ollama")) {
             if (mem.eql(u8, field_key, "host")) {
@@ -213,9 +157,6 @@ pub const Config = struct {
         allocator.free(self.color_thinking_header);
         allocator.free(self.color_thinking_dim);
         allocator.free(self.color_inline_code_bg);
-        allocator.free(self.embedding_model);
-        allocator.free(self.indexing_model);
-        allocator.free(self.zvdb_path);
     }
 };
 
@@ -234,11 +175,6 @@ const ConfigFile = struct {
     model_keep_alive: ?[]const u8 = null,
     num_ctx: ?usize = null,
     num_predict: ?isize = null,
-    indexing_temperature: ?f32 = null,
-    indexing_num_predict: ?isize = null,
-    indexing_repeat_penalty: ?f32 = null,
-    indexing_max_iterations: ?usize = null,
-    indexing_enable_thinking: ?bool = null,
     scroll_lines: ?usize = null,
     color_status: ?[]const u8 = null,
     color_link: ?[]const u8 = null,
@@ -247,11 +183,6 @@ const ConfigFile = struct {
     color_inline_code_bg: ?[]const u8 = null,
     enable_thinking: ?bool = null,
     show_tool_json: ?bool = null,
-    graph_rag_enabled: ?bool = null,
-    embedding_model: ?[]const u8 = null,
-    indexing_model: ?[]const u8 = null,
-    max_chunks_in_history: ?usize = null,
-    zvdb_path: ?[]const u8 = null,
     file_read_small_threshold: ?usize = null,
 };
 
@@ -287,17 +218,6 @@ pub fn loadConfigFromFile(allocator: mem.Allocator) !Config {
         .color_thinking_header = try allocator.dupe(u8, "\x1b[36m"),
         .color_thinking_dim = try allocator.dupe(u8, "\x1b[2m"),
         .color_inline_code_bg = try allocator.dupe(u8, "\x1b[48;5;237m"),
-        .graph_rag_enabled = false,
-        // Default embedding model (Ollama format)
-        // For LM Studio, use: "text-embedding-nomic-embed-text-v1.5"
-        // For Ollama, use: "nomic-embed-text"
-        .embedding_model = try allocator.dupe(u8, "nomic-embed-text"),
-        .indexing_model = try allocator.dupe(u8, "llama3.1:8b"),
-        .max_chunks_in_history = 5,
-        .zvdb_path = try allocator.dupe(u8, ".localharness/graphrag.zvdb"),
-        .indexing_temperature = null,
-        .indexing_num_predict = null,
-        .indexing_repeat_penalty = null,
     };
 
     // Try to get home directory
@@ -396,26 +316,6 @@ pub fn loadConfigFromFile(allocator: mem.Allocator) !Config {
         config.num_predict = num_predict;
     }
 
-    if (parsed.value.indexing_temperature) |indexing_temperature| {
-        config.indexing_temperature = indexing_temperature;
-    }
-
-    if (parsed.value.indexing_num_predict) |indexing_num_predict| {
-        config.indexing_num_predict = indexing_num_predict;
-    }
-
-    if (parsed.value.indexing_repeat_penalty) |indexing_repeat_penalty| {
-        config.indexing_repeat_penalty = indexing_repeat_penalty;
-    }
-
-    if (parsed.value.indexing_max_iterations) |indexing_max_iterations| {
-        config.indexing_max_iterations = indexing_max_iterations;
-    }
-
-    if (parsed.value.indexing_enable_thinking) |indexing_enable_thinking| {
-        config.indexing_enable_thinking = indexing_enable_thinking;
-    }
-
     if (parsed.value.editor) |editor| {
         for (config.editor) |arg| allocator.free(arg);
         allocator.free(config.editor);
@@ -467,29 +367,6 @@ pub fn loadConfigFromFile(allocator: mem.Allocator) !Config {
 
     if (parsed.value.show_tool_json) |show_tool_json| {
         config.show_tool_json = show_tool_json;
-    }
-
-    if (parsed.value.graph_rag_enabled) |graph_rag_enabled| {
-        config.graph_rag_enabled = graph_rag_enabled;
-    }
-
-    if (parsed.value.embedding_model) |embedding_model| {
-        allocator.free(config.embedding_model);
-        config.embedding_model = try allocator.dupe(u8, embedding_model);
-    }
-
-    if (parsed.value.indexing_model) |indexing_model| {
-        allocator.free(config.indexing_model);
-        config.indexing_model = try allocator.dupe(u8, indexing_model);
-    }
-
-    if (parsed.value.max_chunks_in_history) |max_chunks_in_history| {
-        config.max_chunks_in_history = max_chunks_in_history;
-    }
-
-    if (parsed.value.zvdb_path) |zvdb_path| {
-        allocator.free(config.zvdb_path);
-        config.zvdb_path = try allocator.dupe(u8, zvdb_path);
     }
 
     if (parsed.value.file_read_small_threshold) |file_read_small_threshold| {

@@ -58,7 +58,7 @@ Smart file reading tool with automatic mode detection:
 - **Medium files (100-500 lines)**: Invokes file curator agent for context-aware curation
 - **Large files (>500 lines)**: Extracts structure only (imports, types, function signatures)
 - **Fallback**: Returns full file if agent fails
-- **GraphRAG integration**: Always indexes FULL file content (not curated view)
+- **Caching**: Curator results cached per conversation context (50-100x speedup on repeated reads)
 - **Context efficiency**: Main conversation only sees curated output (~30-50% for medium, ~12% for large files)
 
 ## Architecture Principles
@@ -105,11 +105,11 @@ Main App Loop (app.zig)
               ├─ Returns structured result
               └─ Main loop continues with agent output
 
-GraphRAG Integration (app_graphrag.zig)
-    ├─ Secondary loop for file indexing
-    ├─ User choice prompts (full/lines/metadata)
-    ├─ Progress callbacks for LLM indexing
-    └─ Message history updates
+Context Management Integration (context_management/)
+    ├─ File read tracking with hash
+    ├─ Curator cache with conversation hash
+    ├─ Modification tracking (write_file, replace_lines, insert_lines)
+    └─ Hot context injection before LLM calls
 ```
 
 ### 5. Future-Proof Extension
@@ -143,11 +143,11 @@ Tool: Parses curation JSON
   ↓
 Tool: Formats curated output (200 lines preserved - error handling only!)
   ↓
-Tool: Queues FULL file (1000 lines) for GraphRAG
+Context Management: Tracks file read with hash, caches curator result
   ↓
 Main Loop: Receives curated view (200 relevant lines)
   ↓
-Conversation context has only relevant sections, GraphRAG has full file!
+Conversation context has only relevant sections, cached for future reads!
 ```
 
 ## Variables/Functions Unified

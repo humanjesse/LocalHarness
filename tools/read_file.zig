@@ -1,11 +1,12 @@
 // Read File Tool - Smart unified file reading with auto-detection
 const std = @import("std");
-const ollama = @import("../ollama.zig");
-const permission = @import("../permission.zig");
-const context_module = @import("../context.zig");
+const ollama = @import("ollama");
+const permission = @import("permission");
+const context_module = @import("context");
 const tools_module = @import("../tools.zig");
-const agents_module = @import("../agents.zig");
-const file_curator = @import("../agents_hardcoded/file_curator.zig");
+const agents_module = @import("agents"); // Use module system
+const file_curator = @import("file_curator");
+const tracking = @import("tracking");
 
 const AppContext = context_module.AppContext;
 const ToolDefinition = tools_module.ToolDefinition;
@@ -99,6 +100,8 @@ fn execute(allocator: std.mem.Allocator, arguments: []const u8, context: *AppCon
 
     // Smart auto-detection based on file size
     var thinking: ?[]const u8 = null;
+    const read_type: tracking.ReadType = if (total_lines <= small_threshold) .full else .curated;
+    
     const formatted = if (total_lines <= small_threshold) blk: {
         // SMALL FILES: Return full content (no agent overhead)
         break :blk try formatFullFile(allocator, parsed.value.path, content, total_lines);
@@ -111,27 +114,13 @@ fn execute(allocator: std.mem.Allocator, arguments: []const u8, context: *AppCon
     defer allocator.free(formatted);  // Free after ToolResult.ok() dups it
     defer if (thinking) |t| allocator.free(t);
 
-    // Queue FULL file for GraphRAG indexing (always full content, not curated!)
-    if (context.config.graph_rag_enabled and
-        context.indexing_queue != null and
-        !context.state.wasFileIndexed(parsed.value.path))
-    {
-        const IndexingTask = @import("../graphrag/indexing_queue.zig").IndexingTask;
-
-        // Format full file for indexing
-        const full_formatted = try formatFileForIndexing(allocator, parsed.value.path, content, total_lines);
-
-        const task = IndexingTask{
-            .file_path = try allocator.dupe(u8, parsed.value.path),
-            .content = full_formatted, // Already allocated
-            .allocator = allocator,
+    // Track file read in context tracker (for hot context injection)
+    if (context.context_tracker) |tracker| {
+        tracker.trackFileRead(parsed.value.path, content, read_type, null) catch |err| {
+            if (std.posix.getenv("DEBUG_CONTEXT")) |_| {
+                std.debug.print("[CONTEXT] Failed to track file read: {}\n", .{err});
+            }
         };
-
-        try context.indexing_queue.?.push(task);
-
-        if (std.posix.getenv("DEBUG_GRAPHRAG")) |_| {
-            std.debug.print("[GRAPHRAG] Queued full file {s} for indexing\n", .{parsed.value.path});
-        }
     }
 
     // Mark file as read
@@ -215,6 +204,35 @@ fn formatWithCuration(
     content: []const u8,
     total_lines: usize,
 ) !CurationOutput {
+    // Phase 1: Check curator cache
+    if (context.context_tracker) |tracker| {
+        const injection = @import("injection");
+        const conv_hash = injection.hashConversationContext(context.recent_messages);
+        
+        // Check if we have a cached curator result for this conversation context
+        if (tracker.read_files.get(file_path)) |file_tracker| {
+            if (file_tracker.curated_result) |cached| {
+                if (cached.conversation_hash == conv_hash) {
+                    // CACHE HIT! Return cached curation
+                    if (std.posix.getenv("DEBUG_CONTEXT")) |_| {
+                        std.debug.print("[CONTEXT] Curator cache HIT for {s} (hash={x})\n", .{file_path, conv_hash});
+                    }
+                    
+                    // Format from cached line ranges
+                    const formatted = try formatFromCachedCuration(allocator, file_path, content, cached);
+                    return CurationOutput{
+                        .content = formatted,
+                        .thinking = null, // No thinking for cached results
+                    };
+                }
+            }
+        }
+        
+        if (std.posix.getenv("DEBUG_CONTEXT")) |_| {
+            std.debug.print("[CONTEXT] Curator cache MISS for {s}, running agent\n", .{file_path});
+        }
+    }
+    
     if (std.posix.getenv("DEBUG_GRAPHRAG")) |_| {
         std.debug.print("[DEBUG] Invoking file_curator agent (curated mode)...\n", .{});
     }
@@ -228,13 +246,20 @@ fn formatWithCuration(
             try conv_summary.appendSlice(allocator, "CONVERSATION CONTEXT:\n");
             try conv_summary.appendSlice(allocator, "(Recent messages to help understand what the user is investigating)\n\n");
 
+            var found_content = false;
             for (recent_msgs) |msg| {
+                // Skip tool results and display-only messages
+                if (msg.role == .tool or msg.role == .display_only_data) continue;
+
+                // Skip empty messages (placeholders being built)
+                if (msg.content.len == 0) continue;
+
                 const role_name = switch (msg.role) {
                     .user => "User",
                     .assistant => "Assistant",
                     .system => "System",
-                    .tool => continue,
-                    .display_only_data => continue,
+                    .tool => unreachable,
+                    .display_only_data => unreachable,
                 };
 
                 // Truncate very long messages
@@ -244,9 +269,13 @@ fn formatWithCuration(
                     msg.content;
 
                 try conv_summary.writer(allocator).print("{s}: {s}\n\n", .{ role_name, msg_content });
+                found_content = true;
             }
 
-            try conv_summary.appendSlice(allocator, "---\n\n");
+            // Only add separator if we actually found content
+            if (found_content) {
+                try conv_summary.appendSlice(allocator, "---\n\n");
+            }
         }
     }
 
@@ -335,6 +364,36 @@ fn formatWithCuration(
         curation.value,
     );
 
+    // Phase 1: Store curator result in cache
+    if (context.context_tracker) |tracker| {
+        const injection = @import("injection");
+        const conv_hash = injection.hashConversationContext(context.recent_messages);
+        
+        // Store the curation result for future use
+        if (tracker.read_files.getPtr(file_path)) |file_tracker_ptr| {
+            // Clone line ranges for cache
+            var cached_ranges = std.ArrayListUnmanaged(tracking.CurationCache.LineRange){};
+            for (curation.value.line_ranges) |range| {
+                try cached_ranges.append(allocator, .{
+                    .start = range.start,
+                    .end = range.end,
+                    .reason = try allocator.dupe(u8, range.reason),
+                });
+            }
+            
+            file_tracker_ptr.curated_result = .{
+                .line_ranges = try cached_ranges.toOwnedSlice(allocator),
+                .conversation_hash = conv_hash,
+                .summary = try allocator.dupe(u8, curation.value.summary),
+                .timestamp = std.time.milliTimestamp(),
+            };
+            
+            if (std.posix.getenv("DEBUG_CONTEXT")) |_| {
+                std.debug.print("[CONTEXT] Cached curator result for {s} (hash={x})\n", .{file_path, conv_hash});
+            }
+        }
+    }
+
     // Return both content and thinking
     return .{
         .content = formatted_content,
@@ -374,5 +433,59 @@ fn formatFileForIndexing(
     try writer.writeAll("\nNotes: Lines are 1-indexed. Empty lines are preserved.\n");
     try writer.writeAll("```");
 
+    return try output.toOwnedSlice(allocator);
+}
+
+/// Format file from cached curation result
+fn formatFromCachedCuration(
+    allocator: std.mem.Allocator,
+    file_path: []const u8,
+    content: []const u8,
+    cached: anytype,
+) ![]const u8 {
+    // Split content into lines
+    var lines = std.ArrayListUnmanaged([]const u8){};
+    defer lines.deinit(allocator);
+    
+    var line_iter = std.mem.splitScalar(u8, content, '\n');
+    while (line_iter.next()) |line| {
+        try lines.append(allocator, line);
+    }
+    
+    // Build output with cached line ranges
+    var output = std.ArrayListUnmanaged(u8){};
+    defer output.deinit(allocator);
+    const writer = output.writer(allocator);
+    
+    try writer.print("# {s}\n\n", .{file_path});
+    try writer.print("**Curated view** (showing {d} relevant sections from {} total lines)\n\n", .{
+        cached.line_ranges.len,
+        lines.items.len,
+    });
+    
+    if (cached.summary.len > 0) {
+        try writer.print("**Summary:** {s}\n\n", .{cached.summary});
+    }
+    
+    try writer.writeAll("```\n");
+    
+    for (cached.line_ranges, 0..) |range, idx| {
+        if (idx > 0) try writer.writeAll("\n...\n\n");
+        
+        try writer.print("Lines {d}-{d}:\n", .{range.start, range.end});
+        
+        const start_idx = if (range.start > 0) range.start - 1 else 0;
+        const end_idx = @min(range.end, lines.items.len);
+        
+        for (lines.items[start_idx..end_idx], start_idx + 1..) |line, line_num| {
+            try writer.print("{d:4} | {s}\n", .{line_num, line});
+        }
+    }
+    
+    try writer.writeAll("```\n\n");
+    try writer.print("*Preserved {d}% of file based on conversation context*\n", .{
+        (cached.line_ranges.len * 100) / @max(lines.items.len, 1),
+    });
+    
     return try output.toOwnedSlice(allocator);
 }

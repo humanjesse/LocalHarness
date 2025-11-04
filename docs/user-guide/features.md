@@ -108,7 +108,7 @@ code here
 #### File System
 - **get_file_tree**: List all files in project (recursive)
 - **ls**: List single directory with metadata (size, modified time, type) - supports sorting and filtering
-- **read_file**: Smart file reading with auto-detection (small: full content, medium: curated, large: structure only) - shows agent thinking in real-time for medium/large files, triggers GraphRAG indexing
+- **read_file**: Smart file reading with conversation-aware curator agent (small files: instant full content, larger files: intelligent curation with caching for 50-100x speedup on repeated reads)
 - **read_lines**: Read specific line ranges (fast, no indexing - use for quick checks)
 - **write_file**: Create or overwrite files with content
 - **replace_lines**: Replace specific line ranges in existing files
@@ -515,56 +515,68 @@ All tools return JSON with:
 - No keypress needed to trigger execution
 - UI remains responsive
 
-### GraphRAG Context Compression
+### Context Management & Compression
 
-**What it does:** Automatically builds knowledge graphs of files you read, then uses them to compress conversation history while preserving semantic meaning.
+**What it does:** Intelligent system that tracks file usage, caches agent results, and automatically compresses conversation history when token usage gets high.
 
 **How it works:**
 
-**Two-loop architecture:**
-1. **Main loop** (fast): read_file returns immediately with full content, queues file for indexing
-2. **Secondary loop** (background): After response completes, LLM analyzes queued files to build knowledge graph
+**Integrated single-system architecture:**
+1. **Context Tracking**: Monitors all files read, modifications made, and todos created
+2. **File Curator Caching**: Caches curator analysis results per conversation context
+3. **Hot Context Injection**: Automatically adds workflow context before each LLM call
+4. **Automatic Compression**: When token usage hits 70%, compression agent runs to reduce to 40%
 
-**Knowledge graph construction:**
-- LLM runs 2-iteration agentic loop on each file:
-  - Iteration 1: Extract entities (functions, structs, sections, concepts)
-  - Iteration 2: Create relationships (calls, imports, references, relates_to)
-- Generates embeddings for semantic search
-- Stores in vector database (`.localharness/graphrag.zvdb`)
+**Smart file reading with caching:**
+- **Small files** (<100 lines): Full content returned instantly
+- **Larger files**: File curator agent analyzes and returns relevant sections
+  - First read: Curator analyzes file based on conversation context (may take time for large files)
+  - Subsequent reads: Cached result returned instantly (50-100x faster!)
+  - Cache invalidation: File changes or conversation context shifts trigger re-analysis
 
 **Context compression in action:**
 ```
-Without GraphRAG (344 lines of config.zig in history):
-  1→  pub const Config = struct {
-  2→      model: []const u8 = "llama3.2",
-  3→      ollama_host: []const u8 = "http://localhost:11434",
-  ...
-  344→  };
+Before compression (56k/80k tokens - 70% usage):
+  User: "Read app.zig and explain message rendering"
+  Assistant: [2000 lines of detailed explanation]
+  User: "Now update the cursor positioning logic"
+  Assistant: [500 lines with code changes]
+  ... (many more messages)
 
-With GraphRAG (5 compact entity summaries):
-  ### Config (struct) [public]
-  Application configuration with model, server settings
-  Relationships: imports ConfigFile, used_by loadConfigFromFile
-
-  ### loadConfigFromFile (function) [public]
-  Loads configuration from JSON file
-  Relationships: returns Config, calls parseJson
-  ...
+After compression (32k/80k tokens - 40% usage):
+  💬 [Compressed] User asked about message rendering in app.zig
+  💬 [Compressed] Explained render pipeline: markdown processing,
+     clickable areas, scroll handling. Key insight: cursor sync issues
+  💬 [Compressed] Updated cursor positioning in lines 450-480 to fix
+     scroll jump bug. Changed maintainBottomAnchor logic.
+  ... (last 5 user+assistant pairs preserved in full)
 ```
 
 **Benefits:**
-- Reduces token usage by 90%+ on repeat file references
-- Preserves semantic relationships between code entities
-- Enables longer conversations without hitting context limits
-- AI retains understanding of code structure
+- **Faster file reads**: 50-100x speedup on repeated reads via curator caching
+- **Intelligent compression**: LLM-based summarization preserves meaning, not just truncation
+- **Protected recent work**: Last 5 user+assistant message pairs never compressed
+- **Automatic management**: No configuration needed, happens automatically at 70% usage
+- **Hot context injection**: AI always aware of current workflow state
+- **Simpler architecture**: No secondary loops, single integrated system
 
-**Configuration:**
-- Enable/disable: `graph_rag_enabled` in config
-- Embedding model: `embedding_model` (default: embeddinggemma:300m)
-- Indexing model: `indexing_model` (default: qwen3:30b)
-- Summary size: `max_chunks_in_history` (default: 5 entities)
+**How compression works:**
+- **Trigger**: Automatically when token usage hits 70% (56k/80k)
+- **Target**: Reduces to 40% token usage (32k/80k)
+- **Protected**: Last 5 user+assistant message pairs always kept in full
+- **Method**: Compression agent uses specialized tools to analyze and compress:
+  - Tool results compressed using tracked metadata
+  - User messages compressed to ~50 tokens (preserves questions/intent)
+  - Assistant messages compressed to ~200 tokens (preserves explanations/decisions)
+- **Quality**: LLM-based compression (temperature 0.3) with graceful fallback to truncation
 
-See [Configuration Guide](configuration.md#graphrag-settings) for details.
+**Performance:**
+- Context tracking: Minimal overhead (~1ms per file read)
+- Curator caching: First read may take longer, subsequent reads instant
+- Compression: Runs when needed, transparent to user
+- Cache invalidation: Smart hash-based detection of file/context changes
+
+See [Context Management Guide](context-management-guide.md) for details.
 
 ### Context Assembly
 
@@ -573,8 +585,9 @@ See [Configuration Guide](configuration.md#graphrag-settings) for details.
 **Implemented:**
 - Tool results added to conversation history
 - Task list injected before each iteration
-- GraphRAG compresses file content into knowledge graphs
-- Semantic retrieval of top-K relevant entities
+- Hot context injection provides workflow awareness (files read, modifications made, todos)
+- File curator provides intelligent filtering of file content based on conversation
+- Compression system preserves semantic meaning when reducing token usage
 
 ## Performance
 

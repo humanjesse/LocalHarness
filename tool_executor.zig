@@ -1,10 +1,10 @@
 // Tool Execution State Machine - Manages async tool execution with permissions
 const std = @import("std");
-const ollama = @import("ollama.zig");
-const permission = @import("permission.zig");
-const tools_module = @import("tools.zig");
-const markdown = @import("markdown.zig");
-const context_module = @import("context.zig");
+const ollama = @import("ollama");
+const permission = @import("permission");
+const tools_module = @import("tools");
+const markdown = @import("markdown");
+const context_module = @import("context");
 
 const AppContext = context_module.AppContext;
 

@@ -1,8 +1,8 @@
 // Get Working Directory Tool - Returns current working directory path
 const std = @import("std");
-const ollama = @import("../ollama.zig");
-const permission = @import("../permission.zig");
-const context_module = @import("../context.zig");
+const ollama = @import("ollama");
+const permission = @import("permission");
+const context_module = @import("context");
 const tools_module = @import("../tools.zig");
 
 const AppContext = context_module.AppContext;

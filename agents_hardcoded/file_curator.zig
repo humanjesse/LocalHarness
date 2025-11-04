@@ -1,8 +1,9 @@
 // File Curator Agent - Analyzes files and curates important line ranges for context
 const std = @import("std");
-const agents_module = @import("../agents.zig");
-const agent_executor = @import("../agent_executor.zig");
-const llm_helper = @import("../llm_helper.zig");
+const agent_executor = @import("agent_executor");
+const app_module = @import("app");
+const agents_module = app_module.agents_module; // Get agents from app
+const llm_helper = @import("llm_helper");
 
 const AgentDefinition = agents_module.AgentDefinition;
 const AgentContext = agents_module.AgentContext;
@@ -68,9 +69,10 @@ pub fn getDefinition(allocator: std.mem.Allocator) !AgentDefinition {
             .max_iterations = 2, // Usually completes in 1, allow 2 for retry
             .model_override = null, // Use same model as main app (or could use faster model)
             .temperature = 0.3, // Lower temperature for more consistent output
-            .num_ctx = 16384, // Need reasonable context for file analysis
+            .num_ctx = 32768, // Large context for big files (doubled from 16k)
             .num_predict = 2000, // Enough for JSON response
             .enable_thinking = true, // Enable to show reasoning process to user
+            .format = "json", // Force JSON output for consistent parsing
         },
         .execute = execute,
     };
@@ -91,7 +93,7 @@ fn execute(
     defer executor.deinit();
 
     // Run the agent (no tools available for curator)
-    const empty_tools: []const @import("../ollama.zig").Tool = &.{};
+    const empty_tools: []const @import("ollama").Tool = &.{};
 
     const result = executor.run(
         context,
@@ -289,7 +291,7 @@ fn runCuration(
     defer executor.deinit();
 
     // Run the agent (no tools available for curator)
-    const empty_tools: []const @import("../ollama.zig").Tool = &.{};
+    const empty_tools: []const @import("ollama").Tool = &.{};
 
     const result = executor.run(
         context,

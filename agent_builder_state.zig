@@ -251,7 +251,7 @@ pub const AgentBuilderState = struct {
 /// This automatically includes any new tools added to tools.zig
 fn getAllToolNames(allocator: std.mem.Allocator) ![]const []const u8 {
     // Import tools module to get tool list
-    const tools_module = @import("tools.zig");
+    const tools_module = @import("tools");
 
     // Get all registered tool definitions
     const all_tools = try tools_module.getAllToolDefinitions(allocator);

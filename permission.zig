@@ -1,6 +1,6 @@
 // Permission Manager - Policy-driven tool execution safety system
 const std = @import("std");
-const ollama = @import("ollama.zig");
+const ollama = @import("ollama");
 
 // ============================================================================
 // Core Data Structures

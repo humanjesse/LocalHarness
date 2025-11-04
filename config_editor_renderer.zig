@@ -1,7 +1,7 @@
 // Config Editor Renderer - Draws the configuration UI to the terminal
 const std = @import("std");
-const config_editor_state = @import("config_editor_state.zig");
-const ui = @import("ui.zig");
+const config_editor_state = @import("config_editor_state");
+const ui = @import("ui");
 
 const ConfigEditorState = config_editor_state.ConfigEditorState;
 const ConfigSection = config_editor_state.ConfigSection;
@@ -276,8 +276,6 @@ fn drawNumberInputFieldToWriter(writer: anytype, field: *const ConfigField, stat
             try writer.print("{d}", .{config.num_ctx});
         } else if (std.mem.eql(u8, field.key, "num_predict")) {
             try writer.print("{d}", .{config.num_predict});
-        } else if (std.mem.eql(u8, field.key, "max_chunks_in_history")) {
-            try writer.print("{d}", .{config.max_chunks_in_history});
         } else if (std.mem.eql(u8, field.key, "scroll_lines")) {
             try writer.print("{d}", .{config.scroll_lines});
         } else if (std.mem.eql(u8, field.key, "file_read_small_threshold")) {
@@ -296,8 +294,6 @@ fn getFieldValue(state: *const ConfigEditorState, key: []const u8) []const u8 {
     if (std.mem.eql(u8, key, "ollama_host")) return config.ollama_host;
     if (std.mem.eql(u8, key, "lmstudio_host")) return config.lmstudio_host;
     if (std.mem.eql(u8, key, "model")) return config.model;
-    if (std.mem.eql(u8, key, "embedding_model")) return config.embedding_model;
-    if (std.mem.eql(u8, key, "indexing_model")) return config.indexing_model;
 
     return "";
 }
@@ -308,9 +304,7 @@ fn getFieldBoolValue(state: *const ConfigEditorState, key: []const u8) bool {
 
     // Check global boolean fields first
     if (std.mem.eql(u8, key, "enable_thinking")) return config.enable_thinking;
-    if (std.mem.eql(u8, key, "graph_rag_enabled")) return config.graph_rag_enabled;
     if (std.mem.eql(u8, key, "show_tool_json")) return config.show_tool_json;
-    if (std.mem.eql(u8, key, "indexing_enable_thinking")) return config.indexing_enable_thinking;
 
     // Try provider-specific boolean fields
     const provider_value = config.getProviderField(config.provider, key);
@@ -332,7 +326,7 @@ fn drawProviderWarnings(
 ) !void {
     _ = box_width; // Not used currently, but kept for future enhancements
     const config = &state.temp_config;
-    const llm_provider = @import("llm_provider.zig");
+    const llm_provider = @import("llm_provider");
 
     // Check if we have enough space for warnings (need at least 2 lines before footer)
     if (current_y.* + 2 >= terminal_height - 4) {

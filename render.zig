@@ -1,9 +1,9 @@
 // Rendering utilities - text wrapping, formatting, and display functions
 const std = @import("std");
 const mem = std.mem;
-const ui = @import("ui.zig");
-const markdown = @import("markdown.zig");
-const types = @import("types.zig");
+const ui = @import("ui");
+const markdown = @import("markdown");
+const types = @import("types");
 
 /// Open an external editor and wait for it to close
 pub fn openEditorAndWait(allocator: mem.Allocator, editor: []const []const u8, note_path: []const u8) !void {

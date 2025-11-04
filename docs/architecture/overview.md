@@ -395,36 +395,50 @@ The master loop enables agentic behavior by iterating until task completion.
 - Max 15 tool calls per iteration
 - Resets on new user message
 
-## GraphRAG Architecture (Implemented)
+## Context Management & Compression Architecture (Implemented)
 
-**Secondary Agentic Loop for Context Compression**
+**Integrated System for Token Management**
 
-Local Harness implements a dual-loop architecture where GraphRAG operates as a background indexing system that compresses conversation history.
+Local Harness implements a unified context management system that tracks file usage, caches agent results, and automatically compresses conversation history when needed.
 
-### Two-Loop Design
+### System Design
 
 ```
-MAIN LOOP (Primary - User-facing):
-User question → LLM → Tool calls → read_file → Response
-                                        ↓ (queue file)
-
-SECONDARY LOOP (Background - Knowledge building):
-Queued files → LLM Indexer → Knowledge Graph → Vector DB → Context Compression
+MAIN LOOP with Integrated Context Management:
+User question → [Hot Context Injection] → LLM → Tool calls → Response
+                         ↓                                ↓
+                  ContextTracker                    read_file
+                  (file tracking,                   (curator agent
+                   curator cache)                    with caching)
+                         ↓
+                  [Check token usage]
+                         ↓ (if >70%)
+                  Compression Agent
+                  (compress old messages,
+                   preserve last 5 pairs)
 ```
 
 **Key Benefits:**
-- Main loop stays fast and responsive
-- read_file returns immediately, queues for indexing
-- Later references use compressed graph summaries instead of full file content
-- Reduces token usage by 90%+ while preserving semantic meaning
+- Single integrated system (no secondary loop complexity)
+- File curator caching: 50-100x speedup on repeated reads
+- Intelligent compression: LLM-based summarization, not truncation
+- Hot context injection: Automatic workflow awareness before every LLM call
+- Protected messages: Recent work never compressed (last 5 user+assistant pairs)
 
 **Components:**
-- **LLM Indexer** (`graphrag/llm_indexer.zig`): 2-iteration agentic loop creates nodes/edges
-- **Vector Database** (`zvdb/`): HNSW-based storage with typed relationships
-- **Embeddings Client** (`embeddings.zig`): embeddinggemma:300m via Ollama
-- **Query Engine** (`graphrag/query.zig`): Retrieves top-K entities for context
+- **ContextTracker** (`context_management/tracking.zig`): Tracks files, modifications, todos with hash-based invalidation
+- **File Curator Cache** (`context_management/tracking.zig`): Caches curator results per conversation context
+- **Compression Agent** (`agents_hardcoded/compression_agent.zig`): Runs when token usage hits 70% threshold
+- **Compression Tools** (4 specialized tools): `get_compression_metadata`, `compress_tool_result`, `compress_conversation_segment`, `verify_compression_target`
+- **Hot Context Injection** (`injection.zig`): Builds workflow context before each LLM call
 
-See [GraphRAG Documentation](graphrag.md) for implementation details.
+**Compression Strategy:**
+- Trigger: 70% token usage (56k/80k context)
+- Target: 40% token usage (32k/80k context)
+- Protected: Last 5 user+assistant message pairs
+- Method: LLM-based compression (temperature 0.3) with graceful fallback to truncation
+
+See [Context Management Documentation](context-management.md) and [Compression System Documentation](compression-system.md) for implementation details.
 
 ## Configuration Architecture
 
@@ -501,4 +515,4 @@ See [GraphRAG Documentation](graphrag.md) for implementation details.
 
 - [Tool Calling System](tool-calling.md)
 - [Task Management](task-management.md)
-- [Master Loop & Graph RAG](master-loop-graphrag.md)
+- [Master Loop Analysis](../LOOP_ANALYSIS.md)

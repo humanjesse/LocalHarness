@@ -1,7 +1,7 @@
 // Agent Builder Input Handler - Processes user input for the agent builder
 const std = @import("std");
-const agent_builder_state = @import("agent_builder_state.zig");
-const agent_writer = @import("agent_writer.zig");
+const agent_builder_state = @import("agent_builder_state");
+const agent_writer = @import("agent_writer");
 
 const AgentBuilderState = agent_builder_state.AgentBuilderState;
 const AgentField = agent_builder_state.AgentField;

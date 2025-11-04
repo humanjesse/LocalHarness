@@ -1,9 +1,9 @@
 // Local Harness - Terminal chat interface for Ollama and LM Studio
 const std = @import("std");
-const ui = @import("ui.zig");
-const markdown = @import("markdown.zig");
-const config_module = @import("config.zig");
-const app_module = @import("app.zig");
+const ui = @import("ui");
+const markdown = @import("markdown");
+const config_module = @import("config");
+const app_module = @import("app");
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};

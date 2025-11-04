@@ -1,6 +1,6 @@
 const std = @import("std");
-const help_state = @import("help_state.zig");
-const ui = @import("ui.zig");
+const help_state = @import("help_state");
+const ui = @import("ui");
 const HelpState = help_state.HelpState;
 
 pub fn render(

@@ -1,8 +1,8 @@
 // Write File Tool - Creates or overwrites a file with given content
 const std = @import("std");
-const ollama = @import("../ollama.zig");
-const permission = @import("../permission.zig");
-const context_module = @import("../context.zig");
+const ollama = @import("ollama");
+const permission = @import("permission");
+const context_module = @import("context");
 const tools_module = @import("../tools.zig");
 
 const AppContext = context_module.AppContext;
@@ -46,7 +46,6 @@ pub fn getDefinition(allocator: std.mem.Allocator) !ToolDefinition {
 }
 
 fn execute(allocator: std.mem.Allocator, arguments: []const u8, context: *AppContext) !ToolResult {
-    _ = context; // Phase 2+: Will be used for graph RAG integration
     const start_time = std.time.milliTimestamp();
 
     // Parse arguments
@@ -82,6 +81,19 @@ fn execute(allocator: std.mem.Allocator, arguments: []const u8, context: *AppCon
         defer allocator.free(msg);
         return ToolResult.err(allocator, .io_error, msg, start_time);
     };
+
+    // Phase A.2: Track file modification
+    if (context.context_tracker) |tracker| {
+        tracker.recordModification(
+            parsed.value.path,
+            .modified,
+            null, // No summary for now
+        ) catch |err| {
+            if (std.posix.getenv("DEBUG_CONTEXT")) |_| {
+                std.debug.print("[CONTEXT] Failed to track modification: {}\n", .{err});
+            }
+        };
+    }
 
     // Return success with details
     const success_msg = try std.fmt.allocPrint(

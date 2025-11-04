@@ -1,7 +1,7 @@
 // LLM Provider Abstraction - Unified interface for Ollama, LM Studio, and future providers
 const std = @import("std");
-const ollama = @import("ollama.zig");
-const lmstudio = @import("lmstudio.zig");
+const ollama = @import("ollama");
+const lmstudio = @import("lmstudio");
 
 /// Configuration warning for a specific provider
 pub const ConfigWarning = struct {
@@ -191,12 +191,12 @@ pub const ProviderRegistry = struct {
 /// Ollama-specific provider implementation
 pub const OllamaProvider = struct {
     chat_client: ollama.OllamaClient,
-    embeddings_client: @import("embeddings.zig").EmbeddingsClient,
+    embeddings_client: @import("embeddings").EmbeddingsClient,
 
     pub fn init(allocator: std.mem.Allocator, host: []const u8, chat_endpoint: []const u8) OllamaProvider {
         return .{
             .chat_client = ollama.OllamaClient.init(allocator, host, chat_endpoint),
-            .embeddings_client = @import("embeddings.zig").EmbeddingsClient.init(allocator, host),
+            .embeddings_client = @import("embeddings").EmbeddingsClient.init(allocator, host),
         };
     }
 
@@ -609,43 +609,8 @@ pub fn createProvider(
                 std.debug.print("✓ Main model already loaded: {s}\n", .{config.model});
             }
 
-            // Check and load embedding model if GraphRAG is enabled
-            if (config.graph_rag_enabled and !std.mem.eql(u8, config.embedding_model, config.model)) {
-                if (!isModelLoaded(loaded, config.embedding_model)) {
-                    // Detect optimal context length for embedding model
-                    const optimal = manager.getOptimalContextLength(config.embedding_model, config.num_ctx);
-
-                    std.debug.print("📦 Loading embedding model: {s}...\n", .{config.embedding_model});
-                    if (optimal.model_max) |max| {
-                        std.debug.print("   Model max context: {d} tokens\n", .{max});
-                        if (optimal.clamped) {
-                            std.debug.print("   Configured: {d} tokens → Using: {d} tokens (auto-clamped)\n",
-                                .{config.num_ctx, optimal.context});
-                        } else {
-                            std.debug.print("   Using: {d} tokens\n", .{optimal.context});
-                        }
-                    }
-
-                    manager.loadModel(
-                        config.embedding_model,
-                        config.lmstudio_gpu_offload,
-                        optimal.context,
-                        if (config.lmstudio_ttl > 0) config.lmstudio_ttl else null,
-                    ) catch |err| {
-                        std.debug.print("\n❌ Auto-load failed for embedding model\n", .{});
-                        std.debug.print("   Model: {s}\n", .{config.embedding_model});
-                        std.debug.print("   Error: {s}\n", .{@errorName(err)});
-                        std.debug.print("   GPU Offload: {s}\n", .{config.lmstudio_gpu_offload});
-                        std.debug.print("   Context Length: {d}\n", .{optimal.context});
-                        std.debug.print("\n💡 GraphRAG requires an embedding model. Please:\n", .{});
-                        std.debug.print("   1. Download a nomic-embed-text model in LM Studio\n", .{});
-                        std.debug.print("   2. Verify the embedding_model path in config\n", .{});
-                        std.debug.print("   3. Load it manually or restart the app\n\n", .{});
-                    };
-                } else {
-                    std.debug.print("✓ Embedding model already loaded: {s}\n", .{config.embedding_model});
-                }
-            }
+            // Embedding model auto-load disabled (GraphRAG removed)
+            // Can be re-enabled if semantic search feature is added
         }
 
         // Clean up manager (we don't need to keep it around after initialization)

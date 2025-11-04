@@ -20,12 +20,16 @@ app.zig:run()  [while(true) loop starting at line 1030]
 │    │
 │    └─ hasPendingWork() → false: Skip this section
 │
-├─── GraphRAG Secondary Loop Trigger (Lines 1289-1301)
+├─── Compression Checkpoint (After Tool Execution)
 │    │
 │    ├─ Condition: !streaming_active && !tool_executor.hasPendingWork()
 │    │
-│    └─ If has_graphrag_work:
-│        └─ Call: app_graphrag.processQueuedFiles(self)
+│    └─ Check if compression needed:
+│        ├─ context_tracker.estimated_tokens > 70% threshold?
+│        └─ Yes → compressor.compressWithAgent() (inline, synchronous)
+│            ├─ Compress old messages (preserve last 5 pairs)
+│            ├─ Update message history in-place
+│            └─ Reset token tracker
 │
 ├─── Stream Chunk Processing (Lines 1303-1539)
 │    │
@@ -33,10 +37,10 @@ app.zig:run()  [while(true) loop starting at line 1030]
 │    │  │
 │    │  └─ For each chunk:
 │    │     ├─ Accumulate thinking/content
-│    │     ├─ chunk.done? 
+│    │     ├─ chunk.done?
 │    │     │  ├─ true:  Check for tool calls
 │    │     │  │         ├─ Has tools? → tool_executor.startExecution()
-│    │     │  │         └─ No tools? → Call processQueuedFiles()
+│    │     │  │         └─ No tools? → Check compression checkpoint
 │    │     │  └─ false: Update assistant message
 │    │
 │    └─ Non-blocking input handling (10ms loop)
@@ -79,8 +83,8 @@ User sends message: sendMessage(text)
    │
    ├─ Convert app messages to ollama.ChatMessage format
    │  ├─ Skip display_only_data messages
-   │  ├─ Apply GraphRAG compression if enabled
-   │  └─ Track allocated summaries
+   │  ├─ Messages may contain compressed content (💬 [Compressed] prefix)
+   │  └─ Hot context injected before LLM call
    │
    ├─ Create StreamThreadContext:
    │  ├─ model = config.model
@@ -153,84 +157,66 @@ User sends message: sendMessage(text)
    │     └─ Show error, stop looping
    │
    └─ NO TOOL CALLS:
-      └─ Response complete, trigger GraphRAG loop
+      └─ Response complete, check compression checkpoint
 ```
 
 ---
 
-## 3. GraphRAG Secondary Loop
+## 3. Compression Checkpoint (Inline, Not Secondary Loop)
 
 ```
-Main Loop checks:
+Main Loop checks after tool execution:
   !streaming_active AND !tool_executor.hasPendingWork()
   │
-  └─ Calls: app_graphrag.processQueuedFiles(app)
+  └─ Check if compression needed:
      │
-     ├─ Step 1: Check if waiting for user choice
+     ├─ context_tracker.estimated_tokens_used > (num_ctx * 0.70)?
      │  │
-     │  ├─ graphrag_choice_pending == true?
-     │  │  └─ RETURN (wait for main loop input)
+     │  ├─ YES: Trigger compression (inline, synchronous)
+     │  │  │
+     │  │  └─ compressor.compressWithAgent(allocator, messages, tracker, llm_provider, config)
+     │  │     │
+     │  │     ├─ Step 1: Build agent context
+     │  │     │  ├─ Load compression agent
+     │  │     │  ├─ Provide 4 specialized tools:
+     │  │     │  │  ├─ get_compression_metadata
+     │  │     │  │  ├─ compress_tool_result
+     │  │     │  │  ├─ compress_conversation_segment
+     │  │     │  │  └─ verify_compression_target
+     │  │     │  └─ Set capabilities (max 15 iterations, temp 0.7)
+     │  │     │
+     │  │     ├─ Step 2: Run compression agent
+     │  │     │  ├─ Agent analyzes conversation history
+     │  │     │  ├─ Calls tools to compress messages
+     │  │     │  │  ├─ Tool results: Use tracked metadata
+     │  │     │  │  ├─ User messages: LLM compress to ~50 tokens
+     │  │     │  │  └─ Assistant messages: LLM compress to ~200 tokens
+     │  │     │  └─ Preserves last 5 user+assistant pairs (protected)
+     │  │     │
+     │  │     ├─ Step 3: Update message history in-place
+     │  │     │  ├─ Replace old messages with compressed versions
+     │  │     │  ├─ Free old message content
+     │  │     │  └─ Mark compressed messages with 💬 [Compressed] prefix
+     │  │     │
+     │  │     ├─ Step 4: Reset token tracker
+     │  │     │  ├─ Recalculate estimated tokens
+     │  │     │  └─ Target: reduce from 70% (56k) to 40% (32k)
+     │  │     │
+     │  │     └─ Return compression stats
+     │  │        ├─ original_message_count
+     │  │        ├─ compressed_message_count
+     │  │        ├─ tool_results_compressed
+     │  │        └─ messages_protected
      │  │
-     │  └─ graphrag_choice_pending == false?
-     │     └─ Continue to next step
+     │  └─ NO: Continue to next iteration
      │
-     ├─ Step 2: Process previous user choice
-     │  │
-     │  ├─ graphrag_choice_response is Some?
-     │  │  │
-     │  │  ├─ Choice: full_indexing
-     │  │  │  ├─ Pop task from queue
-     │  │  │  ├─ Call: llm_indexer.indexFile()
-     │  │  │  │  ├─ Serialize file chunks
-     │  │  │  │  ├─ Call LLM for indexing analysis
-     │  │  │  │  ├─ Create embeddings
-     │  │  │  │  ├─ Store in vector_store
-     │  │  │  │  └─ Call progress callback (streaming)
-     │  │  │  └─ Mark file as indexed in state
-     │  │  │
-     │  │  ├─ Choice: custom_lines
-     │  │  │  ├─ Wait for line_range_response
-     │  │  │  ├─ Call: updateMessageWithLineRange()
-     │  │  │  ├─ Replace message content with selected lines
-     │  │  │  └─ Pop and discard task
-     │  │  │
-     │  │  └─ Choice: metadata_only
-     │  │     ├─ Call: updateMessageWithMetadata()
-     │  │     ├─ Replace content with minimal info
-     │  │     └─ Pop and discard task
-     │  │
-     │  ├─ Clear response state
-     │  ├─ Clear file state
-     │  └─ Redraw UI
-     │
-     └─ Step 3: Prepare next file or complete
-        │
-        ├─ Queue empty?
-        │  └─ Show completion message, RETURN
-        │
-        └─ Queue not empty?
-           │
-           ├─ Peek at next task
-           ├─ Count lines
-           ├─ Show prompt: "How should this file be handled?"
-           │  ├─ 1. Full GraphRAG indexing
-           │  ├─ 2. Save custom line range
-           │  └─ 3. Metadata only
-           │
-           ├─ Set: graphrag_choice_pending = true
-           ├─ Set: current_indexing_file = next_task.file_path
-           ├─ Redraw UI
-           └─ RETURN (main loop waits for input)
+     └─ [MAIN LOOP CONTINUES]
 
-[MAIN LOOP CONTINUES]
-User presses key...
-│
-└─ Input handling detects GraphRAG choice
-   │
-   └─ Sets: graphrag_choice_response = user's choice
-      │
-      └─ Next loop: app_graphrag.processQueuedFiles() 
-         runs again and processes the choice
+Compression Quality:
+  ├─ User messages: Preserve question, intent, technical details
+  ├─ Assistant messages: Preserve explanations, code changes, decisions
+  ├─ Tool results: Use metadata for context-aware summaries
+  └─ Protected messages: Last 5 pairs never compressed (recent work safe)
 ```
 
 ---
@@ -312,31 +298,38 @@ KEY DIFFERENCES:
 
 ---
 
-## 5. Message History Flow with GraphRAG
+## 5. Message History Flow with Context Management
 
 ```
 User Message
   │
   └─ startStreaming()
      │
-     ├─ Convert to ollama.ChatMessage
-     └─ GraphRAG Compression (if enabled):
-        │
-        ├─ For each message:
-        │  │
-        │  ├─ Is tool role AND read_file result?
-        │  │  │
-        │  │  ├─ Was file indexed?
-        │  │  │  └─ YES: Replace with summary from vector_store
-        │  │  │
-        │  │  └─ NO: Keep original content
-        │  │
-        │  └─ Non-tool message: Keep as-is
-        │
-        └─ Track allocated summaries (freed after thread ends)
+     ├─ Get message history (may contain compressed messages)
+     │  ├─ Old messages: Compressed if token usage was high
+     │  │  └─ Marked with 💬 [Compressed] prefix
+     │  └─ Recent messages: Last 5 user+assistant pairs (full, never compressed)
+     │
+     ├─ Hot Context Injection (BEFORE LLM):
+     │  │
+     │  └─ injection.buildWorkflowContext():
+     │     ├─ Files read: List from context_tracker
+     │     ├─ Files modified: List with line ranges
+     │     ├─ Current todos: Active task status
+     │     └─ Workflow state: Current user activity
+     │
+     └─ Send to LLM with full context awareness
 
-LLM sees compressed history (read_file → summary)
-This keeps context window smaller while preserving key info
+LLM sees:
+  ├─ Hot context header (workflow awareness)
+  ├─ Compressed old messages (semantic meaning preserved via LLM compression)
+  └─ Full recent messages (last 5 pairs protected)
+
+Benefits:
+  ├─ Context window managed automatically
+  ├─ Recent work never compressed
+  ├─ Semantic meaning preserved (not truncation)
+  └─ Workflow awareness via hot injection
 ```
 
 ---
@@ -474,9 +467,21 @@ Tool Handling:
 └─ /home/wassie/Desktop/localharness/lmstudio.zig
    └─ LM Studio-specific tool passing
 
-GraphRAG Loop:
-├─ /home/wassie/Desktop/localharness/app_graphrag.zig (424-714)
-│  └─ processQueuedFiles() = secondary loop state machine (lines 438-714)
+Context Management:
+├─ /home/wassie/Desktop/localharness/context_management/tracking.zig
+│  └─ ContextTracker: Tracks files, modifications, todos, token usage
+├─ /home/wassie/Desktop/localharness/context_management/compressor.zig
+│  └─ Compression logic and LLM-based summarization
+├─ /home/wassie/Desktop/localharness/injection.zig
+│  └─ Hot context injection before LLM calls
+└─ /home/wassie/Desktop/localharness/agents_hardcoded/compression_agent.zig
+   └─ Compression agent with specialized tools
+
+Compression Tools:
+├─ /home/wassie/Desktop/localharness/tools/get_compression_metadata.zig
+├─ /home/wassie/Desktop/localharness/tools/compress_tool_result.zig
+├─ /home/wassie/Desktop/localharness/tools/compress_conversation_segment.zig
+└─ /home/wassie/Desktop/localharness/tools/verify_compression_target.zig
 
 Tool Execution:
 ├─ /home/wassie/Desktop/localharness/tool_executor.zig

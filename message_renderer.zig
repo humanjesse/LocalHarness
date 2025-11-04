@@ -2,19 +2,20 @@
 const std = @import("std");
 const mem = std.mem;
 const json = std.json;
-const ui = @import("ui.zig");
-const markdown = @import("markdown.zig");
-const render = @import("render.zig");
-const types = @import("types.zig");
+const ui = @import("ui");
+const markdown = @import("markdown");
+const render = @import("render");
+const types = @import("types");
 
 // Import App type from app module (will be set up after app.zig imports this)
-const app_module = @import("app.zig");
+const app_module = @import("app");
 const App = app_module.App;
 const Message = types.Message;
 
 /// Finalize a progress message with beautiful formatting (agents, GraphRAG, etc.)
 /// This unified function replaces separate finalization logic in app.zig and app_graphrag.zig
-pub fn finalizeProgressMessage(ctx: *@import("agents.zig").ProgressDisplayContext) !void {
+/// Takes a ProgressDisplayContext pointer (using anytype to avoid circular module dependencies)
+pub fn finalizeProgressMessage(ctx: anytype) !void {
     const allocator = ctx.app.allocator;
     const idx = ctx.current_message_idx orelse return;
     var msg = &ctx.app.messages.items[idx];

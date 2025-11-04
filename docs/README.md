@@ -28,11 +28,17 @@ Contributing to Local Harness:
 Understanding how Local Harness works:
 
 - [Overview](architecture/overview.md) - High-level architecture
-- [Config Editor](architecture/config-editor.md) - **NEW** Full-screen TUI config editor architecture
-- [Config Editor Data Flow](architecture/config-editor-flow.md) - **NEW** Detailed flow examples
+- [Config Editor](architecture/config-editor.md) - Full-screen TUI config editor architecture
+- [Config Editor Data Flow](architecture/config-editor-flow.md) - Detailed flow examples
 - [Tool Calling System](architecture/tool-calling.md) - How tool calling works
-- [GraphRAG](architecture/graphrag.md) - Context compression system
 - [Unified Read File](architecture/unified-read-file.md) - Smart file reading with agent curation
+
+## Implementation Notes
+
+- [Context Management Changes](CONTEXT_MANAGEMENT_CHANGES.md) - Context tracking and compression system
+- [Performance Optimizations](PERFORMANCE_OPTIMIZATIONS.md) - **NEW** LLM KV cache improvements (20x speedup)
+- [Compression Design](COMPRESSION_DESIGN.md) - Conversation compression strategy
+- [Memory Leak Fix](MEMORY_LEAK_FIX.md) - Config editor and agent memory fixes
 
 ## Archive
 

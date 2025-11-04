@@ -1,6 +1,6 @@
 const std = @import("std");
 const mem = std.mem;
-const help_state = @import("help_state.zig");
+const help_state = @import("help_state");
 const HelpState = help_state.HelpState;
 
 pub const InputResult = enum {

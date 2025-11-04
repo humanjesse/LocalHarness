@@ -1,11 +1,11 @@
 // Agent System - Core abstractions for isolated LLM sub-tasks
 const std = @import("std");
-const ollama = @import("ollama.zig");
-const llm_provider_module = @import("llm_provider.zig");
-const config_module = @import("config.zig");
-const tools_module = @import("tools.zig");
-const zvdb = @import("zvdb/src/zvdb.zig");
-const embedder_interface = @import("embedder_interface.zig");
+const ollama = @import("ollama");
+const llm_provider_module = @import("llm_provider");
+const config_module = @import("config");
+const tools_module = @import("tools");
+const zvdb = @import("zvdb");
+const embedder_interface = @import("embedder_interface");
 
 /// Progress update callback function type (shared with GraphRAG)
 pub const ProgressCallback = *const fn (user_data: ?*anyopaque, update_type: ProgressUpdateType, message: []const u8) void;
@@ -33,7 +33,7 @@ pub const TaskMetadata = struct {
 /// Shared context for streaming progress to UI (agents + GraphRAG + future tasks)
 /// This unified type replaces both AgentProgressContext and IndexingProgressContext
 pub const ProgressDisplayContext = struct {
-    app: *@import("app.zig").App,
+    app: *@import("app").App,
     current_message_idx: ?usize = null,
 
     // Separate buffers for thinking vs content (better UX than single buffer)
@@ -74,6 +74,9 @@ pub const AgentCapabilities = struct {
 
     /// Enable extended thinking for this agent
     enable_thinking: bool = false,
+
+    /// Response format (e.g., "json" for structured output)
+    format: ?[]const u8 = null,
 };
 
 /// Execution context provided to agents (controlled subset of AppContext)
@@ -91,7 +94,11 @@ pub const AgentContext = struct {
     // Optional conversation history for context-aware agents
     // Contains recent messages from main conversation to help agents
     // understand what the user is asking about
-    recent_messages: ?[]const @import("types.zig").Message = null,
+    recent_messages: ?[]const @import("types").Message = null,
+
+    // Optional mutable messages list for compression agent
+    // Allows compression tools to modify the conversation history
+    messages_list: ?*anyopaque = null, // *std.ArrayListUnmanaged(Message) - using anyopaque to avoid circular import
 };
 
 /// Statistics about agent execution

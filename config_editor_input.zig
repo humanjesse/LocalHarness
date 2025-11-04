@@ -1,6 +1,6 @@
 // Config Editor Input Handler - Processes user input for the config editor
 const std = @import("std");
-const config_editor_state = @import("config_editor_state.zig");
+const config_editor_state = @import("config_editor_state");
 
 const ConfigEditorState = config_editor_state.ConfigEditorState;
 const ConfigField = config_editor_state.ConfigField;
@@ -208,17 +208,13 @@ fn handleEnterKey(state: *ConfigEditorState) !InputResult {
 /// Toggle a boolean field
 fn toggleField(state: *ConfigEditorState, field: *ConfigField) !void {
     const config = &state.temp_config;
-    const llm_provider = @import("llm_provider.zig");
+    const llm_provider = @import("llm_provider");
 
     // Check if this is a shared toggle field
     if (std.mem.eql(u8, field.key, "enable_thinking")) {
         config.enable_thinking = !config.enable_thinking;
-    } else if (std.mem.eql(u8, field.key, "graph_rag_enabled")) {
-        config.graph_rag_enabled = !config.graph_rag_enabled;
     } else if (std.mem.eql(u8, field.key, "show_tool_json")) {
         config.show_tool_json = !config.show_tool_json;
-    } else if (std.mem.eql(u8, field.key, "indexing_enable_thinking")) {
-        config.indexing_enable_thinking = !config.indexing_enable_thinking;
     } else {
         // Try provider-specific toggle fields
         const current_value = config.getProviderField(config.provider, field.key);
@@ -277,35 +273,15 @@ fn cycleRadioBackward(state: *ConfigEditorState, field: *ConfigField) !void {
 
 /// Start editing a text field
 fn startTextEdit(state: *ConfigEditorState, field: *ConfigField) !void {
-    const config = &state.temp_config;
-
     // Free old buffer if exists
     if (field.edit_buffer) |old_buffer| {
         state.allocator.free(old_buffer);
     }
 
-    // Handle special nullable fields that need formatting
-    if (std.mem.eql(u8, field.key, "indexing_temperature")) {
-        field.edit_buffer = if (config.indexing_temperature) |temp|
-            try std.fmt.allocPrint(state.allocator, "{d:.2}", .{temp})
-        else
-            try state.allocator.dupe(u8, "null");
-    } else if (std.mem.eql(u8, field.key, "indexing_num_predict")) {
-        field.edit_buffer = if (config.indexing_num_predict) |num|
-            try std.fmt.allocPrint(state.allocator, "{d}", .{num})
-        else
-            try state.allocator.dupe(u8, "null");
-    } else if (std.mem.eql(u8, field.key, "indexing_repeat_penalty")) {
-        field.edit_buffer = if (config.indexing_repeat_penalty) |penalty|
-            try std.fmt.allocPrint(state.allocator, "{d:.2}", .{penalty})
-        else
-            try state.allocator.dupe(u8, "null");
-    } else {
-        // Get current value from config for regular text fields
-        const current_value = getCurrentTextValue(state, field.key);
-        // Allocate edit buffer and copy current value
-        field.edit_buffer = try state.allocator.dupe(u8, current_value);
-    }
+    // Get current value from config for text fields
+    const current_value = getCurrentTextValue(state, field.key);
+    // Allocate edit buffer and copy current value
+    field.edit_buffer = try state.allocator.dupe(u8, current_value);
 
     field.is_editing = true;
 }
@@ -426,8 +402,6 @@ fn getCurrentTextValue(state: *const ConfigEditorState, key: []const u8) []const
 
     // Shared fields
     if (std.mem.eql(u8, key, "model")) return config.model;
-    if (std.mem.eql(u8, key, "embedding_model")) return config.embedding_model;
-    if (std.mem.eql(u8, key, "indexing_model")) return config.indexing_model;
 
     // Try provider-specific fields
     const provider_value = config.getProviderField(config.provider, key);
@@ -441,39 +415,12 @@ fn getCurrentTextValue(state: *const ConfigEditorState, key: []const u8) []const
 /// Set text value in config
 fn setTextValue(state: *ConfigEditorState, key: []const u8, value: []const u8) !void {
     const config = &state.temp_config;
-    const llm_provider = @import("llm_provider.zig");
+    const llm_provider = @import("llm_provider");
 
     // Shared fields
     if (std.mem.eql(u8, key, "model")) {
         state.allocator.free(config.model);
         config.model = try state.allocator.dupe(u8, value);
-    } else if (std.mem.eql(u8, key, "embedding_model")) {
-        state.allocator.free(config.embedding_model);
-        config.embedding_model = try state.allocator.dupe(u8, value);
-    } else if (std.mem.eql(u8, key, "indexing_model")) {
-        state.allocator.free(config.indexing_model);
-        config.indexing_model = try state.allocator.dupe(u8, value);
-    } else if (std.mem.eql(u8, key, "indexing_temperature")) {
-        // Parse nullable float - "null" or empty = null, otherwise parse as float
-        if (std.mem.eql(u8, value, "null") or value.len == 0) {
-            config.indexing_temperature = null;
-        } else {
-            config.indexing_temperature = std.fmt.parseFloat(f32, value) catch null;
-        }
-    } else if (std.mem.eql(u8, key, "indexing_num_predict")) {
-        // Parse nullable int - "null" or empty = null, otherwise parse as int
-        if (std.mem.eql(u8, value, "null") or value.len == 0) {
-            config.indexing_num_predict = null;
-        } else {
-            config.indexing_num_predict = std.fmt.parseInt(isize, value, 10) catch null;
-        }
-    } else if (std.mem.eql(u8, key, "indexing_repeat_penalty")) {
-        // Parse nullable float - "null" or empty = null, otherwise parse as float
-        if (std.mem.eql(u8, value, "null") or value.len == 0) {
-            config.indexing_repeat_penalty = null;
-        } else {
-            config.indexing_repeat_penalty = std.fmt.parseFloat(f32, value) catch null;
-        }
     } else {
         // Try provider-specific text fields
         const new_value = llm_provider.ConfigValue{ .text = value };
@@ -487,10 +434,8 @@ fn getCurrentNumberValue(state: *const ConfigEditorState, key: []const u8) isize
 
     if (std.mem.eql(u8, key, "num_ctx")) return @as(isize, @intCast(config.num_ctx));
     if (std.mem.eql(u8, key, "num_predict")) return config.num_predict;
-    if (std.mem.eql(u8, key, "max_chunks_in_history")) return @as(isize, @intCast(config.max_chunks_in_history));
     if (std.mem.eql(u8, key, "scroll_lines")) return @as(isize, @intCast(config.scroll_lines));
     if (std.mem.eql(u8, key, "file_read_small_threshold")) return @as(isize, @intCast(config.file_read_small_threshold));
-    if (std.mem.eql(u8, key, "indexing_max_iterations")) return @as(isize, @intCast(config.indexing_max_iterations));
 
     // Try provider-specific number fields
     const provider_value = config.getProviderField(config.provider, key);
@@ -509,17 +454,13 @@ fn setNumberValue(state: *ConfigEditorState, key: []const u8, value: isize) !voi
         config.num_ctx = @as(usize, @intCast(@max(0, value)));
     } else if (std.mem.eql(u8, key, "num_predict")) {
         config.num_predict = value;
-    } else if (std.mem.eql(u8, key, "max_chunks_in_history")) {
-        config.max_chunks_in_history = @as(usize, @intCast(@max(0, value)));
     } else if (std.mem.eql(u8, key, "scroll_lines")) {
         config.scroll_lines = @as(usize, @intCast(@max(1, value)));
     } else if (std.mem.eql(u8, key, "file_read_small_threshold")) {
         config.file_read_small_threshold = @as(usize, @intCast(@max(0, value)));
-    } else if (std.mem.eql(u8, key, "indexing_max_iterations")) {
-        config.indexing_max_iterations = @as(usize, @intCast(@max(1, value)));
     } else {
         // Try provider-specific number fields
-        const llm_provider = @import("llm_provider.zig");
+        const llm_provider = @import("llm_provider");
         const new_value = llm_provider.ConfigValue{ .number = value };
         try config.setProviderField(state.allocator, config.provider, key, new_value);
     }

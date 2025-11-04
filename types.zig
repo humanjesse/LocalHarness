@@ -1,8 +1,8 @@
 // Shared type definitions for Local Harness
 const std = @import("std");
-const markdown = @import("markdown.zig");
-const ollama = @import("ollama.zig");
-const permission = @import("permission.zig");
+const markdown = @import("markdown");
+const ollama = @import("ollama");
+const permission = @import("permission");
 
 /// Permission request associated with a tool call
 pub const PermissionRequest = struct {

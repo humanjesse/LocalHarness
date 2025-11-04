@@ -1,7 +1,7 @@
 // LLM Helper - Unified patterns for LLM invocation across app and agents
 const std = @import("std");
-const ollama = @import("ollama.zig");
-const llm_provider_module = @import("llm_provider.zig");
+const ollama = @import("ollama");
+const llm_provider_module = @import("llm_provider");
 
 /// Request parameters for LLM invocation (unified across app and agents)
 pub const LLMRequest = struct {

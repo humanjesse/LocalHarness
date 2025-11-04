@@ -6,7 +6,7 @@
 
 ## Summary
 
-Replaced three separate file reading approaches with a single unified `read_file` tool that automatically adapts based on file size, providing optimal context efficiency while maintaining full GraphRAG searchability.
+Replaced three separate file reading approaches with a single unified `read_file` tool that automatically adapts based on file size, providing optimal context efficiency with intelligent caching for repeated reads.
 
 ## Problem Statement
 
@@ -20,18 +20,18 @@ Local Harness had **three different file reading implementations**:
 
 **Issues:**
 - LLM had to choose between `read_file` and `read_file_curated` without clear guidance
-- Curated mode duplicated work (agent curates → full file indexed anyway)
+- Curated mode duplicated work (agent curates, but no caching)
 - First-read context bloat: 1000-line files consumed 1000 lines of context immediately
-- GraphRAG only helped on *later* references (Turn 2+), not initial reads
+- No caching: repeated reads ran curator again (slow, expensive)
 
 ### The Core Inefficiency
 
 ```
-Turn 1: read_file("auth.zig") → 1000 lines in context
-Turn 2: User asks follow-up → GraphRAG compresses to 50 lines
-Turn 3: Another question → Still 50 lines (compressed)
+Turn 1: read_file("auth.zig") → 1000 lines in context (slow, curator runs)
+Turn 2: User asks follow-up about same file → 1000 lines again (curator runs again!)
+Turn 3: Another question → Still inefficient, no caching
 
-Problem: Turn 1 pays full 1000-line cost!
+Problem: Turn 1 pays full 1000-line cost! And it repeats every time!
 ```
 
 **Goal:** Reduce Turn 1 context usage while preserving searchability.

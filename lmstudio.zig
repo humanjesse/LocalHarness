@@ -3,7 +3,7 @@ const std = @import("std");
 const http = std.http;
 const json = std.json;
 const mem = std.mem;
-const ollama = @import("ollama.zig");  // Re-use common types
+const ollama = @import("ollama");  // Re-use common types
 
 // OpenAI-compatible streaming response format
 const OpenAIStreamChunk = struct {

@@ -1,9 +1,9 @@
 // run_agent tool - Execute a user-defined agent
 const std = @import("std");
-const ollama = @import("../ollama.zig");
+const ollama = @import("ollama");
 const tools_module = @import("../tools.zig");
-const context_module = @import("../context.zig");
-const agents_module = @import("../agents.zig");
+const context_module = @import("context");
+const agents_module = @import("agents"); // Use module system
 
 const ToolDefinition = tools_module.ToolDefinition;
 const ToolResult = tools_module.ToolResult;

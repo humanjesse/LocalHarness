@@ -45,17 +45,16 @@ This file is automatically created on first run with default values. You can edi
   "ollama_host": "http://localhost:11434",
   "ollama_endpoint": "/api/chat",
   "lmstudio_host": "http://localhost:1234",
+  "lmstudio_auto_start": false,
+  "lmstudio_auto_load_model": false,
+  "lmstudio_gpu_offload": "auto",
+  "lmstudio_ttl": 300,
   "model": "qwen3-coder:30b",
   "model_keep_alive": "15m",
   "num_ctx": 128000,
   "num_predict": 8192,
   "enable_thinking": true,
   "show_tool_json": false,
-  "graph_rag_enabled": false,
-  "embedding_model": "nomic-embed-text",  // Ollama format; LM Studio needs "text-embedding-..." prefix
-  "indexing_model": "llama3.1:8b",
-  "max_chunks_in_history": 5,
-  "zvdb_path": ".localharness/graphrag.zvdb",
   "file_read_small_threshold": 200,
   "editor": ["nvim"],
   "scroll_lines": 3,
@@ -128,9 +127,8 @@ ollama serve
 - ⚠️ **Context size** must be set in LM Studio UI (not in config file)
 - ⚠️ **Extended thinking mode** is not supported
 - ⚠️ **`model_keep_alive`** parameter is ignored
-- ⚠️ **GraphRAG embedding models**: Use format `text-embedding-nomic-embed-text-v1.5`, load BERT model in UI first
-- ✅ All tools work (file operations, GraphRAG, etc.)
-- ✅ Embeddings fully supported with error handling and retry logic
+- ✅ All tools work (file operations, context management, etc.)
+- ✅ Auto-start and auto-load model features available
 - ✅ Function/tool calling supported
 
 #### Switching Providers
@@ -214,23 +212,31 @@ $EDITOR ~/.config/localharness/config.json
 - `3`: Default, balanced
 - `5`: Faster scrolling for large conversations
 
-### GraphRAG Settings
+### ⚠️ Removed GraphRAG Settings (2025-11-03)
 
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `graph_rag_enabled` | boolean | `false` | Enable GraphRAG context compression |
-| `embedding_model` | string | `"nomic-embed-text"` | Model for embeddings - Ollama: `"nomic-embed-text"`, LM Studio: `"text-embedding-..."` |
-| `indexing_model` | string | `"llama3.1:8b"` | Model for file analysis (both Ollama and LM Studio) |
-| `max_chunks_in_history` | number | `5` | Max entities in summaries |
-| `zvdb_path` | string | `".localharness/graphrag.zvdb"` | Vector DB path |
+**These settings have been completely removed from the codebase:**
 
-GraphRAG builds knowledge graphs of read files in a secondary loop, compressing conversation history by 90%+ while preserving semantics. Both Ollama and LM Studio are fully supported - the embedder automatically uses your configured provider. See [Features Guide](features.md#graphrag-context-compression).
+| Option | Status | Replacement |
+|--------|--------|-------------|
+| `graph_rag_enabled` | ❌ Deprecated | Context management now always active |
+| `embedding_model` | ❌ Deprecated | No longer needed (vector store not actively used) |
+| `indexing_model` | ❌ Deprecated | Compression uses your primary model |
+| `max_chunks_in_history` | ❌ Deprecated | Protected message count is fixed (last 5 pairs) |
+| `zvdb_path` | ❌ Deprecated | Vector store preserved but not actively used |
 
-**Configuration Tips:**
-- Use `/config` command to edit embedding/indexing models interactively
-- Both models are now visible in the Provider Settings section of the config editor
-- For LM Studio: Ensure your embedding model is loaded before enabling GraphRAG
-- Debug mode: Set `DEBUG_GRAPHRAG=1` environment variable to see model/provider info during indexing
+**What replaced GraphRAG?**
+
+The GraphRAG secondary loop system was replaced with a simpler, more efficient **Context Management & Compression System**:
+
+- **Context Tracking**: Automatically tracks files read, modifications made, todos created
+- **File Curator Caching**: Smart caching provides 50-100x speedup on repeated file reads
+- **Automatic Compression**: Triggers at 70% token usage, reduces to 40%
+- **Protected Messages**: Last 5 user+assistant pairs never compressed
+- **Hot Context Injection**: Automatic workflow awareness before every LLM call
+
+**No configuration needed** - the new system works automatically!
+
+See [Context Management Guide](context-management-guide.md) for details.
 
 ### Color Settings
 

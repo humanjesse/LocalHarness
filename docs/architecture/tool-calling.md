@@ -65,14 +65,19 @@ Model Processes Results → Final Answer
 - **Example:** `{"path": "tools", "sort_by": "size", "reverse": true}`
 
 #### `read_file`
-- **Description:** Read file contents with line numbers (1-indexed)
+- **Description:** Read file contents with smart context optimization using file curator agent
 - **Permission:** Requires user approval (medium risk)
 - **Parameters:**
   - `path` (string): File path relative to project root
 - **Returns:** File contents with line numbers (max 10MB)
 - **Output Format:** `1: line content\n2: line content...`
 - **Error Types:** `not_found`, `io_error`, `parse_error`
-- **Side Effect:** Triggers AST parsing and graph indexing (when graph RAG is enabled)
+- **Smart Features:**
+  - Small files (<100 lines): Full content returned instantly
+  - Larger files: File curator agent analyzes and returns relevant sections based on conversation context
+  - Curator results cached per conversation context for 50-100x speedup on repeated reads
+  - Cache invalidation: File hash change or conversation context change triggers re-curation
+- **Performance:** First read may take longer for large files (curator analysis), subsequent reads use cached results
 
 #### `write_file`
 - **Description:** Create or overwrite a file with content
@@ -604,4 +609,4 @@ For implementation history and troubleshooting details, see:
 ## See Also
 
 - [Task Management Architecture](task-management.md) - Scratch space system
-- [Master Loop & Graph RAG](master-loop-graphrag.md) - Agentic behavior
+- [Master Loop Analysis](../LOOP_ANALYSIS.md) - Agentic behavior and compression system

@@ -1,9 +1,10 @@
 // Read Lines Tool - Reads specific line ranges from files (no GraphRAG indexing)
 const std = @import("std");
-const ollama = @import("../ollama.zig");
-const permission = @import("../permission.zig");
-const context_module = @import("../context.zig");
+const ollama = @import("ollama");
+const permission = @import("permission");
+const context_module = @import("context");
 const tools_module = @import("../tools.zig");
+const tracking = @import("tracking");
 
 const AppContext = context_module.AppContext;
 const ToolDefinition = tools_module.ToolDefinition;
@@ -53,7 +54,6 @@ pub fn getDefinition(allocator: std.mem.Allocator) !ToolDefinition {
 }
 
 fn execute(allocator: std.mem.Allocator, arguments: []const u8, context: *AppContext) !ToolResult {
-    _ = context; // Not used - read_lines doesn't trigger GraphRAG or state changes
     const start_time = std.time.milliTimestamp();
 
     // Parse arguments
@@ -168,6 +168,21 @@ fn execute(allocator: std.mem.Allocator, arguments: []const u8, context: *AppCon
     try writer.writeAll("```");
 
     const formatted = try formatted_output.toOwnedSlice(allocator);
+    defer allocator.free(formatted);
+
+    // Track line-range read in context tracker (for hot context injection)
+    if (context.context_tracker) |tracker| {
+        tracker.trackFileRead(
+            parsed.value.path,
+            content,
+            .lines,
+            .{ .start = parsed.value.start_line, .end = parsed.value.end_line },
+        ) catch |err| {
+            if (std.posix.getenv("DEBUG_CONTEXT")) |_| {
+                std.debug.print("[CONTEXT] Failed to track line read: {}\n", .{err});
+            }
+        };
+    }
 
     // NOTE: Intentionally NOT doing the following:
     // - NOT queuing for GraphRAG indexing (fast, exploration-focused)

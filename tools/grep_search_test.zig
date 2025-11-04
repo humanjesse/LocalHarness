@@ -2,7 +2,7 @@
 const std = @import("std");
 const testing = std.testing;
 const grep_search = @import("grep_search.zig");
-const context_module = @import("../context.zig");
+const context_module = @import("context");
 
 // Helper to create a temporary test directory structure
 fn createTestFiles(allocator: std.mem.Allocator, dir: std.fs.Dir) !void {
