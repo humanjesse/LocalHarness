@@ -1819,6 +1819,9 @@ pub const App = struct {
                     // Skip tool JSON if hidden by config
                     if (message.role == .tool and !self.config.show_tool_json) continue;
 
+                    // Skip empty system messages (hot context placeholder before first update)
+                    if (message.role == .system and message.content.len == 0) continue;
+
                     // Draw message (handles both thinking and content)
                     try message_renderer.drawMessage(self, writer, message, i, &absolute_y, input_field_height);
                 }

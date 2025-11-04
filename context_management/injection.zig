@@ -40,7 +40,13 @@ fn findFilesInRecentMessages(
 
                     if (clean_token.len > 0) {
                         const owned = try allocator.dupe(u8, clean_token);
-                        try mentioned_files.put(allocator, owned, {});
+                        errdefer allocator.free(owned);
+
+                        const result = try mentioned_files.getOrPut(allocator, owned);
+                        if (result.found_existing) {
+                            // Key already exists, free the duplicate
+                            allocator.free(owned);
+                        }
                     }
                 }
             }
