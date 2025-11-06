@@ -120,13 +120,32 @@ code here
 - **get_working_directory**: Get current working directory path
 
 #### Task Management
-- **add_task**: Create a new task
-- **list_tasks**: View all tasks
-- **update_task**: Update task status
+- **add_todo**: Create a new todo item
+- **list_todos**: View all todo items
+- **update_todo**: Update todo status
 
 #### Agent Tools
 - **run_agent**: Execute a custom agent by name with a given task prompt
 - **list_agents**: List all available custom agents and their capabilities
+
+#### Git Operations
+- **git_status**: Show working tree status and staged changes
+- **git_diff**: Show changes between commits, branches, or working tree
+- **git_log**: Display commit history with optional filtering
+- **git_add**: Stage files for commit
+- **git_commit**: Create a new commit with staged changes
+- **git_branch**: List, create, or delete branches
+- **git_checkout**: Switch branches or restore files
+- **git_stash**: Temporarily save uncommitted changes
+- **git_push**: Upload local commits to remote repository
+- **git_pull**: Fetch and merge changes from remote repository
+- **git_reset**: Unstage changes or reset to a previous commit
+
+#### Compression Tools (Internal/Agent-Only)
+- **get_compression_metadata**: Retrieve metadata about compressible messages
+- **compress_tool_result**: Compress tool execution results using tracked metadata
+- **compress_conversation_segment**: Compress user/assistant message pairs
+- **verify_compression_target**: Check if compression target is achievable
 
 **Example conversations:**
 ```
@@ -216,15 +235,15 @@ AI: Based on the code, markdown rendering works through
 ```
 You: "Refactor markdown.zig to be more modular"
 
-AI: I'll break this down into tasks:
-    [add_task "Analyze current structure"]
-    [add_task "Design module boundaries"]
-    [add_task "Propose refactoring plan"]
+AI: I'll break this down into todos:
+    [add_todo "Analyze current structure"]
+    [add_todo "Design module boundaries"]
+    [add_todo "Propose refactoring plan"]
 
     [Iteration 1]
-    [update_task "task_1" "in_progress"]
+    [update_todo "task_1" "in_progress"]
     [read_file "markdown.zig"]
-    [update_task "task_1" "completed"]
+    [update_todo "task_1" "completed"]
 
     Task 1 complete. Moving to module design...
 ```
@@ -242,7 +261,7 @@ AI: I'll break this down into tasks:
 **What it does:** Fine-grained control over AI's access to tools.
 
 **Risk levels:**
-- **Safe**: Auto-approved (get_file_tree, get_current_time, task tools)
+- **Safe**: Auto-approved (get_file_tree, get_current_time, todo tools)
 - **Medium**: Requires approval (read_file)
 - **High**: Requires approval with warning (future: write_file, execute)
 
@@ -528,11 +547,12 @@ All tools return JSON with:
 4. **Automatic Compression**: When token usage hits 70%, compression agent runs to reduce to 40%
 
 **Smart file reading with caching:**
-- **Small files** (<100 lines): Full content returned instantly
-- **Larger files**: File curator agent analyzes and returns relevant sections
+- **Small files** (≤200 lines): Full content returned instantly
+- **Larger files** (>200 lines): File curator agent analyzes and returns relevant sections
   - First read: Curator analyzes file based on conversation context (may take time for large files)
   - Subsequent reads: Cached result returned instantly (50-100x faster!)
   - Cache invalidation: File changes or conversation context shifts trigger re-analysis
+  - Threshold configurable via `file_read_small_threshold` in config.json
 
 **Context compression in action:**
 ```

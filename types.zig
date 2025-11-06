@@ -30,7 +30,7 @@ pub const Message = struct {
     tool_name: ?[]const u8 = null, // Name of executed tool
     tool_success: ?bool = null, // Whether tool succeeded
     tool_execution_time: ?i64 = null, // Execution time in milliseconds
-    // Agent analysis fields (for sub-agent thinking display - file_curator, graphrag, etc.)
+    // Agent analysis fields (for sub-agent thinking display - file_curator, compression_agent, etc.)
     agent_analysis_name: ?[]const u8 = null, // e.g., "File Curator"
     agent_analysis_expanded: bool = true, // Default expanded until user collapses
     agent_analysis_completed: bool = false, // Whether agent finished (enables collapse)
@@ -50,17 +50,4 @@ pub const StreamChunk = struct {
     thinking: ?[]const u8,
     content: ?[]const u8,
     done: bool,
-};
-
-/// User's choice for how to handle read_file output in GraphRAG secondary loop
-pub const GraphRagChoice = enum {
-    full_indexing,   // Run full GraphRAG indexing (default)
-    custom_lines,    // Save only specific line ranges
-    metadata_only,   // Save just tool call and filename
-};
-
-/// Line range specification for custom_lines choice
-pub const LineRange = struct {
-    start: usize,
-    end: usize,
 };
