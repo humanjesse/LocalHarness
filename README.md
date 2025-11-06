@@ -31,9 +31,9 @@ zig build
 
 - **Real-time streaming** with responsive, non-blocking UI
 - **Markdown rendering** - Code blocks, tables, lists, and emoji
-- **Tool calling** - 15 tools: read/write/edit files, search code, navigate directories, manage tasks, run agents
-- **Experimental read file agent** - AI curates important file sections, reducing context
-- **GraphRAG** - Automatic knowledge graphs compress context (experimental, optional)
+- **Tool calling** - 30 tools: read/write/edit files, search code, navigate directories, manage todos, run agents, Git operations
+- **Intelligent file reading** - AI curates important file sections, reducing context
+- **Context management** - Automatic conversation compression when token limit approaches
 - **Permission system** - Control tool access with persistent policies
 - **Task management** - Track multi-step workflows
 - **Thinking blocks** - See AI reasoning (toggle with `Ctrl+O`)
@@ -84,7 +84,7 @@ Config: `~/.config/localharness/config.json` (created on first run)
 }
 ```
 
-**Key options:** `provider`, `model`, `ollama_host`, `lmstudio_host`, `num_ctx` (context window), `num_predict` (max tokens), `graph_rag_enabled`, `embedding_model`, `indexing_model`, `editor`, `scroll_lines`, and color settings.
+**Key options:** `provider`, `model`, `ollama_host`, `lmstudio_host`, `num_ctx` (context window), `num_predict` (max tokens), `enable_thinking`, `file_read_small_threshold`, `editor`, `scroll_lines`, and color settings.
 
 **CLI overrides:** `--model`, `--ollama-host`
 

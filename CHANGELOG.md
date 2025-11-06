@@ -2,6 +2,40 @@
 
 All notable changes to Local Harness will be documented in this file.
 
+## [Unreleased] - 2025-11-06
+
+### Removed
+- **GraphRAG System Completely Removed** - Simplified architecture by removing GraphRAG indexing system:
+  - Removed GraphRAG directory (~2000 lines), app_graphrag.zig (~800 lines), and related infrastructure
+  - Removed config fields: `graph_rag_enabled`, `embedding_model`, `indexing_model`, and all `indexing_*` parameters
+  - Replaced with simpler context management system using intelligent caching and automatic compression
+  - Vector database preserved but not actively used (available for future semantic search features)
+  - Benefits: Simpler architecture (~3000 lines removed), faster file reads (50-100x via curator caching), no UI prompts
+  - See [CONTEXT_MANAGEMENT_CHANGES.md](docs/CONTEXT_MANAGEMENT_CHANGES.md) for complete migration details
+
+### Changed
+- **File Read Thresholds Simplified** - Consolidated from two-threshold to single-threshold system:
+  - Old system: Small (<100 lines), Medium (100-500 lines), Large (>500 lines) with structure extraction mode
+  - New system: Small (≤200 lines full content), Large (>200 lines curated content)
+  - Single configurable threshold: `file_read_small_threshold` (default: 200)
+  - Removed `file_read_large_threshold` config option
+
+### Fixed
+- **Documentation Accuracy** - Corrected multiple documentation inconsistencies:
+  - Fixed task management tool names: `add_task` → `add_todo`, `list_tasks` → `list_todos`, `update_task` → `update_todo`
+  - Updated tool count from 15 to 30 (now includes 11 Git tools and 4 compression tools)
+  - Removed outdated GraphRAG references from README.md and feature documentation
+  - Added comprehensive Git tools documentation (git_status, git_diff, git_log, git_add, git_commit, git_branch, git_checkout, git_stash, git_push, git_pull, git_reset)
+  - Documented compression tools as internal/agent-only
+
+### Cleanup
+- **Dead Code Removal** - Removed unused GraphRAG-related type definitions:
+  - Removed `GraphRagChoice` enum from types.zig (never used after GraphRAG removal)
+  - Removed global `LineRange` struct from types.zig (modules use local definitions instead)
+  - Updated comments to reference `compression_agent` instead of deprecated `graphrag`
+
+---
+
 ## [Unreleased] - 2025-10-30
 
 ### Fixed - Agent Builder System
