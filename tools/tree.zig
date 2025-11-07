@@ -237,9 +237,10 @@ fn collectFiles(
     prefix: []const u8,
     gitignore: *const GitIgnore,
     depth: usize,
+    max_depth: usize,
 ) !void {
     // Limit recursion depth to prevent stack overflow
-    if (depth > 10) return;
+    if (depth >= max_depth) return;
 
     var iter = dir.iterate();
 
@@ -295,7 +296,7 @@ fn collectFiles(
             };
             defer subdir.close();
 
-            try collectFiles(allocator, files, subdir, full_path, gitignore, depth + 1);
+            try collectFiles(allocator, files, subdir, full_path, gitignore, depth + 1, max_depth);
             allocator.free(full_path);
         } else if (entry.kind == .file) {
             try files.append(allocator, full_path);
@@ -306,7 +307,7 @@ fn collectFiles(
 }
 
 /// Generate a JSON array of file paths for LLM consumption
-pub fn generateTree(allocator: std.mem.Allocator, path: []const u8) ![]const u8 {
+pub fn generateTree(allocator: std.mem.Allocator, path: []const u8, max_depth: usize) ![]const u8 {
     var cwd = try std.fs.cwd().openDir(path, .{ .iterate = true });
     defer cwd.close();
 
@@ -323,7 +324,7 @@ pub fn generateTree(allocator: std.mem.Allocator, path: []const u8) ![]const u8 
         files.deinit(allocator);
     }
 
-    try collectFiles(allocator, &files, cwd, "", &gitignore, 0);
+    try collectFiles(allocator, &files, cwd, "", &gitignore, 0, max_depth);
 
     // Build JSON array
     var output = try std.ArrayList(u8).initCapacity(allocator, 0);

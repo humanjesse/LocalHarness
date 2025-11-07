@@ -335,7 +335,7 @@ fn findAreaAtCursor(app: *const app_module.App) ?types_module.ClickableArea {
 
 fn handleContextCommand(app: *app_module.App) !void {
     // Generate tree structure
-    const tree_output = tree.generateTree(app.allocator, ".") catch return;
+    const tree_output = tree.generateTree(app.allocator, ".", 10) catch return;
     defer app.allocator.free(tree_output);
 
     // Validate the tree output is valid UTF-8
