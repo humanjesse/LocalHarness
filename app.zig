@@ -593,17 +593,25 @@ pub const App = struct {
         // (This will be set correctly by continueStreaming for tool calls)
 
         // Phase A.5: Update hot context at position 1 BEFORE copying to ollama_messages (cache-friendly)
+        // IMPORTANT: Only update hot context when NOT in tool execution (tool_call_depth == 0)
+        // Otherwise updating messages.items[1] causes all messages to flash on every tool iteration
+        const should_update_hot_context = self.tool_call_depth == 0;
+
         // Extract recent messages for relevance filtering
         const recent_start = if (self.messages.items.len > 5) self.messages.items.len - 5 else 0;
         const recent_msgs = self.messages.items[recent_start..];
 
         // Generate hot context (always regenerate - TTL triggers this, hash determines if we update)
-        const hot_context = injection.generateHotContext(self.allocator, &self.context_tracker, &self.state, recent_msgs) catch |err| blk: {
-            if (std.posix.getenv("DEBUG_CONTEXT")) |_| {
-                std.debug.print("[CONTEXT] Failed to generate hot context: {}, keeping previous\n", .{err});
+        // But skip entirely during tool execution to avoid flashing
+        const hot_context = if (should_update_hot_context)
+            injection.generateHotContext(self.allocator, &self.context_tracker, &self.state, recent_msgs) catch |err| blk: {
+                if (std.posix.getenv("DEBUG_CONTEXT")) |_| {
+                    std.debug.print("[CONTEXT] Failed to generate hot context: {}, keeping previous\n", .{err});
+                }
+                break :blk null; // Keep existing content at position 1
             }
-            break :blk null; // Keep existing content at position 1
-        };
+        else
+            null; // Skip hot context update during tool execution
 
         if (hot_context) |ctx| {
             defer self.allocator.free(ctx);
@@ -1375,14 +1383,8 @@ pub const App = struct {
                                     .tool_execution_time = result.metadata.execution_time_ms,
                                 });
 
-                                // Receipt printer mode: auto-scroll to show tool results
-                                if (!self.user_scrolled_away) {
-                                    try self.maintainBottomAnchor();
-                                }
-                                _ = try message_renderer.redrawScreen(self);
-                                if (!self.user_scrolled_away) {
-                                    self.updateCursorToBottom();
-                                }
+                                // Don't redraw yet - wait until tool result is also added
+                                // to avoid double-redraw per tool (reduces flashing)
 
                                 // Create model-facing result (JSON for LLM)
                                 const tool_id_copy = if (tool_call.id) |id|
@@ -1406,7 +1408,8 @@ pub const App = struct {
                                     .tool_call_id = tool_id_copy,
                                 });
 
-                                // Receipt printer mode: auto-scroll to show tool result
+                                // Now redraw once for both messages (display + tool result)
+                                // Single redraw instead of two reduces flashing
                                 if (!self.user_scrolled_away) {
                                     try self.maintainBottomAnchor();
                                 }
