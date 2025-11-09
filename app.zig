@@ -184,13 +184,8 @@ fn agentProgressCallback(user_data: ?*anyopaque, update_type: agents_module.Prog
     }
 
     // Redraw screen to show progress
-    if (!ctx.app.user_scrolled_away) {
-        ctx.app.maintainBottomAnchor() catch return;
-    }
     _ = message_renderer.redrawScreen(ctx.app) catch return;
-    if (!ctx.app.user_scrolled_away) {
-        ctx.app.updateCursorToBottom();
-    }
+    ctx.app.updateCursorToBottom();
 }
 
 // Define available tools for the model
@@ -198,6 +193,29 @@ fn createTools(allocator: mem.Allocator) ![]const ollama.Tool {
     return try tools_module.getOllamaTools(allocator);
 }
 
+// Incremental rendering support structures
+pub const MessageRenderInfo = struct {
+    message_index: usize,
+    y_start: usize,           // Absolute Y position where message starts
+    y_end: usize,             // Absolute Y position where message ends
+    height: usize,            // Total lines this message occupies
+    content_hash: u64,        // Hash of message content for change detection (includes expansion states)
+};
+
+/// Simplified render cache - just tracks terminal size for resize detection
+pub const RenderCache = struct {
+    last_terminal_width: u16 = 0,
+    last_terminal_height: u16 = 0,
+
+    pub fn init() RenderCache {
+        return .{};
+    }
+
+    pub fn deinit(self: *RenderCache, allocator: mem.Allocator) void {
+        _ = self;
+        _ = allocator;
+    }
+};
 
 
 pub const App = struct {
@@ -237,8 +255,7 @@ pub const App = struct {
     state: AppState,
     app_context: AppContext,
     max_iterations: usize = 10, // Master loop iteration limit
-    // Auto-scroll state (receipt printer mode)
-    user_scrolled_away: bool = false, // Tracks if user manually scrolled during streaming
+    // Auto-scroll state (receipt printer mode) - removed, now always auto-scrolls
     // Vector DB components (kept for future semantic search)
     vector_store: ?*zvdb.HNSW(f32) = null,
     embedder: ?*embedder_interface.Embedder = null, // Generic interface - works with both Ollama and LM Studio
@@ -260,6 +277,9 @@ pub const App = struct {
     hot_context_hash: u64 = 0,
     hot_context_last_updated: i64 = 0,
     hot_context_ttl_seconds: i64 = 300, // 5 minutes - regenerate but only update if hash changes
+
+    // Incremental rendering state
+    render_cache: RenderCache = RenderCache.init(),
 
     pub fn init(allocator: mem.Allocator, config: Config) !App {
         const tools = try createTools(allocator);
@@ -401,26 +421,6 @@ pub const App = struct {
 
     // Pre-calculate and apply scroll position to keep viewport anchored at bottom
     // This should be called BEFORE redrawScreen() to avoid flashing
-    pub fn maintainBottomAnchor(self: *App) !void {
-        if (self.valid_cursor_positions.items.len == 0) return;
-
-        // Calculate total content height
-        const total_content_height = try message_renderer.calculateContentHeight(self);
-        // Calculate input field height dynamically (includes separator)
-        const input_field_height = try message_renderer.calculateInputFieldHeight(self);
-        // View height = terminal height - input field - taskbar
-        const view_height = if (self.terminal_size.height > input_field_height + 1)
-            self.terminal_size.height - input_field_height - 1
-        else
-            1;
-
-        // Anchor viewport to bottom
-        if (total_content_height > view_height) {
-            self.scroll_y = total_content_height - view_height;
-        } else {
-            self.scroll_y = 0;
-        }
-    }
 
     // Update cursor to track bottom position after redraw
     pub fn updateCursorToBottom(self: *App) void {
@@ -727,14 +727,12 @@ pub const App = struct {
             .timestamp = std.time.milliTimestamp(),
         });
 
+        // Mark all dirty - new message changes layout
+        // Removed dirty state tracking - rendering is now always automatic
+
         // Redraw to show empty placeholder (receipt printer mode)
-        if (!self.user_scrolled_away) {
-            try self.maintainBottomAnchor();
-        }
         _ = try message_renderer.redrawScreen(self);
-        if (!self.user_scrolled_away) {
-            self.updateCursorToBottom();
-        }
+        self.updateCursorToBottom();
 
         // Prepare thread context
         const messages_slice = try ollama_messages.toOwnedSlice(self.allocator);
@@ -767,8 +765,7 @@ pub const App = struct {
         // Phase 1: Reset iteration count for new user messages (master loop)
         self.state.iteration_count = 0;
 
-        // Reset auto-scroll state - re-enable receipt printer mode for new response
-        self.user_scrolled_away = false;
+        // Reset auto-scroll state - no longer needed, now always auto-scrolls
 
         // 1. Add user message
         const user_content = try self.allocator.dupe(u8, user_text);
@@ -781,6 +778,9 @@ pub const App = struct {
             .thinking_expanded = true,
             .timestamp = std.time.milliTimestamp(),
         });
+
+        // Mark all dirty - new message changes layout
+        // Removed dirty state tracking - rendering is now always automatic
 
         // Phase A.4: Track tokens for user message
         if (self.token_tracker) |tracker| {
@@ -855,13 +855,7 @@ pub const App = struct {
         }
 
         // Show user message right away (receipt printer mode)
-        if (!self.user_scrolled_away) {
-            try self.maintainBottomAnchor();
-        }
         _ = try message_renderer.redrawScreen(self);
-        if (!self.user_scrolled_away) {
-            self.updateCursorToBottom();
-        }
 
         // 2. Start streaming
         try self.startStreaming(format);
@@ -922,7 +916,13 @@ pub const App = struct {
             self.messages.items.len - 5
         else
             0;
-        self.app_context.recent_messages = self.messages.items[start_idx..];
+
+        // IMPORTANT: Allocate a COPY of the messages slice to avoid use-after-free
+        // During tool execution, self.messages may grow and reallocate its backing buffer
+        // This would invalidate any slice pointing into the old buffer
+        const messages_copy = try self.allocator.dupe(types.Message, self.messages.items[start_idx..]);
+        self.app_context.recent_messages = messages_copy;
+        defer self.allocator.free(messages_copy);
 
         // Set up agent progress streaming for sub-agents (like file curator)
         var agent_progress_ctx = ProgressDisplayContext{
@@ -1112,6 +1112,9 @@ pub const App = struct {
             self.allocator.destroy(tracker);
         }
         self.context_tracker.deinit();
+
+        // Clean up incremental rendering state
+        self.render_cache.deinit(self.allocator);
 
         // Clean up config (App owns it)
         self.config.deinit(self.allocator);
@@ -1332,13 +1335,8 @@ pub const App = struct {
                             if (self.tool_executor.getPendingPermissionEval()) |eval_result| {
                                 try self.showPermissionPrompt(tool_call, eval_result);
                                 self.permission_pending = true;
-                                if (!self.user_scrolled_away) {
-                                    try self.maintainBottomAnchor();
-                                }
                                 _ = try message_renderer.redrawScreen(self);
-                                if (!self.user_scrolled_away) {
-                                    self.updateCursorToBottom();
-                                }
+                                self.updateCursorToBottom();
                             }
                         }
                     },
@@ -1410,13 +1408,8 @@ pub const App = struct {
 
                                 // Now redraw once for both messages (display + tool result)
                                 // Single redraw instead of two reduces flashing
-                                if (!self.user_scrolled_away) {
-                                    try self.maintainBottomAnchor();
-                                }
                                 _ = try message_renderer.redrawScreen(self);
-                                if (!self.user_scrolled_away) {
-                                    self.updateCursorToBottom();
-                                }
+                                self.updateCursorToBottom();
 
                                 // Tell executor to advance to next tool
                                 self.tool_executor.advanceAfterExecution();
@@ -1466,13 +1459,8 @@ pub const App = struct {
                                 });
 
                                 // Receipt printer mode: auto-scroll
-                                if (!self.user_scrolled_away) {
-                                    try self.maintainBottomAnchor();
-                                }
                                 _ = try message_renderer.redrawScreen(self);
-                                if (!self.user_scrolled_away) {
-                                    self.updateCursorToBottom();
-                                }
+                                self.updateCursorToBottom();
 
                                 // Create model-facing result (JSON for LLM)
                                 const tool_id_copy = if (tool_call.id) |id|
@@ -1493,26 +1481,15 @@ pub const App = struct {
                                 });
 
                                 // Receipt printer mode: auto-scroll
-                                if (!self.user_scrolled_away) {
-                                    try self.maintainBottomAnchor();
-                                }
                                 _ = try message_renderer.redrawScreen(self);
-                                if (!self.user_scrolled_away) {
-                                    self.updateCursorToBottom();
-                                }
+                                self.updateCursorToBottom();
 
                                 // Tell executor to advance to next tool
                                 self.tool_executor.advanceAfterExecution();
                             }
                         } else {
                             // Just redraw for other states
-                            if (!self.user_scrolled_away) {
-                                try self.maintainBottomAnchor();
-                            }
                             _ = try message_renderer.redrawScreen(self);
-                            if (!self.user_scrolled_away) {
-                                self.updateCursorToBottom();
-                            }
                         }
                     },
 
@@ -1521,13 +1498,7 @@ pub const App = struct {
                         self.state.iteration_count += 1;
                         self.tool_call_depth = 0; // Reset for next iteration
 
-                        if (!self.user_scrolled_away) {
-                            try self.maintainBottomAnchor();
-                        }
                         _ = try message_renderer.redrawScreen(self);
-                        if (!self.user_scrolled_away) {
-                            self.updateCursorToBottom();
-                        }
 
                         // NOTE: Do NOT process Graph RAG queue here!
                         // Queue processing happens only when the entire conversation turn is done,
@@ -1553,13 +1524,7 @@ pub const App = struct {
                             .timestamp = std.time.milliTimestamp(),
                         });
 
-                        if (!self.user_scrolled_away) {
-                            try self.maintainBottomAnchor();
-                        }
                         _ = try message_renderer.redrawScreen(self);
-                        if (!self.user_scrolled_away) {
-                            self.updateCursorToBottom();
-                        }
                     },
                 }
             }
@@ -1650,6 +1615,10 @@ pub const App = struct {
                                     }
                                 }
 
+                                // Update display to show tool call
+                                _ = try message_renderer.redrawScreen(self);
+                                self.updateCursorToBottom();
+
                                 // Start tool executor with new tool calls
                                 self.tool_executor.startExecution(tool_calls);
 
@@ -1739,6 +1708,8 @@ pub const App = struct {
 
                             last_message.processed_content = try markdown.processMarkdown(self.allocator, last_message.content);
 
+                            // Removed dirty state tracking - rendering is now automatic
+
                             // DEBUG: Check if markdown processing worked
                             if (std.posix.getenv("DEBUG_LMSTUDIO") != null) {
                                 std.debug.print("DEBUG APP: Processed markdown - got {d} items\n", .{last_message.processed_content.items.len});
@@ -1775,19 +1746,13 @@ pub const App = struct {
 
                 // Only render when chunks arrive (avoid busy loop)
                 if (chunks_were_processed) {
-                    // Receipt printer mode: always auto-scroll to show new content
-                    // UNLESS user has manually scrolled away
-                    if (!self.user_scrolled_away) {
-                        try self.maintainBottomAnchor();
-                    }
+                    // Update scroll position to keep content in view
+                    // (Needed when streaming ends - done chunk sets streaming_active=false,
+                    //  collapses thinking, and changes message hash/height)
 
-                    // Render with correct scroll position already set
                     _ = try message_renderer.redrawScreen(self);
 
-                    // Always update cursor to bottom during streaming (unless user scrolled away)
-                    if (!self.user_scrolled_away) {
-                        self.updateCursorToBottom();
-                    }
+                    // Update cursor to bottom after redraw
 
                     // Input handling happens after this block - no continue/skip!
                     // This allows scroll wheel to work immediately
@@ -1864,13 +1829,7 @@ pub const App = struct {
                     }
                     // Check if we need to redraw (e.g., after toggling settings)
                     if (should_redraw) {
-                        if (!self.user_scrolled_away) {
-                            try self.maintainBottomAnchor();
-                        }
                         _ = try message_renderer.redrawScreen(self);
-                        if (!self.user_scrolled_away) {
-                            self.updateCursorToBottom();
-                        }
                     }
                 }
                 // Continue main loop immediately to check for more chunks or execute next tool

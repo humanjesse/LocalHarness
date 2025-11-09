@@ -528,16 +528,19 @@ pub fn handleInput(
                     if (area.message.agent_analysis_name != null and
                         area.message.agent_analysis_completed) {
                         area.message.agent_analysis_expanded = !area.message.agent_analysis_expanded;
+                        // Removed dirty state tracking - rendering now automatic
                         should_redraw.* = true;
                     }
                     // Toggle thinking if present
                     else if (area.message.thinking_content != null) {
                         area.message.thinking_expanded = !area.message.thinking_expanded;
+                        // Removed dirty state tracking - rendering now automatic
                         should_redraw.* = true;
                     }
                     // Toggle tool call if present
                     else if (area.message.tool_name != null) {
                         area.message.tool_call_expanded = !area.message.tool_call_expanded;
+                        // Removed dirty state tracking - rendering now automatic
                         should_redraw.* = true;
                     }
                 }
@@ -602,21 +605,23 @@ pub fn handleInput(
                     if (cursor_idx > 0) {
                         const scroll_amount = @min(app.config.scroll_lines, cursor_idx);
                         app.cursor_y = app.valid_cursor_positions.items[cursor_idx - scroll_amount];
+                        // Removed dirty state tracking - rendering now automatic
                         should_redraw.* = true;
 
                         // Mark that user manually scrolled away (disables auto-scroll during streaming)
                         if (app.streaming_active) {
-                            app.user_scrolled_away = true;
+                            // Removed user_scrolled_away tracking
                         }
                     }
                 } else if (app.valid_cursor_positions.items.len > 0) {
                     // Cursor not in valid positions - snap to nearest and scroll up
                     app.cursor_y = app.valid_cursor_positions.items[app.valid_cursor_positions.items.len - 1];
+                    // Removed dirty state tracking - rendering now automatic
                     should_redraw.* = true;
 
                     // Mark that user manually scrolled away (disables auto-scroll during streaming)
                     if (app.streaming_active) {
-                        app.user_scrolled_away = true;
+                        // Removed user_scrolled_away tracking
                     }
                 }
                 return false;
@@ -627,11 +632,13 @@ pub fn handleInput(
                     if (cursor_idx < max_idx) {
                         const scroll_amount = @min(app.config.scroll_lines, max_idx - cursor_idx);
                         app.cursor_y = app.valid_cursor_positions.items[cursor_idx + scroll_amount];
+                        // Removed dirty state tracking - rendering now automatic
                         should_redraw.* = true;
                     }
                 } else if (app.valid_cursor_positions.items.len > 0) {
                     // Cursor not in valid positions - snap to nearest and scroll down
                     app.cursor_y = app.valid_cursor_positions.items[0];
+                    // Removed dirty state tracking - rendering now automatic
                     should_redraw.* = true;
                 }
                 return false;

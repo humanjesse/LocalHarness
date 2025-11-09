@@ -12,6 +12,258 @@ const app_module = @import("app");
 const App = app_module.App;
 const Message = types.Message;
 
+/// Line type for message layout - helps identify what each line represents
+pub const LineType = enum {
+    thinking_header,
+    thinking_content,
+    collapsed_thinking,
+    agent_analysis_hint,
+    agent_analysis_content,
+    collapsed_agent,
+    tool_header,
+    tool_content,
+    collapsed_tool,
+    main_content,
+    permission_header,
+    permission_details,
+    separator,
+    empty,
+};
+
+/// Represents a single line in a message layout with its type and content
+pub const MessageLine = struct {
+    line_type: LineType,
+    content: []const u8,  // Owned by the MessageLayout
+
+    pub fn deinit(self: *MessageLine, allocator: mem.Allocator) void {
+        allocator.free(self.content);
+    }
+};
+
+/// Message layout - contains all lines for a message and its height
+/// This is the single source of truth for message structure
+pub const MessageLayout = struct {
+    lines: std.ArrayListUnmanaged(MessageLine),
+    height: usize,  // Total height including borders and spacing
+
+    pub fn init() MessageLayout {
+        return .{
+            .lines = .{},
+            .height = 0,
+        };
+    }
+
+    pub fn deinit(self: *MessageLayout, allocator: mem.Allocator) void {
+        for (self.lines.items) |*line| {
+            line.deinit(allocator);
+        }
+        self.lines.deinit(allocator);
+    }
+};
+
+/// Build message layout - single source of truth for message structure
+/// This function determines what lines appear in a message and in what order
+/// Both height calculation and rendering use this same logic
+pub fn buildMessageLayout(app: *App, message: *Message) !MessageLayout {
+    const left_padding = 2;
+    const max_content_width = if (app.terminal_size.width > left_padding + 4)
+        app.terminal_size.width - left_padding - 4
+    else
+        0;
+
+    var layout = MessageLayout.init();
+    errdefer layout.deinit(app.allocator);
+
+    // Add thinking section if present
+    const has_thinking = message.thinking_content != null and message.processed_thinking_content != null;
+    if (has_thinking) {
+        if (message.thinking_expanded) {
+            // Header
+            try layout.lines.append(app.allocator, .{
+                .line_type = .thinking_header,
+                .content = try app.allocator.dupe(u8, "Thinking"),
+            });
+
+            // Content lines
+            if (message.processed_thinking_content) |*thinking_processed| {
+                var thinking_lines = std.ArrayListUnmanaged([]const u8){};
+                defer {
+                    for (thinking_lines.items) |line| app.allocator.free(line);
+                    thinking_lines.deinit(app.allocator);
+                }
+                try renderItemsToLines(app, thinking_processed, &thinking_lines, 0, max_content_width);
+
+                for (thinking_lines.items) |line| {
+                    try layout.lines.append(app.allocator, .{
+                        .line_type = .thinking_content,
+                        .content = try app.allocator.dupe(u8, line),
+                    });
+                }
+            }
+
+            // Separator
+            try layout.lines.append(app.allocator, .{
+                .line_type = .separator,
+                .content = try app.allocator.dupe(u8, ""),
+            });
+        } else {
+            // Collapsed thinking
+            try layout.lines.append(app.allocator, .{
+                .line_type = .collapsed_thinking,
+                .content = try app.allocator.dupe(u8, "💭 Thinking (Ctrl+O to expand)"),
+            });
+            try layout.lines.append(app.allocator, .{
+                .line_type = .separator,
+                .content = try app.allocator.dupe(u8, ""),
+            });
+        }
+    }
+
+    // Add agent analysis section if present
+    const has_agent_analysis = message.agent_analysis_name != null;
+    if (has_agent_analysis) {
+        if (message.agent_analysis_completed and !message.agent_analysis_expanded) {
+            // Collapsed agent analysis
+            const agent_time = message.tool_execution_time orelse 0;
+            const summary = try std.fmt.allocPrint(
+                app.allocator,
+                "🤔 {s} Analysis (✅ completed, {d}ms) - Ctrl+O to expand",
+                .{ message.agent_analysis_name.?, agent_time }
+            );
+            try layout.lines.append(app.allocator, .{
+                .line_type = .collapsed_agent,
+                .content = summary,
+            });
+            try layout.lines.append(app.allocator, .{
+                .line_type = .separator,
+                .content = try app.allocator.dupe(u8, ""),
+            });
+        } else {
+            // Expanded or streaming agent analysis
+            if (message.agent_analysis_completed) {
+                try layout.lines.append(app.allocator, .{
+                    .line_type = .agent_analysis_hint,
+                    .content = try app.allocator.dupe(u8, "(Ctrl+O to collapse)"),
+                });
+            }
+
+            // Content lines
+            var content_lines = std.ArrayListUnmanaged([]const u8){};
+            defer {
+                for (content_lines.items) |line| app.allocator.free(line);
+                content_lines.deinit(app.allocator);
+            }
+            try renderItemsToLines(app, &message.processed_content, &content_lines, 0, max_content_width);
+
+            for (content_lines.items) |line| {
+                try layout.lines.append(app.allocator, .{
+                    .line_type = .agent_analysis_content,
+                    .content = try app.allocator.dupe(u8, line),
+                });
+            }
+
+            try layout.lines.append(app.allocator, .{
+                .line_type = .separator,
+                .content = try app.allocator.dupe(u8, ""),
+            });
+        }
+    }
+
+    // Add tool call section if present
+    const has_tool_call = message.tool_name != null;
+    if (has_tool_call) {
+        if (message.tool_call_expanded) {
+            // Header
+            const tool_header_text = try std.fmt.allocPrint(
+                app.allocator,
+                "Tool: {s}",
+                .{message.tool_name.?}
+            );
+            try layout.lines.append(app.allocator, .{
+                .line_type = .tool_header,
+                .content = tool_header_text,
+            });
+
+            // Content lines
+            var tool_lines = std.ArrayListUnmanaged([]const u8){};
+            defer {
+                for (tool_lines.items) |line| app.allocator.free(line);
+                tool_lines.deinit(app.allocator);
+            }
+            try renderItemsToLines(app, &message.processed_content, &tool_lines, 0, max_content_width);
+
+            for (tool_lines.items) |line| {
+                try layout.lines.append(app.allocator, .{
+                    .line_type = .tool_content,
+                    .content = try app.allocator.dupe(u8, line),
+                });
+            }
+
+            try layout.lines.append(app.allocator, .{
+                .line_type = .separator,
+                .content = try app.allocator.dupe(u8, ""),
+            });
+        } else {
+            // Collapsed tool call
+            const status_icon = if (message.tool_success orelse false) "✅" else "❌";
+            const status_text = if (message.tool_success orelse false) "SUCCESS" else "FAILED";
+            var summary = std.ArrayListUnmanaged(u8){};
+            defer summary.deinit(app.allocator);
+            try summary.print(
+                app.allocator,
+                "🔧 Used tool: {s} ({s} {s})",
+                .{ message.tool_name.?, status_icon, status_text }
+            );
+            if (message.tool_execution_time) |exec_time| {
+                try summary.print(app.allocator, ", {d}ms", .{exec_time});
+            }
+            try summary.appendSlice(app.allocator, " - Ctrl+O to expand");
+
+            try layout.lines.append(app.allocator, .{
+                .line_type = .collapsed_tool,
+                .content = try summary.toOwnedSlice(app.allocator),
+            });
+            try layout.lines.append(app.allocator, .{
+                .line_type = .separator,
+                .content = try app.allocator.dupe(u8, ""),
+            });
+        }
+    }
+
+    // Add main content (if not handled by agent/tool sections above)
+    if (!has_agent_analysis and !has_tool_call) {
+        var content_lines = std.ArrayListUnmanaged([]const u8){};
+        defer {
+            for (content_lines.items) |line| app.allocator.free(line);
+            content_lines.deinit(app.allocator);
+        }
+        try renderItemsToLines(app, &message.processed_content, &content_lines, 0, max_content_width);
+
+        for (content_lines.items) |line| {
+            try layout.lines.append(app.allocator, .{
+                .line_type = .main_content,
+                .content = try app.allocator.dupe(u8, line),
+            });
+        }
+    }
+
+    // Add permission request section if present
+    if (message.permission_request) |_| {
+        // Note: Permission rendering is complex and stays in drawMessage for now
+        // We just mark that there is permission UI here
+        try layout.lines.append(app.allocator, .{
+            .line_type = .permission_header,
+            .content = try app.allocator.dupe(u8, "[Permission Request]"),
+        });
+    }
+
+    // Calculate total height: lines + borders + spacing
+    const box_height = layout.lines.items.len + 2; // +2 for top/bottom borders
+    layout.height = box_height + 1; // +1 for spacing after message
+
+    return layout;
+}
+
 /// Finalize a progress message with beautiful formatting (agents, GraphRAG, etc.)
 /// This unified function replaces separate finalization logic in app.zig and app_graphrag.zig
 /// Takes a ProgressDisplayContext pointer (using anytype to avoid circular module dependencies)
@@ -92,13 +344,59 @@ pub fn finalizeProgressMessage(ctx: anytype) !void {
     msg.tool_execution_time = execution_time; // Store execution time for display
 
     // Redraw screen to show finalized message
-    if (!ctx.app.user_scrolled_away) {
-        try ctx.app.maintainBottomAnchor();
-    }
     _ = try redrawScreen(ctx.app);
-    if (!ctx.app.user_scrolled_away) {
-        ctx.app.updateCursorToBottom();
+    ctx.app.updateCursorToBottom();
+}
+
+/// Calculate message height using shared layout logic
+/// This is now a simple wrapper around buildMessageLayout - no duplication!
+fn calculateMessageHeight(app: *App, message: *Message) !usize {
+    var layout = try buildMessageLayout(app, message);
+    defer layout.deinit(app.allocator);
+    return layout.height;
+}
+
+/// Calculate deterministic hash of message content for change detection
+/// Used by incremental rendering to detect if a message has changed
+/// Only hashes fields that affect visual rendering
+pub fn calculateMessageHash(message: *const Message) u64 {
+    var hasher = std.hash.Wyhash.init(0);
+
+    // Hash content (includes role via content structure)
+    hasher.update(message.content);
+
+    // Hash thinking content if present
+    if (message.thinking_content) |thinking| {
+        hasher.update(thinking);
     }
+
+    // Hash tool call fields (affects tool result rendering)
+    if (message.tool_name) |tool_name| {
+        hasher.update(tool_name);
+    }
+    if (message.tool_success) |success| {
+        hasher.update(&[_]u8{if (success) 1 else 0});
+    }
+    if (message.tool_execution_time) |time| {
+        const time_bytes = std.mem.asBytes(&time);
+        hasher.update(time_bytes);
+    }
+
+    // Hash agent analysis name (affects agent section rendering)
+    if (message.agent_analysis_name) |name| {
+        hasher.update(name);
+    }
+
+    // Hash expansion states (affects what's rendered)
+    const expansion_bits: u8 =
+        (@as(u8, if (message.thinking_expanded) 1 else 0) << 0) |
+        (@as(u8, if (message.tool_call_expanded) 1 else 0) << 1) |
+        (@as(u8, if (message.agent_analysis_expanded) 1 else 0) << 2) |
+        (@as(u8, if (message.agent_analysis_completed) 1 else 0) << 3) |
+        (@as(u8, if (message.permission_request != null) 1 else 0) << 4);
+    hasher.update(&[_]u8{expansion_bits});
+
+    return hasher.final();
 }
 
 // Recursive markdown rendering function
@@ -1031,8 +1329,8 @@ pub fn drawMessage(
         const current_absolute_y = absolute_y.* + line_idx;
         try app.valid_cursor_positions.append(app.allocator, current_absolute_y);
 
-        // Render only rows within viewport
-        if (current_absolute_y >= app.scroll_y and current_absolute_y - app.scroll_y <= viewport_height) {
+        // Render only rows within viewport (use <= to include last visible line)
+        if (current_absolute_y >= app.scroll_y and current_absolute_y - app.scroll_y <= viewport_height - 1) {
             const screen_y = (current_absolute_y - app.scroll_y) + 1;
 
             // Draw cursor
@@ -1083,7 +1381,7 @@ pub fn drawMessage(
     // Add spacing after each message for readability
     // Clear the spacing line if it's in the viewport
     const spacing_y = absolute_y.*;
-    if (spacing_y >= app.scroll_y and spacing_y - app.scroll_y <= viewport_height) {
+    if (spacing_y >= app.scroll_y and spacing_y - app.scroll_y <= viewport_height - 1) {
         const screen_y = (spacing_y - app.scroll_y) + 1;
         try writer.print("\x1b[{d};1H\x1b[K", .{screen_y}); // Clear the spacing line
     }
@@ -1353,34 +1651,57 @@ pub fn calculateContentHeight(self: *App) !usize {
     return absolute_y;
 }
 
-// Helper function to redraw the screen immediately
-// Returns the total content height (last absolute_y position)
-pub fn redrawScreen(self: *App) !usize {
+// Unified dirty message redraw - handles both incremental updates and streaming
+// Falls back to fullRedraw for complex cases (height changes, scroll + content changes)
+
+/// Simplified unified rendering function
+/// Renders all messages and automatically keeps the last message visible
+/// Only clears screen on terminal resize
+fn renderMessages(self: *App, clear_screen: bool) !usize {
     self.terminal_size = try ui.Tui.getTerminalSize();
     var stdout_buffer: [8192]u8 = undefined;
     var buffered_writer = ui.BufferedStdoutWriter.init(&stdout_buffer);
     const writer = buffered_writer.writer();
 
-    // Calculate input field height once for this render
     const input_field_height = try calculateInputFieldHeight(self);
 
-    // Move cursor to home WITHOUT clearing - prevents flicker
-    try writer.writeAll("\x1b[H");
+    // Clear screen only on resize or first render
+    if (clear_screen) {
+        try writer.writeAll("\x1b[2J\x1b[H");
+    }
+
     self.clickable_areas.clearRetainingCapacity();
     self.valid_cursor_positions.clearRetainingCapacity();
 
     var absolute_y: usize = 1;
+
+    // Render all messages
     for (self.messages.items, 0..) |_, i| {
         const message = &self.messages.items[i];
 
         // Skip tool JSON if hidden by config
         if (message.role == .tool and !self.config.show_tool_json) continue;
 
-        // Draw message (handles both thinking and content)
+        // Skip empty system messages (hot context placeholder)
+        if (message.role == .system and message.content.len == 0) continue;
+
+        // Draw message
         try drawMessage(self, writer, message, i, &absolute_y, input_field_height);
     }
 
-    // Ensure cursor_y is always at a valid position
+    // Auto-scroll to keep bottom visible (simple calculation)
+    const viewport_height = if (self.terminal_size.height > input_field_height + 1)
+        self.terminal_size.height - input_field_height - 1
+    else
+        1;
+
+    if (absolute_y > viewport_height) {
+        self.scroll_y = absolute_y - viewport_height;
+    } else {
+        self.scroll_y = 0;
+    }
+
+    // Ensure cursor_y is at a valid position
     if (self.valid_cursor_positions.items.len > 0) {
         var cursor_is_valid = false;
         for (self.valid_cursor_positions.items) |pos| {
@@ -1390,31 +1711,46 @@ pub fn redrawScreen(self: *App) !usize {
             }
         }
         if (!cursor_is_valid) {
-            // Snap to last valid position (bottom)
             self.cursor_y = self.valid_cursor_positions.items[self.valid_cursor_positions.items.len - 1];
         }
     }
 
-    // Position cursor after last message content to clear any leftover content
+    // Clear leftover content below messages
     const screen_y_for_clear = if (absolute_y > self.scroll_y)
         (absolute_y - self.scroll_y) + 1
     else
         1;
 
-    // Only clear if there's space between content and input field
-    // input_field_height includes separator, +1 for taskbar
     const input_area_start = if (self.terminal_size.height > input_field_height + 1)
         self.terminal_size.height - input_field_height
     else
         1;
+
     if (screen_y_for_clear < input_area_start) {
         try writer.print("\x1b[{d};1H\x1b[J", .{screen_y_for_clear});
     }
 
     try drawInputField(self, writer);
     try ui.drawTaskbar(self, writer);
-
     try buffered_writer.flush();
 
     return absolute_y;
+}
+
+/// Simplified screen redraw - single rendering path
+/// Only clears screen on terminal resize
+pub fn redrawScreen(self: *App) !usize {
+    self.terminal_size = try ui.Tui.getTerminalSize();
+
+    // Check if terminal was resized
+    const terminal_resized =
+        self.render_cache.last_terminal_width != self.terminal_size.width or
+        self.render_cache.last_terminal_height != self.terminal_size.height;
+
+    // Update cache metadata
+    self.render_cache.last_terminal_width = self.terminal_size.width;
+    self.render_cache.last_terminal_height = self.terminal_size.height;
+
+    // Clear screen only on resize
+    return try renderMessages(self, terminal_resized);
 }
