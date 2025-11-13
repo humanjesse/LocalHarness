@@ -6,7 +6,6 @@ const context_module = @import("context");
 const tools_module = @import("../tools.zig");
 const agents_module = @import("agents"); // Use module system
 const file_curator = @import("file_curator");
-const tracking = @import("tracking");
 
 const AppContext = context_module.AppContext;
 const ToolDefinition = tools_module.ToolDefinition;
@@ -100,8 +99,7 @@ fn execute(allocator: std.mem.Allocator, arguments: []const u8, context: *AppCon
 
     // Smart auto-detection based on file size
     var thinking: ?[]const u8 = null;
-    const read_type: tracking.ReadType = if (total_lines <= small_threshold) .full else .curated;
-    
+
     const formatted = if (total_lines <= small_threshold) blk: {
         // SMALL FILES: Return full content (no agent overhead)
         break :blk try formatFullFile(allocator, parsed.value.path, content, total_lines);
@@ -113,15 +111,6 @@ fn execute(allocator: std.mem.Allocator, arguments: []const u8, context: *AppCon
     };
     defer allocator.free(formatted);  // Free after ToolResult.ok() dups it
     defer if (thinking) |t| allocator.free(t);
-
-    // Track file read in context tracker (for hot context injection)
-    if (context.context_tracker) |tracker| {
-        tracker.trackFileRead(parsed.value.path, content, read_type, null) catch |err| {
-            if (std.posix.getenv("DEBUG_CONTEXT")) |_| {
-                std.debug.print("[CONTEXT] Failed to track file read: {}\n", .{err});
-            }
-        };
-    }
 
     // Mark file as read
     try context.state.markFileAsRead(parsed.value.path);
@@ -204,35 +193,6 @@ fn formatWithCuration(
     content: []const u8,
     total_lines: usize,
 ) !CurationOutput {
-    // Phase 1: Check curator cache
-    if (context.context_tracker) |tracker| {
-        const injection = @import("injection");
-        const conv_hash = injection.hashConversationContext(context.recent_messages);
-        
-        // Check if we have a cached curator result for this conversation context
-        if (tracker.read_files.get(file_path)) |file_tracker| {
-            if (file_tracker.curated_result) |cached| {
-                if (cached.conversation_hash == conv_hash) {
-                    // CACHE HIT! Return cached curation
-                    if (std.posix.getenv("DEBUG_CONTEXT")) |_| {
-                        std.debug.print("[CONTEXT] Curator cache HIT for {s} (hash={x})\n", .{file_path, conv_hash});
-                    }
-                    
-                    // Format from cached line ranges
-                    const formatted = try formatFromCachedCuration(allocator, file_path, content, cached);
-                    return CurationOutput{
-                        .content = formatted,
-                        .thinking = null, // No thinking for cached results
-                    };
-                }
-            }
-        }
-        
-        if (std.posix.getenv("DEBUG_CONTEXT")) |_| {
-            std.debug.print("[CONTEXT] Curator cache MISS for {s}, running agent\n", .{file_path});
-        }
-    }
-    
     if (std.posix.getenv("DEBUG_GRAPHRAG")) |_| {
         std.debug.print("[DEBUG] Invoking file_curator agent (curated mode)...\n", .{});
     }
@@ -363,36 +323,6 @@ fn formatWithCuration(
         content,
         curation.value,
     );
-
-    // Phase 1: Store curator result in cache
-    if (context.context_tracker) |tracker| {
-        const injection = @import("injection");
-        const conv_hash = injection.hashConversationContext(context.recent_messages);
-        
-        // Store the curation result for future use
-        if (tracker.read_files.getPtr(file_path)) |file_tracker_ptr| {
-            // Clone line ranges for cache
-            var cached_ranges = std.ArrayListUnmanaged(tracking.CurationCache.LineRange){};
-            for (curation.value.line_ranges) |range| {
-                try cached_ranges.append(allocator, .{
-                    .start = range.start,
-                    .end = range.end,
-                    .reason = try allocator.dupe(u8, range.reason),
-                });
-            }
-            
-            file_tracker_ptr.curated_result = .{
-                .line_ranges = try cached_ranges.toOwnedSlice(allocator),
-                .conversation_hash = conv_hash,
-                .summary = try allocator.dupe(u8, curation.value.summary),
-                .timestamp = std.time.milliTimestamp(),
-            };
-            
-            if (std.posix.getenv("DEBUG_CONTEXT")) |_| {
-                std.debug.print("[CONTEXT] Cached curator result for {s} (hash={x})\n", .{file_path, conv_hash});
-            }
-        }
-    }
 
     // Return both content and thinking
     return .{

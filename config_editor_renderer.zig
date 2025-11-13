@@ -2,6 +2,7 @@
 const std = @import("std");
 const config_editor_state = @import("config_editor_state");
 const ui = @import("ui");
+const text_utils = @import("text_utils");
 
 const ConfigEditorState = config_editor_state.ConfigEditorState;
 const ConfigSection = config_editor_state.ConfigSection;
@@ -29,6 +30,16 @@ pub fn render(
     current_y += 1;
 
     try drawCentered(writer, "Press Tab/Shift+Tab to navigate, Enter to edit, Ctrl+S to save, Esc to cancel", terminal_width, current_y);
+    current_y += 1;
+
+    // Draw profile indicator
+    const profile_manager = @import("profile_manager");
+    const active_profile = profile_manager.getActiveProfileName(state.allocator) catch "unknown";
+    defer state.allocator.free(active_profile);
+
+    const profile_text = std.fmt.allocPrint(state.allocator, "Editing profile: \x1b[1m{s}\x1b[0m", .{active_profile}) catch "Editing profile: unknown";
+    defer state.allocator.free(profile_text);
+    try drawCentered(writer, profile_text, terminal_width, current_y);
     current_y += 2;
 
     // Draw each section
@@ -95,46 +106,6 @@ fn drawCentered(writer: anytype, text: []const u8, terminal_width: u16, y: usize
     try writer.print("\x1b[{d};{d}H{s}", .{ y, start_x, text });
 }
 
-/// Calculate visual width of a UTF-8 string (counts codepoints, not bytes)
-fn visualWidth(text: []const u8) usize {
-    var width: usize = 0;
-    var i: usize = 0;
-
-    while (i < text.len) {
-        const byte = text[i];
-
-        // Count UTF-8 characters by checking the leading byte
-        // UTF-8 continuation bytes start with 10xxxxxx, we skip those
-        if ((byte & 0b1100_0000) != 0b1000_0000) {
-            width += 1;
-        }
-        i += 1;
-    }
-
-    return width;
-}
-
-/// Truncate text to fit within max_width, adding ellipsis if needed
-fn truncateText(text: []const u8, max_width: usize, buffer: []u8) []const u8 {
-    if (text.len <= max_width) {
-        @memcpy(buffer[0..text.len], text);
-        return buffer[0..text.len];
-    }
-
-    // Need to truncate with ellipsis
-    const ellipsis = "...";
-    if (max_width <= ellipsis.len) {
-        // Not enough space even for ellipsis, just return truncated
-        @memcpy(buffer[0..max_width], text[0..max_width]);
-        return buffer[0..max_width];
-    }
-
-    const text_len = max_width - ellipsis.len;
-    @memcpy(buffer[0..text_len], text[0..text_len]);
-    @memcpy(buffer[text_len..text_len + ellipsis.len], ellipsis);
-    return buffer[0..text_len + ellipsis.len];
-}
-
 /// Draw a single field
 fn drawField(
     writer: anytype,
@@ -177,7 +148,7 @@ fn drawField(
 
     // Truncate content if it exceeds available width
     var truncate_buffer: [512]u8 = undefined;
-    const display_content = truncateText(content, content_width, &truncate_buffer);
+    const display_content = text_utils.truncateText(content, content_width, &truncate_buffer);
 
     // Now render the line
     try writer.print("\x1b[{d};{d}H│ ", .{ y, box_x });
@@ -195,7 +166,7 @@ fn drawField(
 
     // Pad remaining space and draw right border
     // Use visual width (UTF-8 codepoint count) instead of byte length
-    const used_width = visualWidth(display_content) + 2; // +2 for "│ " prefix
+    const used_width = text_utils.visualWidth(display_content) + 2; // +2 for "│ " prefix
     const padding_needed = box_width -| used_width -| 1; // -1 for right border
     for (0..padding_needed) |_| {
         try writer.writeAll(" ");
@@ -205,13 +176,13 @@ fn drawField(
     // Help text line
     if (field.help_text) |help| {
         var help_buffer: [512]u8 = undefined;
-        const display_help = truncateText(help, content_width, &help_buffer);
+        const display_help = text_utils.truncateText(help, content_width, &help_buffer);
 
         try writer.print("\x1b[{d};{d}H│ \x1b[2m{s}\x1b[0m", .{ y + 1, box_x, display_help });
 
         // Pad and draw right border for help text line
         // Use visual width (UTF-8 codepoint count) instead of byte length
-        const help_used_width = visualWidth(display_help) + 2; // +2 for "│ " prefix
+        const help_used_width = text_utils.visualWidth(display_help) + 2; // +2 for "│ " prefix
         const help_padding_needed = box_width -| help_used_width -| 1;
         for (0..help_padding_needed) |_| {
             try writer.writeAll(" ");
@@ -290,6 +261,7 @@ fn drawNumberInputFieldToWriter(writer: anytype, field: *const ConfigField, stat
 fn getFieldValue(state: *const ConfigEditorState, key: []const u8) []const u8 {
     const config = &state.temp_config;
 
+    if (std.mem.eql(u8, key, "profile_name")) return state.profile_name;
     if (std.mem.eql(u8, key, "provider")) return config.provider;
     if (std.mem.eql(u8, key, "ollama_host")) return config.ollama_host;
     if (std.mem.eql(u8, key, "lmstudio_host")) return config.lmstudio_host;

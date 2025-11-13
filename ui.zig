@@ -497,6 +497,45 @@ pub fn handleInput(
                         return false;
                     }
 
+                    // Check for /profile commands
+                    if (mem.startsWith(u8, app.input_buffer.items, "/profile") or mem.eql(u8, app.input_buffer.items, "/profiles")) {
+                        const profile_commands = @import("profile_commands.zig");
+                        var error_message: ?[]const u8 = null;
+                        defer if (error_message) |msg| app.allocator.free(msg);
+
+                        const result = try profile_commands.handleProfileCommand(app, app.input_buffer.items, &error_message);
+
+                        switch (result) {
+                            .success_redraw => {
+                                app.input_buffer.clearRetainingCapacity();
+                                should_redraw.* = true;
+                                return false;
+                            },
+                            .open_ui => {
+                                // Open profile UI modal
+                                const profile_ui_state_module = @import("profile_ui_state");
+                                if (app.profile_ui) |*ui_instance| {
+                                    ui_instance.deinit();
+                                }
+                                app.profile_ui = try profile_ui_state_module.ProfileUIState.init(app.allocator);
+                                app.input_buffer.clearRetainingCapacity();
+                                should_redraw.* = true;
+                                return false;
+                            },
+                            .@"error" => {
+                                if (error_message) |msg| {
+                                    std.debug.print("{s}\n", .{msg});
+                                }
+                                app.input_buffer.clearRetainingCapacity();
+                                should_redraw.* = true;
+                                return false;
+                            },
+                            .not_handled => {
+                                // Fall through to normal message handling
+                            },
+                        }
+                    }
+
                     // Don't send new messages while streaming is active
                     // User can type, but the message won't be sent until current stream finishes
                     if (app.streaming_active) {

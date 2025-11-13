@@ -212,31 +212,19 @@ $EDITOR ~/.config/localharness/config.json
 - `3`: Default, balanced
 - `5`: Faster scrolling for large conversations
 
-### ⚠️ Removed GraphRAG Settings (2025-11-03)
+### ⚠️ Removed Settings
 
 **These settings have been completely removed from the codebase:**
 
-| Option | Status | Replacement |
-|--------|--------|-------------|
-| `graph_rag_enabled` | ❌ Deprecated | Context management now always active |
-| `embedding_model` | ❌ Deprecated | No longer needed (vector store not actively used) |
-| `indexing_model` | ❌ Deprecated | Compression uses your primary model |
-| `max_chunks_in_history` | ❌ Deprecated | Protected message count is fixed (last 5 pairs) |
-| `zvdb_path` | ❌ Deprecated | Vector store preserved but not actively used |
+| Option | Status | Notes |
+|--------|--------|-------|
+| `graph_rag_enabled` | ❌ Removed | GraphRAG system removed |
+| `embedding_model` | ❌ Removed | Vector store not used |
+| `indexing_model` | ❌ Removed | No longer applicable |
+| `max_chunks_in_history` | ❌ Removed | No compression system |
+| `zvdb_path` | ❌ Removed | Vector store not used |
 
-**What replaced GraphRAG?**
-
-The GraphRAG secondary loop system was replaced with a simpler, more efficient **Context Management & Compression System**:
-
-- **Context Tracking**: Automatically tracks files read, modifications made, todos created
-- **File Curator Caching**: Smart caching provides 50-100x speedup on repeated file reads
-- **Automatic Compression**: Triggers at 70% token usage, reduces to 40%
-- **Protected Messages**: Last 5 user+assistant pairs never compressed
-- **Hot Context Injection**: Automatic workflow awareness before every LLM call
-
-**No configuration needed** - the new system works automatically!
-
-See [Context Management Guide](context-management-guide.md) for details.
+The application now uses a simple message storage system.
 
 ### Color Settings
 

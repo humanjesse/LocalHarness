@@ -32,12 +32,6 @@ const git_push = @import("tools/git_push.zig");
 const git_pull = @import("tools/git_pull.zig");
 const git_reset = @import("tools/git_reset.zig");
 
-// Compression tools (for compression agent)
-const get_compression_metadata = @import("tools/get_compression_metadata.zig");
-const compress_tool_result = @import("tools/compress_tool_result.zig");
-const compress_conversation_segment = @import("tools/compress_conversation_segment.zig");
-const verify_compression_target = @import("tools/verify_compression_target.zig");
-
 const AppContext = context_module.AppContext;
 
 // ============================================================================
@@ -249,12 +243,6 @@ pub fn getAllToolDefinitions(allocator: std.mem.Allocator) ![]ToolDefinition {
     // Agent tools
     try tools.append(allocator, try run_agent.getDefinition(allocator));
     try tools.append(allocator, try list_agents.getDefinition(allocator));
-
-    // Compression tools (for compression agent)
-    try tools.append(allocator, try get_compression_metadata.getDefinition(allocator));
-    try tools.append(allocator, try compress_tool_result.getDefinition(allocator));
-    try tools.append(allocator, try compress_conversation_segment.getDefinition(allocator));
-    try tools.append(allocator, try verify_compression_target.getDefinition(allocator));
 
     return try tools.toOwnedSlice(allocator);
 }

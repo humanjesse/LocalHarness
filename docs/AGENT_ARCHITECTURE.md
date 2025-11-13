@@ -105,11 +105,6 @@ Main App Loop (app.zig)
               ├─ Returns structured result
               └─ Main loop continues with agent output
 
-Context Management Integration (context_management/)
-    ├─ File read tracking with hash
-    ├─ Curator cache with conversation hash
-    ├─ Modification tracking (write_file, replace_lines, insert_lines)
-    └─ Hot context injection before LLM calls
 ```
 
 ### 5. Future-Proof Extension
@@ -221,17 +216,7 @@ Based on the architecture, here are agents you could easily add:
 - **Tools**: read_file, replace_lines, grep_search
 - **Output**: Refactored code or suggestions
 
-### query_planner (GraphRAG)
-- **Purpose**: Plan multi-step queries for knowledge graph
-- **Tools**: GraphRAG query tools
-- **Output**: Query execution plan
-
 ## Integration Points
-
-### With GraphRAG
-- Agents can access vector_store and embedder through AgentContext
-- GraphRAG indexer could be refactored as an agent
-- Query agents could orchestrate complex graph searches
 
 ### With Permission System
 - Agents bypass permission checks (they're trusted internal code)
@@ -267,9 +252,9 @@ const agent_def = try file_curator.getDefinition(allocator);
 const result = try agent_def.execute(allocator, context, test_file_content, null, null);
 // Verify result contains valid curation JSON
 
-// Integration test read_file_curated
-const tool_result = try read_file_curated.execute(allocator, "{\"path\":\"test.zig\"}", &app_context);
-// Verify curated output and GraphRAG indexing
+// Integration test read_file
+const tool_result = try read_file.execute(allocator, "{\"path\":\"test.zig\"}", &app_context);
+// Verify curated output
 ```
 
 ## Performance Considerations
@@ -277,7 +262,6 @@ const tool_result = try read_file_curated.execute(allocator, "{\"path\":\"test.z
 ### Context Savings
 - **Before**: 1000-line file → 1000 lines in context
 - **After**: 1000-line file → ~350 lines in context (65% reduction)
-- **GraphRAG**: Still has full 1000 lines for search
 
 ### Agent Overhead
 - **Additional LLM call**: ~1-3s per file read
@@ -314,19 +298,17 @@ Users can customize the threshold in `~/.config/localharness/config.json`:
 
 **Added**: 2025-10-26 (Phase 2)
 
-All LLM sub-tasks (agents, GraphRAG indexing, future tasks) now share a unified progress display system:
+All LLM sub-tasks (agents and future tasks) now share a unified progress display system:
 
 ### Core Components
 
 **`ProgressDisplayContext`** (agents.zig:34-52)
-- Replaces both `AgentProgressContext` and `IndexingProgressContext`
 - Separate thinking/content buffers for better UX
-- Task metadata support (file path, nodes created, edges created, embeddings)
+- Task metadata support (file path, task-specific statistics)
 - Tracks task name, icon, start time, finalization state
 
 **`ProgressUpdateType`** (agents.zig:13-22)
 - Unified enum: `.thinking`, `.content`, `.tool_call`, `.iteration`, `.complete`
-- GraphRAG-specific: `.embedding`, `.storage`
 - Single source of truth for all progress events
 
 **`finalizeProgressMessage()`** (message_renderer.zig:17-101)
@@ -339,14 +321,12 @@ All LLM sub-tasks (agents, GraphRAG indexing, future tasks) now share a unified 
 ### Files Unified
 
 1. **app.zig** - Agent progress callbacks use `ProgressDisplayContext`
-2. **app_graphrag.zig** - GraphRAG indexing uses same system
-3. **graphrag/llm_indexer.zig** - Removed duplicate types, emits `.complete`
-4. **message_renderer.zig** - Single finalization function for all tasks
+2. **message_renderer.zig** - Single finalization function for all tasks
 
 ### Benefits
 
 ✅ **Consistent UX** - All progress messages look identical
-✅ **Code Reduction** - ~100 lines of duplication eliminated
+✅ **Code Reduction** - Eliminated duplication
 ✅ **Single Source of Truth** - All types defined in agents.zig
 ✅ **Extensible** - Easy to add new task types
 ✅ **Professional Polish** - Execution stats, collapse/expand, beautiful formatting
@@ -354,20 +334,19 @@ All LLM sub-tasks (agents, GraphRAG indexing, future tasks) now share a unified 
 ### Display Format
 
 ```
-📊 GraphRAG Indexing Analysis [COMPLETED] (2.3s)
+📄 File Curator Analysis [COMPLETED] (2.3s)
 [Press Ctrl+O to expand]
 
 --- When expanded ---
-📊 GraphRAG Indexing Analysis
+📄 File Curator Analysis
 ─────────────────────────────────
 
 [LLM thinking and content here...]
 
 **Statistics:**
-- File: file.zig
-- Nodes created: 15
-- Edges created: 8
-- Embeddings: 47
+- File: auth.zig
+- Lines analyzed: 450
+- Sections identified: 5
 
 ─────────────────────────────────
 [Press Ctrl+O to collapse]
@@ -382,8 +361,7 @@ The agent architecture provides:
 ✅ **Isolated execution** for clean separation
 ✅ **Reusable components** (llm_helper, agent_executor)
 ✅ **Easy extensibility** for future agents
-✅ **GraphRAG integration** via shared context
 ✅ **First concrete agent** (file_curator) already working
-✅ **Unified progress display** for all LLM sub-tasks *(NEW)*
+✅ **Unified progress display** for all LLM sub-tasks
 
 This sets a solid foundation for building more sophisticated agent-based features while maintaining code quality and architectural clarity.

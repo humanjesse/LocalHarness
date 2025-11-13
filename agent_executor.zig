@@ -341,9 +341,7 @@ pub const AgentExecutor = struct {
             .llm_provider = agent_context.llm_provider,
             .vector_store = agent_context.vector_store,
             .embedder = agent_context.embedder,
-            .messages_list = agent_context.messages_list, // Pass through for compression tools
             .recent_messages = agent_context.recent_messages, // Pass through for context-aware tools (file_curator needs this!)
-            .context_tracker = null, // Agents don't track context themselves
         };
 
         // Execute tool (look up in tools module)

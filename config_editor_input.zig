@@ -400,6 +400,9 @@ fn setRadioValue(state: *ConfigEditorState, key: []const u8, value: []const u8) 
 fn getCurrentTextValue(state: *const ConfigEditorState, key: []const u8) []const u8 {
     const config = &state.temp_config;
 
+    // Profile name (special case - stored in state, not config)
+    if (std.mem.eql(u8, key, "profile_name")) return state.profile_name;
+
     // Shared fields
     if (std.mem.eql(u8, key, "model")) return config.model;
 
@@ -416,6 +419,13 @@ fn getCurrentTextValue(state: *const ConfigEditorState, key: []const u8) []const
 fn setTextValue(state: *ConfigEditorState, key: []const u8, value: []const u8) !void {
     const config = &state.temp_config;
     const llm_provider = @import("llm_provider");
+
+    // Profile name (special case - stored in state, not config)
+    if (std.mem.eql(u8, key, "profile_name")) {
+        state.allocator.free(state.profile_name);
+        state.profile_name = try state.allocator.dupe(u8, value);
+        return;
+    }
 
     // Shared fields
     if (std.mem.eql(u8, key, "model")) {

@@ -53,7 +53,7 @@ pub fn getDefinition(allocator: std.mem.Allocator) !ToolDefinition {
     };
 }
 
-fn execute(allocator: std.mem.Allocator, arguments: []const u8, context: *AppContext) !ToolResult {
+fn execute(allocator: std.mem.Allocator, arguments: []const u8, _: *AppContext) !ToolResult {
     const start_time = std.time.milliTimestamp();
 
     // Parse arguments
@@ -153,19 +153,6 @@ fn execute(allocator: std.mem.Allocator, arguments: []const u8, context: *AppCon
         defer allocator.free(msg);
         return ToolResult.err(allocator, .io_error, msg, start_time);
     };
-
-    // Phase A.2: Track file modification
-    if (context.context_tracker) |tracker| {
-        tracker.recordModification(
-            parsed.value.path,
-            .modified,
-            null,
-        ) catch |err| {
-            if (std.posix.getenv("DEBUG_CONTEXT")) |_| {
-                std.debug.print("[CONTEXT] Failed to track modification: {}\n", .{err});
-            }
-        };
-    }
 
     // Return success with details
     const lines_replaced = parsed.value.line_end - parsed.value.line_start + 1;

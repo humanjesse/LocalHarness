@@ -609,4 +609,3 @@ For implementation history and troubleshooting details, see:
 ## See Also
 
 - [Task Management Architecture](task-management.md) - Scratch space system
-- [Master Loop Analysis](../LOOP_ANALYSIS.md) - Agentic behavior and compression system

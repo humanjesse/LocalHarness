@@ -70,6 +70,9 @@ pub const ConfigEditorState = struct {
     /// Scroll position (for when form is taller than screen)
     scroll_y: usize = 0,
 
+    /// Current profile name being edited
+    profile_name: []u8,
+
     /// Initialize config editor state with current app config
     pub fn init(allocator: std.mem.Allocator, current_config: *const config_module.Config) !ConfigEditorState {
         // Clone the current config into temp_config
@@ -105,6 +108,10 @@ pub const ConfigEditorState = struct {
             .file_read_small_threshold = current_config.file_read_small_threshold,
         };
 
+        // Get current profile name
+        const profile_manager = @import("profile_manager");
+        const active_profile = try profile_manager.getActiveProfileName(allocator);
+
         // Build the form structure (sections and fields)
         const sections = try buildFormSections(allocator, &temp_config);
 
@@ -116,11 +123,15 @@ pub const ConfigEditorState = struct {
             .allocator = allocator,
             .has_changes = false,
             .scroll_y = 0,
+            .profile_name = active_profile,
         };
     }
 
     /// Clean up all allocated memory
     pub fn deinit(self: *ConfigEditorState) void {
+        // Free profile name
+        self.allocator.free(self.profile_name);
+
         // Free temp config
         self.temp_config.deinit(self.allocator);
 
@@ -229,6 +240,23 @@ fn buildFormSections(allocator: std.mem.Allocator, temp_config: *const config_mo
             allocator.free(section.fields);
         }
         sections.deinit(allocator);
+    }
+
+    // Section 0: Profile
+    {
+        var fields = std.ArrayListUnmanaged(ConfigField){};
+
+        try fields.append(allocator, .{
+            .label = "Profile Name",
+            .field_type = .text_input,
+            .key = "profile_name",
+            .help_text = "Name this configuration profile. Change to save as new profile.",
+        });
+
+        try sections.append(allocator, .{
+            .title = try allocator.dupe(u8, "Profile"),
+            .fields = try fields.toOwnedSlice(allocator),
+        });
     }
 
     // Section 1: Provider Selection

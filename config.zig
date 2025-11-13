@@ -161,7 +161,7 @@ pub const Config = struct {
 };
 
 /// JSON-serializable config file structure
-const ConfigFile = struct {
+pub const ConfigFile = struct {
     provider: ?[]const u8 = null,
     editor: ?[]const []const u8 = null,
     ollama_host: ?[]const u8 = null,
@@ -194,7 +194,7 @@ const PolicyFile = struct {
     deny_patterns: []const []const u8,
 };
 
-/// Load configuration from ~/.config/localharness/config.json
+/// Load configuration from active profile
 pub fn loadConfigFromFile(allocator: mem.Allocator) !Config {
     // Default config - properly allocate all strings
     const default_editor = try allocator.alloc([]const u8, 1);
@@ -223,22 +223,39 @@ pub fn loadConfigFromFile(allocator: mem.Allocator) !Config {
     // Try to get home directory
     const home = std.posix.getenv("HOME") orelse return config;
 
-    // Build config file path: ~/.config/localharness/config.json
+    // Build paths
     const config_dir = try fs.path.join(allocator, &.{home, ".config", "localharness"});
     defer allocator.free(config_dir);
-    const config_path = try fs.path.join(allocator, &.{config_dir, "config.json"});
+
+    const profiles_dir = try fs.path.join(allocator, &.{config_dir, "profiles"});
+    defer allocator.free(profiles_dir);
+
+    // Ensure profiles directory exists
+    fs.cwd().makePath(profiles_dir) catch |err| {
+        if (err != error.PathAlreadyExists) return config;
+    };
+
+    // Get active profile name
+    const profile_manager = @import("profile_manager");
+    const active_profile = try profile_manager.getActiveProfileName(allocator);
+    defer allocator.free(active_profile);
+
+    // Build profile path
+    const profile_filename = try std.fmt.allocPrint(allocator, "{s}.json", .{active_profile});
+    defer allocator.free(profile_filename);
+    const config_path = try fs.path.join(allocator, &.{profiles_dir, profile_filename});
     defer allocator.free(config_path);
 
     // Try to open and read config file
     const file = fs.cwd().openFile(config_path, .{}) catch |err| {
         // File doesn't exist - create it with defaults
         if (err == error.FileNotFound) {
-            // Create config directory if it doesn't exist
-            fs.cwd().makePath(config_dir) catch |dir_err| {
+            // Create profiles directory if it doesn't exist
+            fs.cwd().makePath(profiles_dir) catch |dir_err| {
                 if (dir_err != error.PathAlreadyExists) return config;
             };
 
-            // Create default config file (serialize current config with defaults)
+            // Create default profile file (serialize current config with defaults)
             const new_file = fs.cwd().createFile(config_path, .{}) catch return config;
             defer new_file.close();
 
@@ -521,34 +538,14 @@ pub fn savePolicies(allocator: mem.Allocator, permission_manager: *permission.Pe
     try file.writeAll(json_string);
 }
 
-/// Save configuration to ~/.config/localharness/config.json
+/// Save configuration to active profile
 pub fn saveConfigToFile(allocator: mem.Allocator, config: Config) !void {
-    // Get home directory
-    const home = std.posix.getenv("HOME") orelse return error.NoHomeDir;
+    const profile_manager = @import("profile_manager");
 
-    // Build path: ~/.config/localharness/config.json
-    const config_dir = try fs.path.join(allocator, &.{ home, ".config", "localharness" });
-    defer allocator.free(config_dir);
+    // Get active profile name
+    const active_profile = try profile_manager.getActiveProfileName(allocator);
+    defer allocator.free(active_profile);
 
-    // Ensure config directory exists
-    fs.cwd().makePath(config_dir) catch |err| {
-        if (err != error.PathAlreadyExists) return err;
-    };
-
-    const config_path = try fs.path.join(allocator, &.{ config_dir, "config.json" });
-    defer allocator.free(config_path);
-
-    // Serialize to JSON using std.json.fmt
-    const json_string = try std.fmt.allocPrint(
-        allocator,
-        "{f}\n",
-        .{std.json.fmt(config, .{ .whitespace = .indent_2 })},
-    );
-    defer allocator.free(json_string);
-
-    // Write to file
-    const file = try fs.cwd().createFile(config_path, .{ .truncate = true });
-    defer file.close();
-
-    try file.writeAll(json_string);
+    // Save to that profile
+    try profile_manager.saveProfile(allocator, active_profile, config);
 }

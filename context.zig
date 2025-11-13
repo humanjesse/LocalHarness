@@ -9,9 +9,6 @@ const types = @import("types");
 const agents_module = @import("agents");
 const ProgressUpdateType = agents_module.ProgressUpdateType;
 
-// Context management
-const tracking = @import("tracking");
-
 pub const AppContext = struct{
     allocator: std.mem.Allocator,
     config: *const config_module.Config,
@@ -35,11 +32,4 @@ pub const AppContext = struct{
     // Allows sub-agents (like file curator) to stream progress to UI
     agent_progress_callback: ?*const fn (?*anyopaque, ProgressUpdateType, []const u8) void = null,
     agent_progress_user_data: ?*anyopaque = null,
-
-    // Context management (Phase 1)
-    context_tracker: ?*tracking.ContextTracker = null,
-
-    // Mutable messages list for compression tools
-    // Allows compression agent tools to modify conversation history
-    messages_list: ?*anyopaque = null, // *std.ArrayListUnmanaged(Message) - using anyopaque to avoid circular import
 };

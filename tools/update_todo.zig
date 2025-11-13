@@ -89,31 +89,6 @@ fn execute(allocator: std.mem.Allocator, arguments: []const u8, context: *AppCon
         return ToolResult.err(allocator, .internal_error, msg, start_time);
     };
 
-    // Phase A.3: Track active todo
-    if (context.context_tracker) |tracker| {
-        switch (new_status) {
-            .in_progress => {
-                // Set this todo as active
-                tracker.todo_context.setActiveTodo(allocator, parsed.value.todo_id) catch |err| {
-                    if (std.posix.getenv("DEBUG_CONTEXT")) |_| {
-                        std.debug.print("[CONTEXT] Failed to set active todo: {}\n", .{err});
-                    }
-                };
-            },
-            .completed => {
-                // Clear active todo if this was the active one
-                if (tracker.todo_context.active_todo_id) |active_id| {
-                    if (std.mem.eql(u8, active_id, parsed.value.todo_id)) {
-                        tracker.todo_context.clearActiveTodo(allocator);
-                    }
-                }
-            },
-            .pending => {
-                // No action needed for pending
-            },
-        }
-    }
-
     // Return JSON confirmation with todo_id and new status
     const result_msg = try std.fmt.allocPrint(allocator, "{{\"todo_id\":\"{s}\",\"status\":\"{s}\"}}", .{ parsed.value.todo_id, parsed.value.status });
     defer allocator.free(result_msg);

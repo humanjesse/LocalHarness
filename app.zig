@@ -32,12 +32,9 @@ const agent_builder_input = @import("agent_builder_input");
 const help_state = @import("help_state");
 const help_renderer = @import("help_renderer");
 const help_input = @import("help_input");
-
-// Context management imports
-const compression = @import("compression");
-const tracking = @import("tracking");
-const injection = @import("injection");
-const compressor = @import("compressor");
+const profile_ui_state = @import("profile_ui_state");
+const profile_ui_renderer = @import("profile_ui_renderer");
+const profile_ui_input = @import("profile_ui_input");
 
 // Re-export types for convenience
 pub const Message = types.Message;
@@ -59,7 +56,6 @@ const StreamThreadContext = struct {
     keep_alive: []const u8,
     num_ctx: usize,
     num_predict: isize,
-    hot_context_content: ?[]const u8 = null, // Reference only (owned by messages.items[1])
 };
 
 // Agent progress context for streaming sub-agent progress to UI
@@ -267,16 +263,8 @@ pub const App = struct {
     agent_builder: ?agent_builder_state.AgentBuilderState = null,
     // Help viewer state (modal mode)
     help_viewer: ?help_state.HelpState = null,
-    
-    // Context management system (Phase 1)
-    token_tracker: ?*compression.TokenTracker = null,
-    context_tracker: tracking.ContextTracker,
-    compression_config: compression.CompressionConfig = .{},
-
-    // Hot context caching (for KV cache optimization)
-    hot_context_hash: u64 = 0,
-    hot_context_last_updated: i64 = 0,
-    hot_context_ttl_seconds: i64 = 300, // 5 minutes - regenerate but only update if hash changes
+    // Profile manager state (modal mode)
+    profile_ui: ?profile_ui_state.ProfileUIState = null,
 
     // Incremental rendering state
     render_cache: RenderCache = RenderCache.init(),
@@ -314,10 +302,6 @@ pub const App = struct {
         // Load all agents (native + markdown)
         try loader.loadAllAgents();
 
-        // Initialize token tracker
-        const token_tracker_ptr = try allocator.create(compression.TokenTracker);
-        token_tracker_ptr.* = compression.TokenTracker.init(allocator, config.num_ctx);
-
         var app = App{
             .allocator = allocator,
             .config = config,
@@ -339,10 +323,6 @@ pub const App = struct {
             .agent_registry = agent_registry,
             .agent_loader = loader,
             .agent_builder = null,
-            // Context management (Phase 1)
-            .token_tracker = token_tracker_ptr,
-            .context_tracker = tracking.ContextTracker.init(allocator),
-            .compression_config = .{},
         };
 
         // Add system prompt (Position 0 - stable)
@@ -356,42 +336,7 @@ pub const App = struct {
             .timestamp = std.time.milliTimestamp(),
         });
 
-        // Add hot context placeholder (Position 1 - updated in-place for cache stability)
-        const hot_context_placeholder = "";
-        const hot_processed = try markdown.processMarkdown(allocator, hot_context_placeholder);
-        try app.messages.append(allocator, .{
-            .role = .system,
-            .content = try allocator.dupe(u8, hot_context_placeholder),
-            .processed_content = hot_processed,
-            .thinking_expanded = true,
-            .timestamp = std.time.milliTimestamp(),
-        });
-
         return app;
-    }
-
-    // Normalize hot context content for deterministic hashing
-    // Ensures byte-identical output for semantically identical content
-    fn normalizeHotContext(allocator: mem.Allocator, content: []const u8) ![]const u8 {
-        var normalized = std.ArrayListUnmanaged(u8){};
-        errdefer normalized.deinit(allocator);
-
-        // Normalize line endings (CRLF -> LF) and preserve content
-        var i: usize = 0;
-        while (i < content.len) : (i += 1) {
-            if (content[i] == '\r' and i + 1 < content.len and content[i + 1] == '\n') {
-                // Skip \r in CRLF sequence
-                continue;
-            }
-            try normalized.append(allocator, content[i]);
-        }
-
-        // Trim trailing whitespace for determinism
-        while (normalized.items.len > 0 and std.ascii.isWhitespace(normalized.items[normalized.items.len - 1])) {
-            _ = normalized.pop();
-        }
-
-        return try normalized.toOwnedSlice(allocator);
     }
 
     // Fix context pointers after App is in its final location
@@ -405,8 +350,6 @@ pub const App = struct {
             .vector_store = self.vector_store,
             .embedder = self.embedder,
             .agent_registry = &self.agent_registry,
-            // Context management
-            .context_tracker = &self.context_tracker,
         };
     }
 
@@ -592,88 +535,7 @@ pub const App = struct {
         // Reset tool call depth when starting a new user message
         // (This will be set correctly by continueStreaming for tool calls)
 
-        // Phase A.5: Update hot context at position 1 BEFORE copying to ollama_messages (cache-friendly)
-        // IMPORTANT: Only update hot context when NOT in tool execution (tool_call_depth == 0)
-        // Otherwise updating messages.items[1] causes all messages to flash on every tool iteration
-        const should_update_hot_context = self.tool_call_depth == 0;
-
-        // Extract recent messages for relevance filtering
-        const recent_start = if (self.messages.items.len > 5) self.messages.items.len - 5 else 0;
-        const recent_msgs = self.messages.items[recent_start..];
-
-        // Generate hot context (always regenerate - TTL triggers this, hash determines if we update)
-        // But skip entirely during tool execution to avoid flashing
-        const hot_context = if (should_update_hot_context)
-            injection.generateHotContext(self.allocator, &self.context_tracker, &self.state, recent_msgs) catch |err| blk: {
-                if (std.posix.getenv("DEBUG_CONTEXT")) |_| {
-                    std.debug.print("[CONTEXT] Failed to generate hot context: {}, keeping previous\n", .{err});
-                }
-                break :blk null; // Keep existing content at position 1
-            }
-        else
-            null; // Skip hot context update during tool execution
-
-        if (hot_context) |ctx| {
-            defer self.allocator.free(ctx);
-
-            // Normalize for deterministic hashing
-            const normalized_ctx = normalizeHotContext(self.allocator, ctx) catch ctx;
-            defer if (normalized_ctx.ptr != ctx.ptr) self.allocator.free(normalized_ctx);
-
-            // Hash normalized content
-            const new_hash = std.hash.Wyhash.hash(0, normalized_ctx);
-
-            // Check TTL
-            const now = @divTrunc(std.time.milliTimestamp(), 1000); // Convert to seconds
-            const time_since_update = now - self.hot_context_last_updated;
-            const ttl_expired = time_since_update > self.hot_context_ttl_seconds;
-
-            // Only update position 1 if hash changed (TTL just triggers regeneration)
-            const hash_changed = new_hash != self.hot_context_hash;
-
-            if (hash_changed and self.messages.items.len >= 2 and self.messages.items[1].role == .system) {
-                // Free old hot context content at position 1
-                self.allocator.free(self.messages.items[1].content);
-                for (self.messages.items[1].processed_content.items) |*item| {
-                    item.deinit(self.allocator);
-                }
-                self.messages.items[1].processed_content.deinit(self.allocator);
-
-                // Allocate new hot context content
-                const new_content = try self.allocator.dupe(u8, normalized_ctx);
-                const new_processed = try markdown.processMarkdown(self.allocator, new_content);
-
-                // Update position 1 in-place
-                self.messages.items[1].content = new_content;
-                self.messages.items[1].processed_content = new_processed;
-                self.messages.items[1].timestamp = std.time.milliTimestamp();
-
-                // Update hash and timestamp
-                self.hot_context_hash = new_hash;
-                self.hot_context_last_updated = now;
-
-                if (std.posix.getenv("DEBUG_CONTEXT")) |_| {
-                    // Calculate prefix hash for correlation
-                    var prefix_hasher = std.hash.Wyhash.init(0);
-                    for (self.messages.items[0..2]) |msg| {
-                        prefix_hasher.update(msg.content);
-                    }
-                    const prefix_hash = prefix_hasher.final();
-
-                    std.debug.print("[CONTEXT] Updated position 1: hash={x}, prefix_hash={x}, size={d}B, ttl_expired={}\n",
-                        .{new_hash, prefix_hash, normalized_ctx.len, ttl_expired});
-                }
-            } else if (std.posix.getenv("DEBUG_CONTEXT")) |_| {
-                if (!hash_changed) {
-                    std.debug.print("[CONTEXT] Skipped update: hash unchanged={x}, ttl={}s\n",
-                        .{new_hash, time_since_update});
-                } else {
-                    std.debug.print("[CONTEXT] WARNING: Position 1 not available or wrong type, skipping update\n", .{});
-                }
-            }
-        }
-
-        // Now copy messages to ollama_messages (hot context at position 1 is already updated)
+        // Copy messages to ollama_messages
         var ollama_messages = std.ArrayListUnmanaged(ollama.ChatMessage){};
         defer ollama_messages.deinit(self.allocator);
 
@@ -749,7 +611,6 @@ pub const App = struct {
             .keep_alive = self.config.model_keep_alive,
             .num_ctx = self.config.num_ctx,
             .num_predict = self.config.num_predict,
-            .hot_context_content = null, // Hot context now owned by messages.items[1], not thread
         };
 
         // Start streaming in background thread
@@ -781,78 +642,6 @@ pub const App = struct {
 
         // Mark all dirty - new message changes layout
         // Removed dirty state tracking - rendering is now always automatic
-
-        // Phase A.4: Track tokens for user message
-        if (self.token_tracker) |tracker| {
-            const msg_idx = self.messages.items.len - 1;
-            tracker.trackMessage(msg_idx, user_content, .user) catch {};
-            if (tracker.needsCompression(self.compression_config)) {
-                if (std.posix.getenv("DEBUG_CONTEXT")) |_| {
-                    std.debug.print("[CONTEXT] Token limit approaching: {d}/{d}\n", .{
-                        tracker.estimated_tokens_used,
-                        tracker.max_context_tokens,
-                    });
-                    std.debug.print("[CONTEXT] Triggering hybrid compression...\n", .{});
-                }
-                
-                // Phase 6: Trigger agent-based compression
-                if (compressor.compressWithAgent(
-                    self.allocator,
-                    &self.messages,
-                    &self.context_tracker,
-                    tracker,
-                    self.compression_config,
-                    &self.llm_provider,
-                    &self.config,
-                    &self.agent_registry,
-                )) |stats| {
-
-                    // Recalculate token tracker with compressed messages
-                    const tokens_before = tracker.estimated_tokens_used;
-                    tracker.reset();
-                    for (self.messages.items, 0..) |msg, idx| {
-                        if (msg.role == .display_only_data) continue;
-
-                        const role_enum: compression.MessageRole = switch (msg.role) {
-                            .user => .user,
-                            .assistant => .assistant,
-                            .system => .system,
-                            .tool => .tool,
-                            .display_only_data => .display_only_data,
-                        };
-                        tracker.trackMessage(idx, msg.content, role_enum) catch {};
-                    }
-
-                    if (std.posix.getenv("DEBUG_CONTEXT")) |_| {
-                        const tokens_after = tracker.estimated_tokens_used;
-                        const tokens_saved = if (tokens_before > tokens_after) tokens_before - tokens_after else 0;
-                        const reduction_pct = if (tokens_before > 0)
-                            (@as(f32, @floatFromInt(tokens_saved)) / @as(f32, @floatFromInt(tokens_before))) * 100.0
-                        else
-                            0.0;
-
-                        std.debug.print(
-                            "[CONTEXT] Compression complete:\n" ++
-                            "  Messages: {d} → {d}\n" ++
-                            "  Tokens: {d} → {d} ({d} saved, {d:.1}% reduction)\n" ++
-                            "  Tool results compressed: {d}\n" ++
-                            "  Protected messages: {d}\n",
-                            .{
-                                stats.original_message_count, stats.compressed_message_count,
-                                tokens_before, tokens_after, tokens_saved, reduction_pct,
-                                stats.tool_results_compressed,
-                                stats.messages_protected,
-                            }
-                        );
-                    }
-                } else |err| {
-                    if (std.posix.getenv("DEBUG_CONTEXT")) |_| {
-                        std.debug.print("[CONTEXT] Compression failed: {}\n", .{err});
-                    }
-                    // Continue without compression
-                }
-            }
-        }
 
         // Show user message right away (receipt printer mode)
         _ = try message_renderer.redrawScreen(self);
@@ -963,9 +752,7 @@ pub const App = struct {
 
         // Clean up thread context if it exists
         if (self.stream_thread_ctx) |ctx| {
-            // Note: hot_context_content is now owned by messages.items[1], not thread context
-            // It will be freed when messages array is cleaned up in deinit()
-            // msg.role and msg.content are NOT owned by the context
+            // Note: msg.role and msg.content are NOT owned by the context
             // They are pointers to existing message data, so we only free the array
             self.allocator.free(ctx.messages);
 
@@ -1102,16 +889,14 @@ pub const App = struct {
             viewer.deinit();
         }
 
+        // Clean up profile UI if active
+        if (self.profile_ui) |*profile_ui| {
+            profile_ui.deinit();
+        }
+
         // Clean up agent system
         self.agent_loader.deinit();
         self.agent_registry.deinit();
-
-        // Clean up context management (Phase 1)
-        if (self.token_tracker) |tracker| {
-            tracker.deinit();
-            self.allocator.destroy(tracker);
-        }
-        self.context_tracker.deinit();
 
         // Clean up incremental rendering state
         self.render_cache.deinit(self.allocator);
@@ -1165,8 +950,41 @@ pub const App = struct {
                                 std.debug.print("   Saving anyway, but please review your settings.\n\n", .{});
                             };
 
-                            // Save config to disk
-                            try config_module.saveConfigToFile(self.allocator, editor.temp_config);
+                            // Check if profile name changed
+                            const profile_manager = @import("profile_manager");
+                            const original_profile = try profile_manager.getActiveProfileName(self.allocator);
+                            defer self.allocator.free(original_profile);
+
+                            var profile_changed = !std.mem.eql(u8, editor.profile_name, original_profile);
+
+                            // If profile name changed, validate it
+                            if (profile_changed) {
+                                if (!profile_manager.validateProfileName(editor.profile_name)) {
+                                    std.debug.print("\n⚠ Invalid profile name: '{s}'\n", .{editor.profile_name});
+                                    std.debug.print("   Profile names must be alphanumeric with dashes/underscores only.\n", .{});
+                                    std.debug.print("   Saving to original profile instead.\n\n", .{});
+                                    // Revert to original profile name
+                                    self.allocator.free(editor.profile_name);
+                                    editor.profile_name = try self.allocator.dupe(u8, original_profile);
+                                    profile_changed = false;
+                                }
+                            }
+
+                            // Save based on whether name actually changed
+                            if (profile_changed) {
+                                // Save to new profile name
+                                try profile_manager.saveProfile(self.allocator, editor.profile_name, editor.temp_config);
+
+                                // Set as active profile
+                                try profile_manager.setActiveProfileName(self.allocator, editor.profile_name);
+
+                                std.debug.print("\n✓ Saved as new profile: {s}\n", .{editor.profile_name});
+                            } else {
+                                // Save to current profile
+                                try profile_manager.saveProfile(self.allocator, editor.profile_name, editor.temp_config);
+
+                                std.debug.print("\n✓ Saved profile: {s}\n", .{editor.profile_name});
+                            }
 
                             // Apply changes to running config (transfer ownership)
                             self.config.deinit(self.allocator);
@@ -1188,7 +1006,9 @@ pub const App = struct {
                             );
 
                             // Close editor (but DON'T deinit temp_config - we transferred it to app.config!)
-                            // Manually free only the editor's sections and fields
+                            // Manually free only the editor's sections, fields, and profile_name
+                            self.allocator.free(editor.profile_name);
+
                             for (editor.sections) |section| {
                                 // Free section title (dynamically allocated)
                                 self.allocator.free(section.title);
@@ -1300,6 +1120,43 @@ pub const App = struct {
                             // Close help viewer
                             viewer.deinit();
                             self.help_viewer = null;
+                        },
+                        .redraw, .@"continue" => {
+                            // Just re-render next iteration
+                        },
+                    }
+                }
+                continue; // Skip normal app rendering
+            }
+
+            // PROFILE MANAGER MODE (modal - interactive profile management)
+            if (self.profile_ui) |*profile_ui| {
+                // Render profile UI
+                var stdout_buffer: [8192]u8 = undefined;
+                var buffered_writer = ui.BufferedStdoutWriter.init(&stdout_buffer);
+                const writer = buffered_writer.writer();
+
+                try profile_ui_renderer.render(
+                    profile_ui,
+                    writer,
+                    self.terminal_size.width,
+                    self.terminal_size.height,
+                );
+                try buffered_writer.flush();
+
+                // Wait for input (blocking)
+                var read_buffer: [128]u8 = undefined;
+                const bytes_read = ui.c.read(ui.c.STDIN_FILENO, &read_buffer, read_buffer.len);
+
+                if (bytes_read > 0) {
+                    const input = read_buffer[0..@intCast(bytes_read)];
+                    const result = try profile_ui_input.handleInput(profile_ui, self, input);
+
+                    switch (result) {
+                        .close, .profile_switched => {
+                            // Close profile UI
+                            profile_ui.deinit();
+                            self.profile_ui = null;
                         },
                         .redraw, .@"continue" => {
                             // Just re-render next iteration
@@ -1559,11 +1416,7 @@ pub const App = struct {
 
                             // Free thread context and its data
                             if (self.stream_thread_ctx) |ctx| {
-                                // Free hot context content if it was allocated
-                                if (ctx.hot_context_content) |content| {
-                                    self.allocator.free(content);
-                                }
-                                // Note: msg.role and msg.content are NOT owned by the context (except hot_context_content)
+                                // Note: msg.role and msg.content are NOT owned by the context
                                 // They are pointers to existing message data, so we only free the array
                                 self.allocator.free(ctx.messages);
                                 self.allocator.destroy(ctx);

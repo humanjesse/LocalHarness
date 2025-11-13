@@ -4,7 +4,6 @@ const ollama = @import("ollama");
 const permission = @import("permission");
 const context_module = @import("context");
 const tools_module = @import("../tools.zig");
-const tracking = @import("tracking");
 
 const AppContext = context_module.AppContext;
 const ToolDefinition = tools_module.ToolDefinition;
@@ -53,7 +52,7 @@ pub fn getDefinition(allocator: std.mem.Allocator) !ToolDefinition {
     };
 }
 
-fn execute(allocator: std.mem.Allocator, arguments: []const u8, context: *AppContext) !ToolResult {
+fn execute(allocator: std.mem.Allocator, arguments: []const u8, _: *AppContext) !ToolResult {
     const start_time = std.time.milliTimestamp();
 
     // Parse arguments
@@ -169,20 +168,6 @@ fn execute(allocator: std.mem.Allocator, arguments: []const u8, context: *AppCon
 
     const formatted = try formatted_output.toOwnedSlice(allocator);
     defer allocator.free(formatted);
-
-    // Track line-range read in context tracker (for hot context injection)
-    if (context.context_tracker) |tracker| {
-        tracker.trackFileRead(
-            parsed.value.path,
-            content,
-            .lines,
-            .{ .start = parsed.value.start_line, .end = parsed.value.end_line },
-        ) catch |err| {
-            if (std.posix.getenv("DEBUG_CONTEXT")) |_| {
-                std.debug.print("[CONTEXT] Failed to track line read: {}\n", .{err});
-            }
-        };
-    }
 
     // NOTE: Intentionally NOT doing the following:
     // - NOT queuing for GraphRAG indexing (fast, exploration-focused)

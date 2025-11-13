@@ -5,7 +5,6 @@ const agents_module = app_module.agents_module; // Get agents from app which has
 const agent_writer = @import("agent_writer");
 const agent_executor = @import("agent_executor");
 const file_curator = @import("file_curator");
-const compression_agent = @import("compression_agent");
 
 const AgentDefinition = agents_module.AgentDefinition;
 const AgentRegistry = agents_module.AgentRegistry;
@@ -104,11 +103,6 @@ pub const AgentLoader = struct {
 
         // Store definition for cleanup (name and description are allocated)
         try self.native_agent_definitions.append(self.allocator, curator_def);
-
-        // Register compression_agent (native agent for conversation compression)
-        const compression_def = try compression_agent.getDefinition(self.allocator);
-        try self.registry.register(compression_def);
-        try self.native_agent_definitions.append(self.allocator, compression_def);
     }
 
     /// Load and register markdown-defined agents
