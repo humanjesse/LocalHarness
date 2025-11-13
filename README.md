@@ -30,6 +30,7 @@ zig build
 ## Features
 
 - **Real-time streaming** with responsive, non-blocking UI
+- **Conversation persistence (experimental)** - Chat history saved to SQLite (`~/.config/localharness/conversations.db`) - loading not yet implemented
 - **Markdown rendering** - Code blocks, tables, lists, and emoji
 - **Tool calling** - 15 tools: read/write/edit files, search code, navigate directories, manage tasks, run agents
 - **Experimental read file agent** - AI curates important file sections, reducing context

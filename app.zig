@@ -35,6 +35,7 @@ const help_input = @import("help_input");
 const profile_ui_state = @import("profile_ui_state");
 const profile_ui_renderer = @import("profile_ui_renderer");
 const profile_ui_input = @import("profile_ui_input");
+const conversation_db_module = @import("conversation_db");
 
 // Re-export types for convenience
 pub const Message = types.Message;
@@ -265,6 +266,9 @@ pub const App = struct {
     help_viewer: ?help_state.HelpState = null,
     // Profile manager state (modal mode)
     profile_ui: ?profile_ui_state.ProfileUIState = null,
+    // Conversation persistence
+    conversation_db: ?conversation_db_module.ConversationDB = null,
+    current_conversation_id: ?i64 = null,
 
     // Incremental rendering state
     render_cache: RenderCache = RenderCache.init(),
@@ -325,6 +329,29 @@ pub const App = struct {
             .agent_builder = null,
         };
 
+        // Initialize conversation database
+        const home_dir = std.posix.getenv("HOME") orelse ".";
+        const config_dir = try std.fmt.allocPrint(allocator, "{s}/.config/localharness", .{home_dir});
+        defer allocator.free(config_dir);
+
+        // Ensure config directory exists
+        std.fs.makeDirAbsolute(config_dir) catch |err| {
+            if (err != error.PathAlreadyExists) return err;
+        };
+
+        const db_path = try std.fmt.allocPrint(allocator, "{s}/conversations.db", .{config_dir});
+        defer allocator.free(db_path);
+
+        // Initialize database - fail fast if this fails
+        const conv_db = try conversation_db_module.ConversationDB.init(allocator, db_path);
+        app.conversation_db = conv_db;
+
+        // Create conversation immediately on startup
+        const profile_name = "default"; // TODO: Get from profile manager
+        const conv_id = try app.conversation_db.?.createConversation(profile_name);
+        app.current_conversation_id = conv_id;
+        std.debug.print("Created new conversation: {}\n", .{conv_id});
+
         // Add system prompt (Position 0 - stable)
         const system_prompt = "You are a helpful coding assistant.";
         const system_processed = try markdown.processMarkdown(allocator, system_prompt);
@@ -335,6 +362,9 @@ pub const App = struct {
             .thinking_expanded = true,
             .timestamp = std.time.milliTimestamp(),
         });
+
+        // Persist system message immediately
+        try app.persistMessage(app.messages.items.len - 1);
 
         return app;
     }
@@ -353,6 +383,21 @@ pub const App = struct {
         };
     }
 
+    // Persist a message to the database immediately
+    // Fails fast if database persistence fails
+    fn persistMessage(self: *App, message_index: usize) !void {
+        // Conversation ID must exist (created in init)
+        const conv_id = self.current_conversation_id orelse return error.NoConversation;
+
+        // Database must be initialized
+        if (self.conversation_db) |*db| {
+            // Save message - fail fast if this fails
+            const message = &self.messages.items[message_index];
+            _ = try db.saveMessage(conv_id, @intCast(message_index), message);
+        } else {
+            return error.DatabaseNotInitialized;
+        }
+    }
 
     // Check if viewport is currently at the bottom
     fn isViewportAtBottom(self: *App) bool {
@@ -640,6 +685,9 @@ pub const App = struct {
             .timestamp = std.time.milliTimestamp(),
         });
 
+        // Persist user message immediately
+        try self.persistMessage(self.messages.items.len - 1);
+
         // Mark all dirty - new message changes layout
         // Removed dirty state tracking - rendering is now always automatic
 
@@ -691,6 +739,9 @@ pub const App = struct {
                 .timestamp = std.time.milliTimestamp(),
             },
         });
+
+        // Persist permission request immediately
+        try self.persistMessage(self.messages.items.len - 1);
 
         // Set permission pending state (non-blocking - main loop will handle response)
         self.permission_pending = true;
@@ -892,6 +943,11 @@ pub const App = struct {
         // Clean up profile UI if active
         if (self.profile_ui) |*profile_ui| {
             profile_ui.deinit();
+        }
+
+        // Clean up conversation database
+        if (self.conversation_db) |*db| {
+            db.deinit();
         }
 
         // Clean up agent system
@@ -1238,6 +1294,9 @@ pub const App = struct {
                                     .tool_execution_time = result.metadata.execution_time_ms,
                                 });
 
+                                // Persist tool execution display immediately
+                                try self.persistMessage(self.messages.items.len - 1);
+
                                 // Don't redraw yet - wait until tool result is also added
                                 // to avoid double-redraw per tool (reduces flashing)
 
@@ -1262,6 +1321,9 @@ pub const App = struct {
                                     .timestamp = std.time.milliTimestamp(),
                                     .tool_call_id = tool_id_copy,
                                 });
+
+                                // Persist tool result immediately
+                                try self.persistMessage(self.messages.items.len - 1);
 
                                 // Now redraw once for both messages (display + tool result)
                                 // Single redraw instead of two reduces flashing
@@ -1315,6 +1377,9 @@ pub const App = struct {
                                     .tool_execution_time = result.metadata.execution_time_ms,
                                 });
 
+                                // Persist tool error display immediately
+                                try self.persistMessage(self.messages.items.len - 1);
+
                                 // Receipt printer mode: auto-scroll
                                 _ = try message_renderer.redrawScreen(self);
                                 self.updateCursorToBottom();
@@ -1336,6 +1401,9 @@ pub const App = struct {
                                     .timestamp = std.time.milliTimestamp(),
                                     .tool_call_id = tool_id_copy,
                                 });
+
+                                // Persist tool error result immediately
+                                try self.persistMessage(self.messages.items.len - 1);
 
                                 // Receipt printer mode: auto-scroll
                                 _ = try message_renderer.redrawScreen(self);
@@ -1380,6 +1448,9 @@ pub const App = struct {
                             .thinking_expanded = false,
                             .timestamp = std.time.milliTimestamp(),
                         });
+
+                        // Persist error message immediately
+                        try self.persistMessage(self.messages.items.len - 1);
 
                         _ = try message_renderer.redrawScreen(self);
                     },
@@ -1444,6 +1515,9 @@ pub const App = struct {
                                     .timestamp = std.time.milliTimestamp(),
                                 });
 
+                                // Persist streaming error immediately
+                                try self.persistMessage(self.messages.items.len - 1);
+
                                 // Clean up tool calls
                                 for (tool_calls) |call| {
                                     if (call.id) |id| self.allocator.free(id);
@@ -1468,6 +1542,9 @@ pub const App = struct {
                                     }
                                 }
 
+                                // Persist assistant message with tool_calls attached
+                                try self.persistMessage(self.messages.items.len - 1);
+
                                 // Update display to show tool call
                                 _ = try message_renderer.redrawScreen(self);
                                 self.updateCursorToBottom();
@@ -1480,6 +1557,9 @@ pub const App = struct {
                             }
                         } else {
                             // No tool calls - response is complete
+                            // Persist completed assistant message
+                            try self.persistMessage(self.messages.items.len - 1);
+
                             // ==========================================
                             // SECONDARY LOOP: Process Graph RAG queue
                             // ==========================================

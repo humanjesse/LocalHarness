@@ -310,6 +310,29 @@ Permission policies are stored separately from configuration:
 - Manually edit `policies.json` to remove policies
 - Delete `policies.json` to reset all policies
 
+## Conversation Database (Experimental)
+
+The conversation persistence system automatically saves all chat history to a SQLite database.
+
+**Location:** `~/.config/localharness/conversations.db`
+
+**What's stored:**
+- User and assistant messages
+- Tool calls with arguments
+- Tool execution results
+- Agent execution metadata
+- Session state
+
+**Current status:**
+- ⚠️ Conversations are saved but not yet loadable
+- Future releases will add conversation browsing and restoration
+- Safe to delete if you want to clear history: `rm ~/.config/localharness/conversations.db`
+
+**Technical details:**
+- SQLite database with WAL mode (Write-Ahead Logging)
+- 7-table schema with foreign key constraints
+- Minimal performance impact - real-time persistence
+
 ## Environment-Specific Configs
 
 ### Development

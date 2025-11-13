@@ -373,6 +373,28 @@ Tool Result: read_file (✅ SUCCESS, 1200ms)
 - Educational - learn how agents analyze code
 - Debugging - see why agent kept/omitted certain code
 
+### Conversation Persistence (Experimental) 🧪
+
+**What it does:** Automatically saves your conversation history to a local SQLite database.
+
+**Database location:** `~/.config/localharness/conversations.db`
+
+**What's saved:**
+- All messages (user, assistant, tool, display, permission, agent, error)
+- Tool calls and their arguments
+- Tool execution results
+- Agent execution metadata
+- Session state
+
+**Current limitations:**
+- ⚠️ **Write-only**: Conversations are saved but cannot be loaded yet
+- Future releases will add conversation browsing and restoration
+
+**Storage details:**
+- Uses SQLite with WAL mode for safe concurrent access
+- Comprehensive 7-table schema with foreign key constraints
+- Minimal overhead - persistence happens in real-time during chat
+
 ## UI Features
 
 ### Taskbar
@@ -569,8 +591,8 @@ All tools return JSON with:
 
 **Persistence:**
 - Tasks are session-ephemeral (lost on quit)
-- Conversation history not saved
-- Only policies persist
+- Conversation history saved but not yet loadable (experimental)
+- Policies persist across sessions
 
 ### Planned Features
 

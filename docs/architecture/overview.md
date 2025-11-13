@@ -87,6 +87,8 @@ pub const App = struct {
     state: AppState,  // Task management
     app_context: AppContext,  // Tool execution context
     permission_manager: PermissionManager,
+    conversation_db: ?*conversation_db_module.ConversationDB,  // Experimental persistence
+    current_conversation_id: ?i64,  // Current conversation ID
     // ... UI state ...
 };
 ```
@@ -198,6 +200,20 @@ pub const ToolExecutionState = enum {
 **`context.zig` (18 lines):**
 - Tool execution context definition
 - Future graph RAG integration point
+
+**`sqlite.zig` (New - Experimental):**
+- Minimal SQLite C API bindings
+- Core functions: open, close, prepare, step, bind, column operations
+- Constants for result codes, data types, and open flags
+
+**`conversation_db.zig` (New - Experimental):**
+- SQLite-based conversation persistence layer
+- 7-table schema (conversations, messages, tool_calls, tool_results, agent_executions, session_state, metadata)
+- `ConversationDB` struct with init/deinit
+- Functions: createConversation(), saveMessage(), saveToolCall(), saveToolResult(), saveAgentExecution()
+- WAL mode enabled for concurrent access
+- Foreign key constraints for data integrity
+- **Note**: Currently write-only - conversation loading not yet implemented
 
 **`render.zig` (252 lines):**
 - Text wrapping utilities
@@ -338,6 +354,7 @@ pub const AppState = struct {
 ### Persistent State
 - Configuration: `~/.config/localharness/config.json`
 - Permissions: `~/.config/localharness/policies.json`
+- Conversations (Experimental): `~/.config/localharness/conversations.db` - SQLite database with chat history (write-only, loading not yet implemented)
 
 ## Rendering Pipeline
 

@@ -14,6 +14,18 @@ pub fn build(b: *std.Build) void {
         }),
     });
 
+    // SQLite bindings module
+    const sqlite_module = b.createModule(.{
+        .root_source_file = b.path("sqlite.zig"),
+    });
+
+    // Conversation database module (needs sqlite, types, ollama, markdown)
+    const conversation_db_module = b.createModule(.{
+        .root_source_file = b.path("conversation_db.zig"),
+    });
+    conversation_db_module.addImport("sqlite", sqlite_module);
+    // Will add types, ollama, markdown after they're created
+
     // Core lexer module (no dependencies)
     const lexer_module = b.createModule(.{
         .root_source_file = b.path("lexer.zig"),
@@ -292,6 +304,11 @@ pub fn build(b: *std.Build) void {
     types_module.addImport("ollama", ollama_module);
     types_module.addImport("permission", permission_module);
 
+    // Now add dependencies to conversation_db_module
+    conversation_db_module.addImport("types", types_module);
+    conversation_db_module.addImport("ollama", ollama_module);
+    conversation_db_module.addImport("markdown", markdown_module);
+
     // Now add types to context_module, message_renderer, and tools
     context_module.addImport("types", types_module);
     message_renderer_module.addImport("types", types_module);
@@ -346,6 +363,8 @@ pub fn build(b: *std.Build) void {
     app_module.addImport("agent_executor", agent_executor_module);
     app_module.addImport("message_renderer", message_renderer_module);
     app_module.addImport("llm_helper", llm_helper_module);
+    app_module.addImport("sqlite", sqlite_module);
+    app_module.addImport("conversation_db", conversation_db_module);
 
     // Now add app and types to agents and agent modules (circular dependency is OK with modules)
     agents_module.addImport("app", app_module);
@@ -380,8 +399,9 @@ pub fn build(b: *std.Build) void {
     exe.root_module.addImport("render", render_module);
     exe.root_module.addImport("app", app_module);
 
-    // Link system C library
+    // Link system C library and SQLite
     exe.linkSystemLibrary("c");
+    exe.linkSystemLibrary("sqlite3");
     b.installArtifact(exe);
 
     const run_cmd = b.addRunArtifact(exe);

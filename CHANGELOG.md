@@ -2,6 +2,20 @@
 
 All notable changes to Local Harness will be documented in this file.
 
+## [Unreleased] - 2025-11-13
+
+### Added
+- **Conversation Persistence (Experimental)** - SQLite-based chat history storage:
+  - **Database location**: `~/.config/localharness/conversations.db`
+  - **Comprehensive schema** - 7 tables for conversations, messages, tool calls, tool results, agent executions, session state, and metadata
+  - **Real-time persistence** - All message types saved during execution (user, assistant, tool, display, permission, agent, error)
+  - **SQLite bindings** - Minimal C API wrapper (`sqlite.zig`)
+  - **Database layer** - `ConversationDB` module with WAL mode and foreign key constraints
+  - **Integration** - 13 persistence calls throughout message lifecycle in `app.zig`
+  - **Note**: Currently write-only - conversation loading not yet implemented
+  - Files added: `conversation_db.zig` (database layer), `sqlite.zig` (C bindings)
+  - Files modified: `app.zig` (+80 lines), `build.zig` (+22 lines for SQLite linking)
+
 ## [Unreleased] - 2025-10-30
 
 ### Fixed - Agent Builder System
