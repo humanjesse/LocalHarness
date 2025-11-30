@@ -142,6 +142,9 @@ fn drawField(
         .number_input => {
             drawNumberInputFieldToWriter(content_writer, field, state) catch {};
         },
+        .masked_input => {
+            drawMaskedInputFieldToWriter(content_writer, field, state) catch {};
+        },
     }
 
     const content = content_stream.getWritten();
@@ -257,6 +260,33 @@ fn drawNumberInputFieldToWriter(writer: anytype, field: *const ConfigField, stat
     }
 }
 
+/// Draw masked input field to any writer (for buffering)
+/// Shows full value when editing, masked value (first 4 + last 3 chars) when not editing
+fn drawMaskedInputFieldToWriter(writer: anytype, field: *const ConfigField, state: *const ConfigEditorState) !void {
+    const current_value = getFieldValue(state, field.key);
+
+    if (field.is_editing and field.edit_buffer != null) {
+        // Show full edit buffer with cursor when editing
+        try writer.print("{s}█", .{field.edit_buffer.?});
+    } else {
+        // Show masked value when not editing
+        if (current_value.len == 0) {
+            try writer.writeAll("\x1b[2m(not set)\x1b[0m");
+        } else if (current_value.len <= 10) {
+            // Too short to mask meaningfully, just show dots
+            for (0..@min(current_value.len, 8)) |_| {
+                try writer.writeAll("•");
+            }
+        } else {
+            // Show first 4 chars + *** + last 3 chars
+            try writer.print("{s}***{s}", .{
+                current_value[0..4],
+                current_value[current_value.len - 3 ..],
+            });
+        }
+    }
+}
+
 /// Get string value from config based on field key
 fn getFieldValue(state: *const ConfigEditorState, key: []const u8) []const u8 {
     const config = &state.temp_config;
@@ -266,6 +296,8 @@ fn getFieldValue(state: *const ConfigEditorState, key: []const u8) []const u8 {
     if (std.mem.eql(u8, key, "ollama_host")) return config.ollama_host;
     if (std.mem.eql(u8, key, "lmstudio_host")) return config.lmstudio_host;
     if (std.mem.eql(u8, key, "model")) return config.model;
+    if (std.mem.eql(u8, key, "google_search_api_key")) return config.google_search_api_key orelse "";
+    if (std.mem.eql(u8, key, "google_search_engine_id")) return config.google_search_engine_id orelse "";
 
     return "";
 }

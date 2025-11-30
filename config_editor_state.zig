@@ -12,6 +12,8 @@ pub const FieldType = enum {
     toggle,
     /// Number input (integer value)
     number_input,
+    /// Masked input (sensitive data like API keys)
+    masked_input,
 };
 
 /// A single field in the configuration form
@@ -106,6 +108,8 @@ pub const ConfigEditorState = struct {
             .enable_thinking = current_config.enable_thinking,
             .show_tool_json = current_config.show_tool_json,
             .file_read_small_threshold = current_config.file_read_small_threshold,
+            .google_search_api_key = if (current_config.google_search_api_key) |key| try allocator.dupe(u8, key) else null,
+            .google_search_engine_id = if (current_config.google_search_engine_id) |id| try allocator.dupe(u8, id) else null,
         };
 
         // Get current profile name
@@ -319,7 +323,31 @@ fn buildFormSections(allocator: std.mem.Allocator, temp_config: *const config_mo
         });
     }
 
-    // Section 4: Advanced Settings
+    // Section 4: Web Search (Google Custom Search API)
+    {
+        var fields = std.ArrayListUnmanaged(ConfigField){};
+
+        try fields.append(allocator, .{
+            .label = "Google API Key",
+            .field_type = .masked_input,
+            .key = "google_search_api_key",
+            .help_text = "Google Custom Search API key (starts with 'AIza'). Get one at https://developers.google.com/custom-search",
+        });
+
+        try fields.append(allocator, .{
+            .label = "Search Engine ID",
+            .field_type = .text_input,
+            .key = "google_search_engine_id",
+            .help_text = "Programmable Search Engine ID (cx parameter). Free tier: 100 queries/day.",
+        });
+
+        try sections.append(allocator, .{
+            .title = try allocator.dupe(u8, "Web Search"),
+            .fields = try fields.toOwnedSlice(allocator),
+        });
+    }
+
+    // Section 5: Advanced Settings
     {
         var fields = std.ArrayListUnmanaged(ConfigField){};
 
@@ -368,6 +396,7 @@ fn buildProviderSpecificSection(allocator: std.mem.Allocator, temp_config: *cons
             .text_input => .text_input,
             .toggle => .toggle,
             .number_input => .number_input,
+            .masked_input => .masked_input,
         };
 
         try fields.append(allocator, .{

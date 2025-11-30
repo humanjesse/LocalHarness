@@ -3,6 +3,7 @@ const std = @import("std");
 const ollama = @import("ollama");
 const permission = @import("permission");
 const context_module = @import("context");
+const html_utils = @import("html_utils");
 
 // Import all tool modules
 const file_tree = @import("tools/file_tree.zig");
@@ -31,6 +32,8 @@ const git_stash = @import("tools/git_stash.zig");
 const git_push = @import("tools/git_push.zig");
 const git_pull = @import("tools/git_pull.zig");
 const git_reset = @import("tools/git_reset.zig");
+const web_search = @import("tools/web_search.zig");
+const web_fetch = @import("tools/web_fetch.zig");
 
 const AppContext = context_module.AppContext;
 
@@ -93,26 +96,6 @@ pub const ToolResult = struct {
         };
     }
 
-    // Helper to escape JSON string
-    fn escapeJSON(allocator: std.mem.Allocator, input: []const u8) ![]const u8 {
-        var escaped = std.ArrayListUnmanaged(u8){};
-        defer escaped.deinit(allocator);
-        const writer = escaped.writer(allocator);
-
-        for (input) |c| {
-            switch (c) {
-                '"' => try writer.writeAll("\\\""),
-                '\\' => try writer.writeAll("\\\\"),
-                '\n' => try writer.writeAll("\\n"),
-                '\r' => try writer.writeAll("\\r"),
-                '\t' => try writer.writeAll("\\t"),
-                else => try writer.writeByte(c),
-            }
-        }
-
-        return try escaped.toOwnedSlice(allocator);
-    }
-
     // Serialize to JSON for model
     pub fn toJSON(self: *const ToolResult, allocator: std.mem.Allocator) ![]const u8 {
         var json = std.ArrayListUnmanaged(u8){};
@@ -123,7 +106,7 @@ pub const ToolResult = struct {
         try writer.print("\"success\":{s},", .{if (self.success) "true" else "false"});
 
         if (self.data) |d| {
-            const escaped_data = try escapeJSON(allocator, d);
+            const escaped_data = try html_utils.escapeJSON(allocator, d);
             defer allocator.free(escaped_data);
             try writer.print("\"data\":\"{s}\",", .{escaped_data});
         } else {
@@ -131,7 +114,7 @@ pub const ToolResult = struct {
         }
 
         if (self.error_message) |e| {
-            const escaped_err = try escapeJSON(allocator, e);
+            const escaped_err = try html_utils.escapeJSON(allocator, e);
             defer allocator.free(escaped_err);
             try writer.print("\"error_message\":\"{s}\",", .{escaped_err});
         } else {
@@ -243,6 +226,10 @@ pub fn getAllToolDefinitions(allocator: std.mem.Allocator) ![]ToolDefinition {
     // Agent tools
     try tools.append(allocator, try run_agent.getDefinition(allocator));
     try tools.append(allocator, try list_agents.getDefinition(allocator));
+
+    // Web tools
+    try tools.append(allocator, try web_search.getDefinition(allocator));
+    try tools.append(allocator, try web_fetch.getDefinition(allocator));
 
     return try tools.toOwnedSlice(allocator);
 }

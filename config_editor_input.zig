@@ -80,10 +80,10 @@ fn handleEscapeSequence(state: *ConfigEditorState, input: []const u8) !InputResu
 
 /// Handle single key presses
 fn handleSingleKey(state: *ConfigEditorState, key: u8) !InputResult {
-    // If we're in edit mode for a text/number input, pass most keys to input handler
+    // If we're in edit mode for a text/number/masked input, pass most keys to input handler
     // (except Tab and Ctrl keys which should still work for navigation/save)
     if (state.getFocusedField()) |field| {
-        if (field.is_editing and (field.field_type == .text_input or field.field_type == .number_input)) {
+        if (field.is_editing and (field.field_type == .text_input or field.field_type == .number_input or field.field_type == .masked_input)) {
             // Allow Tab, Ctrl+S, Esc to still work in edit mode
             if (key != '\t' and key != 0x13 and key != 0x1B) {
                 return try handleTextInput(state, field, key);
@@ -97,7 +97,7 @@ fn handleSingleKey(state: *ConfigEditorState, key: u8) !InputResult {
             // If in edit mode, commit changes first
             if (state.getFocusedField()) |field| {
                 if (field.is_editing) {
-                    if (field.field_type == .text_input) {
+                    if (field.field_type == .text_input or field.field_type == .masked_input) {
                         try commitTextEdit(state, field);
                     } else if (field.field_type == .number_input) {
                         try commitNumberEdit(state, field);
@@ -118,7 +118,7 @@ fn handleSingleKey(state: *ConfigEditorState, key: u8) !InputResult {
         // Escape: Exit edit mode, or cancel and close if not editing
         0x1B => {
             if (state.getFocusedField()) |field| {
-                if (field.is_editing and (field.field_type == .text_input or field.field_type == .number_input)) {
+                if (field.is_editing and (field.field_type == .text_input or field.field_type == .number_input or field.field_type == .masked_input)) {
                     // Exit edit mode without saving changes to this field
                     field.is_editing = false;
                     return .redraw;
@@ -151,9 +151,9 @@ fn handleSingleKey(state: *ConfigEditorState, key: u8) !InputResult {
         },
 
         else => {
-            // If in edit mode for text input, handle character input
+            // If in edit mode for text/masked input, handle character input
             if (state.getFocusedField()) |field| {
-                if (field.is_editing and field.field_type == .text_input) {
+                if (field.is_editing and (field.field_type == .text_input or field.field_type == .masked_input)) {
                     return try handleTextInput(state, field, key);
                 }
             }
@@ -176,7 +176,7 @@ fn handleEnterKey(state: *ConfigEditorState) !InputResult {
                 state.has_changes = true;
                 return .redraw;
             },
-            .text_input => {
+            .text_input, .masked_input => {
                 if (field.is_editing) {
                     // Finish editing - save buffer to config
                     try commitTextEdit(state, field);
@@ -406,6 +406,10 @@ fn getCurrentTextValue(state: *const ConfigEditorState, key: []const u8) []const
     // Shared fields
     if (std.mem.eql(u8, key, "model")) return config.model;
 
+    // Google Search API fields
+    if (std.mem.eql(u8, key, "google_search_api_key")) return config.google_search_api_key orelse "";
+    if (std.mem.eql(u8, key, "google_search_engine_id")) return config.google_search_engine_id orelse "";
+
     // Try provider-specific fields
     const provider_value = config.getProviderField(config.provider, key);
     if (provider_value == .text) {
@@ -431,11 +435,29 @@ fn setTextValue(state: *ConfigEditorState, key: []const u8, value: []const u8) !
     if (std.mem.eql(u8, key, "model")) {
         state.allocator.free(config.model);
         config.model = try state.allocator.dupe(u8, value);
-    } else {
-        // Try provider-specific text fields
-        const new_value = llm_provider.ConfigValue{ .text = value };
-        try config.setProviderField(state.allocator, config.provider, key, new_value);
+        return;
     }
+
+    // Google Search API fields
+    if (std.mem.eql(u8, key, "google_search_api_key")) {
+        if (config.google_search_api_key) |old_key| {
+            state.allocator.free(old_key);
+        }
+        config.google_search_api_key = if (value.len > 0) try state.allocator.dupe(u8, value) else null;
+        return;
+    }
+
+    if (std.mem.eql(u8, key, "google_search_engine_id")) {
+        if (config.google_search_engine_id) |old_id| {
+            state.allocator.free(old_id);
+        }
+        config.google_search_engine_id = if (value.len > 0) try state.allocator.dupe(u8, value) else null;
+        return;
+    }
+
+    // Try provider-specific text fields
+    const new_value = llm_provider.ConfigValue{ .text = value };
+    try config.setProviderField(state.allocator, config.provider, key, new_value);
 }
 
 /// Get current number value from config

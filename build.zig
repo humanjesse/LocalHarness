@@ -36,6 +36,11 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("text_utils.zig"),
     });
 
+    // HTML utilities module (no dependencies)
+    const html_utils_module = b.createModule(.{
+        .root_source_file = b.path("tools/html_utils.zig"),
+    });
+
     // Markdown module (depends on lexer)
     const markdown_module = b.createModule(.{
         .root_source_file = b.path("markdown.zig"),
@@ -133,6 +138,7 @@ pub fn build(b: *std.Build) void {
     tools_module.addImport("state", state_module);
     tools_module.addImport("agents", agents_module);
     tools_module.addImport("tree", tree_module);
+    tools_module.addImport("html_utils", html_utils_module);
     // Will add file_curator and types after they're created
 
     // Now that tools_module is created, add it to agents_module

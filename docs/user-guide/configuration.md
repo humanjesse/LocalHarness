@@ -56,6 +56,8 @@ This file is automatically created on first run with default values. You can edi
   "enable_thinking": true,
   "show_tool_json": false,
   "file_read_small_threshold": 200,
+  "google_search_api_key": null,
+  "google_search_engine_id": null,
   "editor": ["nvim"],
   "scroll_lines": 3,
   "color_status": "\u001b[33m",
@@ -211,6 +213,50 @@ $EDITOR ~/.config/localharness/config.json
 - `1`: Precise, line-by-line scrolling
 - `3`: Default, balanced
 - `5`: Faster scrolling for large conversations
+
+### Web Search (Google Custom Search API)
+
+The `web_search` tool uses the Google Custom Search JSON API to search the web. This requires API credentials.
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `google_search_api_key` | string | `null` | Google Custom Search API key (starts with 'AIza') |
+| `google_search_engine_id` | string | `null` | Programmable Search Engine ID (cx parameter) |
+
+**Setting up Google Custom Search API:**
+
+1. **Get an API Key:**
+   - Visit: https://developers.google.com/custom-search/v1/introduction
+   - Create a project in Google Cloud Console
+   - Enable the Custom Search API
+   - Create credentials (API key)
+
+2. **Create a Programmable Search Engine:**
+   - Visit: https://programmablesearchengine.google.com/
+   - Click "Add" to create a new search engine
+   - Configure search scope (search entire web or specific sites)
+   - Copy the Search Engine ID (cx parameter)
+
+3. **Configure in Local Harness:**
+   - Type `/config` to open the configuration editor
+   - Navigate to the "Web Search" section
+   - Enter your API key (will be displayed as `AIza***xyz` when not editing)
+   - Enter your Search Engine ID
+   - Press `Ctrl+S` to save
+
+**Rate Limits:**
+- **Free tier:** 100 queries per day
+- **Paid tier:** $5 per 1,000 queries (up to 10,000/day)
+
+**Example Configuration:**
+```json
+{
+  "google_search_api_key": "AIzaSyC1234567890abcdefghijklmnopqrstuvwx",
+  "google_search_engine_id": "a1234567890bcdefg"
+}
+```
+
+**Note:** API credentials are stored unencrypted in your config file at `~/.config/localharness/profiles/{profile}.json`. File permissions protect the file on single-user systems.
 
 ### ⚠️ Removed Settings
 

@@ -34,6 +34,9 @@ pub const Config = struct {
     show_tool_json: bool = false, // Show raw JSON tool calls (for debugging, default hidden)
     // File reading thresholds (smart auto-detection)
     file_read_small_threshold: usize = 200, // Files <= this: show full content (no agent overhead). Files > this: use conversation-aware curation agent
+    // Web search (Google Custom Search API)
+    google_search_api_key: ?[]const u8 = null, // Google Custom Search API key (required for web_search tool)
+    google_search_engine_id: ?[]const u8 = null, // Programmable Search Engine ID (cx parameter)
 
     /// Validate configuration values and warn about incompatibilities
     pub fn validate(self: *const Config) !void {
@@ -69,6 +72,16 @@ pub const Config = struct {
         }
         if (!mem.startsWith(u8, self.lmstudio_host, "http://") and !mem.startsWith(u8, self.lmstudio_host, "https://")) {
             std.debug.print("⚠ Warning: lmstudio_host should start with http:// or https://\n", .{});
+        }
+
+        // Validate Google Custom Search API credentials
+        if (self.google_search_api_key) |api_key| {
+            if (!mem.startsWith(u8, api_key, "AIza")) {
+                std.debug.print("⚠ Warning: Google API key should start with 'AIza'\n", .{});
+            }
+            if (api_key.len < 30) {
+                std.debug.print("⚠ Warning: Google API key appears too short (expected ~39 characters)\n", .{});
+            }
         }
 
         // Warn about unsupported feature combinations
@@ -157,6 +170,12 @@ pub const Config = struct {
         allocator.free(self.color_thinking_header);
         allocator.free(self.color_thinking_dim);
         allocator.free(self.color_inline_code_bg);
+        if (self.google_search_api_key) |api_key| {
+            allocator.free(api_key);
+        }
+        if (self.google_search_engine_id) |engine_id| {
+            allocator.free(engine_id);
+        }
     }
 };
 
@@ -184,6 +203,8 @@ pub const ConfigFile = struct {
     enable_thinking: ?bool = null,
     show_tool_json: ?bool = null,
     file_read_small_threshold: ?usize = null,
+    google_search_api_key: ?[]const u8 = null,
+    google_search_engine_id: ?[]const u8 = null,
 };
 
 /// JSON-serializable policy structure
@@ -388,6 +409,20 @@ pub fn loadConfigFromFile(allocator: mem.Allocator) !Config {
 
     if (parsed.value.file_read_small_threshold) |file_read_small_threshold| {
         config.file_read_small_threshold = file_read_small_threshold;
+    }
+
+    if (parsed.value.google_search_api_key) |google_search_api_key| {
+        if (config.google_search_api_key) |old_key| {
+            allocator.free(old_key);
+        }
+        config.google_search_api_key = try allocator.dupe(u8, google_search_api_key);
+    }
+
+    if (parsed.value.google_search_engine_id) |google_search_engine_id| {
+        if (config.google_search_engine_id) |old_id| {
+            allocator.free(old_id);
+        }
+        config.google_search_engine_id = try allocator.dupe(u8, google_search_engine_id);
     }
 
     // Validate configuration before returning

@@ -13,6 +13,7 @@ pub const FieldType = enum {
     text_input,
     toggle,
     number_input,
+    masked_input,
 };
 
 /// Configuration value union for provider fields
