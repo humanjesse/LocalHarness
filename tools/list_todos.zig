@@ -15,7 +15,7 @@ pub fn getDefinition(allocator: std.mem.Allocator) !ToolDefinition {
             .type = "function",
             .function = .{
                 .name = try allocator.dupe(u8, "list_todos"),
-                .description = try allocator.dupe(u8, "List all todos. Example call: {} returns [{\"todo_id\": \"todo_1\", \"status\": \"pending\", \"content\": \"Fix bug\"}, {\"todo_id\": \"todo_2\", \"status\": \"completed\", \"content\": \"Write tests\"}]"),
+                .description = try allocator.dupe(u8, "List all todos with their IDs and statuses."),
                 .parameters = try allocator.dupe(u8,
                     \\{
                     \\  "type": "object",

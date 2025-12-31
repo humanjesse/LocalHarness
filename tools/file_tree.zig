@@ -16,7 +16,7 @@ pub fn getDefinition(allocator: std.mem.Allocator) !ToolDefinition {
             .type = "function",
             .function = .{
                 .name = try allocator.dupe(u8, "get_file_tree"),
-                .description = try allocator.dupe(u8, "Returns a JSON array listing ALL file paths in the project directory tree. This shows ONLY filenames and paths, NOT file contents. Use this first to see what files exist, then use read_file if you need to see actual code."),
+                .description = try allocator.dupe(u8, "Returns all file paths in the project directory tree as JSON."),
                 .parameters = try allocator.dupe(u8,
                     \\{
                     \\  "type": "object",

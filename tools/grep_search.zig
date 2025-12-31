@@ -15,7 +15,7 @@ pub fn getDefinition(allocator: std.mem.Allocator) !ToolDefinition {
             .type = "function",
             .function = .{
                 .name = try allocator.dupe(u8, "grep_search"),
-                .description = try allocator.dupe(u8, "Search files for text patterns with flexible options. Supports wildcards (*), file filtering, and searching hidden/ignored files. Default: case-insensitive, respects .gitignore, skips .git and hidden dirs. Use include_hidden=true or ignore_gitignore=true for deeper searches."),
+                .description = try allocator.dupe(u8, "Search file contents for patterns. Supports wildcards and file filtering."),
                 .parameters = try allocator.dupe(u8,
                     \\{
                     \\  "type": "object",

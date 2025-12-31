@@ -15,7 +15,7 @@ pub fn getDefinition(allocator: std.mem.Allocator) !ToolDefinition {
             .type = "function",
             .function = .{
                 .name = try allocator.dupe(u8, "insert_lines"),
-                .description = try allocator.dupe(u8, "Inserts new content before a specific line in a file. WORKFLOW: First call read_file to see the file with line numbers (e.g. '1: foo', '2: bar'). Then call insert_lines to insert content BEFORE a specific line. EXAMPLE: If read_file shows '1: hello\\n2: world' and you want to insert 'new line' before line 2, use {\"path\":\"file.txt\",\"line_start\":2,\"line_end\":2,\"new_content\":\"new line\"}. The result will be '1: hello\\n2: new line\\n3: world'. To insert at the beginning, use line 1. To append to the end, use line N+1 (where N is the last line number). Line numbers are 1-indexed as shown in read_file output."),
+                .description = try allocator.dupe(u8, "Insert content before a specific line. Lines are 1-indexed. Use line N+1 to append at end."),
                 .parameters = try allocator.dupe(u8,
                     \\{
                     \\  "type": "object",

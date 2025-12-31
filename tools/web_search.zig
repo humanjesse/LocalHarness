@@ -22,7 +22,7 @@ pub fn getDefinition(allocator: std.mem.Allocator) !ToolDefinition {
             .type = "function",
             .function = .{
                 .name = try allocator.dupe(u8, "web_search"),
-                .description = try allocator.dupe(u8, "Search the web using Google Custom Search API. Requires Google API credentials configured. Returns a list of search results with titles and URLs. Free tier: 100 queries/day. Use this when you need to find current information, documentation, or resources online. After getting results, use web_fetch to retrieve the content of specific URLs."),
+                .description = try allocator.dupe(u8, "Search the web. Returns titles and URLs of results."),
                 .parameters = try allocator.dupe(u8,
                     \\{
                     \\  "type": "object",

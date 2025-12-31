@@ -15,7 +15,7 @@ pub fn getDefinition(allocator: std.mem.Allocator) !ToolDefinition {
             .type = "function",
             .function = .{
                 .name = try allocator.dupe(u8, "ls"),
-                .description = try allocator.dupe(u8, "List contents of a single directory with detailed metadata (name, type, size, modified time). Unlike get_file_tree which shows ALL files recursively, this shows just ONE directory's contents with rich details. Supports sorting by name/size/time and filtering hidden files."),
+                .description = try allocator.dupe(u8, "List directory contents with metadata. Supports sorting and hidden file filtering."),
                 .parameters = try allocator.dupe(u8,
                     \\{
                     \\  "type": "object",

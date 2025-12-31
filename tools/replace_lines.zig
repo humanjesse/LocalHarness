@@ -15,7 +15,7 @@ pub fn getDefinition(allocator: std.mem.Allocator) !ToolDefinition {
             .type = "function",
             .function = .{
                 .name = try allocator.dupe(u8, "replace_lines"),
-                .description = try allocator.dupe(u8, "Replaces specific line ranges in a file. WORKFLOW: First call read_file to see the file with line numbers (e.g. '1: foo', '2: bar'). Then call replace_lines specifying which lines to replace. EXAMPLE: If read_file shows '1: hello' and you want to change it to 'goodbye', use {\"path\":\"file.txt\",\"line_start\":1,\"line_end\":1,\"new_content\":\"goodbye\"}. To replace multiple lines, set line_end higher. To add lines, include newlines in new_content (e.g. \"hello\\ngoodbye\" replaces line 1 with 2 lines)."),
+                .description = try allocator.dupe(u8, "Replace a range of lines with new content. Lines are 1-indexed and inclusive."),
                 .parameters = try allocator.dupe(u8,
                     \\{
                     \\  "type": "object",

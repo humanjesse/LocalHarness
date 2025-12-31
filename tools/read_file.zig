@@ -24,7 +24,7 @@ pub fn getDefinition(allocator: std.mem.Allocator) !ToolDefinition {
             .type = "function",
             .function = .{
                 .name = try allocator.dupe(u8, "read_file"),
-                .description = try allocator.dupe(u8, "Reads a file with smart context optimization. Small files (<100 lines) show full content instantly. Larger files use an intelligent agent that filters content based on conversation context to show only relevant sections. All files are fully indexed in GraphRAG for later queries. Use this as your primary file reading tool. For surgical access to specific line ranges, use read_lines instead."),
+                .description = try allocator.dupe(u8, "Read a file's contents with smart context-aware summarization for large files."),
                 .parameters = try allocator.dupe(u8,
                     \\{
                     \\  "type": "object",

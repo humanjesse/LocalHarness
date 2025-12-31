@@ -18,7 +18,7 @@ pub fn getDefinition(allocator: std.mem.Allocator) !ToolDefinition {
             .type = "function",
             .function = .{
                 .name = try allocator.dupe(u8, "read_lines"),
-                .description = try allocator.dupe(u8, "Read specific line ranges from a file for quick inspection. Use this for targeted edits when you know the line numbers, following error messages to specific locations, checking specific functions without full file indexing, or quick spot checks of file sections. Does NOT trigger GraphRAG indexing (fast, instant response). For full file analysis and indexing, use read_file instead."),
+                .description = try allocator.dupe(u8, "Read specific line ranges from a file."),
                 .parameters = try allocator.dupe(u8,
                     \\{
                     \\  "type": "object",

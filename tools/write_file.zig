@@ -15,7 +15,7 @@ pub fn getDefinition(allocator: std.mem.Allocator) !ToolDefinition {
             .type = "function",
             .function = .{
                 .name = try allocator.dupe(u8, "write_file"),
-                .description = try allocator.dupe(u8, "Creates a new file or completely overwrites an existing file with the provided content. Use this to create new files from scratch. For editing existing files, prefer edit_file instead. WARNING: This will overwrite the entire file if it already exists."),
+                .description = try allocator.dupe(u8, "Create or overwrite a file with the provided content."),
                 .parameters = try allocator.dupe(u8,
                     \\{
                     \\  "type": "object",

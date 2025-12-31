@@ -14,7 +14,7 @@ pub fn getDefinition(allocator: std.mem.Allocator) !ToolDefinition {
             .type = "function",
             .function = .{
                 .name = try allocator.dupe(u8, "git_reset"),
-                .description = try allocator.dupe(u8, "Reset current HEAD to specified state. WARNING: 'hard' mode discards all changes permanently. Use 'soft' or 'mixed' to preserve changes."),
+                .description = try allocator.dupe(u8, "Reset current HEAD to specified state. Modes: soft, mixed, hard."),
                 .parameters = try allocator.dupe(u8,
                     \\{
                     \\  "type": "object",
