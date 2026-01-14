@@ -1,4 +1,4 @@
-// Read Lines Tool - Reads specific line ranges from files (no GraphRAG indexing)
+// Read Lines Tool - Primary file reading tool with line range support
 const std = @import("std");
 const ollama = @import("ollama");
 const permission = @import("permission");
@@ -9,7 +9,7 @@ const AppContext = context_module.AppContext;
 const ToolDefinition = tools_module.ToolDefinition;
 const ToolResult = tools_module.ToolResult;
 
-// Maximum line range to prevent abuse (suggest read_file for larger ranges)
+// Maximum line range per read call
 const MAX_LINE_RANGE = 500;
 
 pub fn getDefinition(allocator: std.mem.Allocator) !ToolDefinition {
@@ -52,7 +52,7 @@ pub fn getDefinition(allocator: std.mem.Allocator) !ToolDefinition {
     };
 }
 
-fn execute(allocator: std.mem.Allocator, arguments: []const u8, _: *AppContext) !ToolResult {
+fn execute(allocator: std.mem.Allocator, arguments: []const u8, context: *AppContext) !ToolResult {
     const start_time = std.time.milliTimestamp();
 
     // Parse arguments
@@ -80,7 +80,7 @@ fn execute(allocator: std.mem.Allocator, arguments: []const u8, _: *AppContext) 
     if (requested_lines > MAX_LINE_RANGE) {
         const msg = try std.fmt.allocPrint(
             allocator,
-            "Requested {d} lines. Maximum range is {d} lines. For larger ranges, use read_file to get full context and GraphRAG indexing.",
+            "Requested {d} lines. Maximum range is {d} lines. Make multiple read_lines calls to read more.",
             .{ requested_lines, MAX_LINE_RANGE },
         );
         defer allocator.free(msg);
@@ -135,7 +135,7 @@ fn execute(allocator: std.mem.Allocator, arguments: []const u8, _: *AppContext) 
         return ToolResult.err(allocator, .validation_failed, msg, start_time);
     }
 
-    // Format output with line numbers (matching read_file style)
+    // Format output with line numbers
     var formatted_output = std.ArrayListUnmanaged(u8){};
     defer formatted_output.deinit(allocator);
     const writer = formatted_output.writer(allocator);
@@ -144,10 +144,8 @@ fn execute(allocator: std.mem.Allocator, arguments: []const u8, _: *AppContext) 
     try writer.writeAll("```\n");
 
     // Write header
-    try writer.print("File: {s} (lines {d}-{d})\n", .{ parsed.value.path, parsed.value.start_line, parsed.value.end_line });
-    try writer.print("Total lines in file: {d}\n", .{total_lines});
-    try writer.print("Showing: {d} line{s}\n", .{ requested_lines, if (requested_lines == 1) "" else "s" });
-    try writer.writeAll("Content:\n");
+    try writer.print("File: {s}\n", .{parsed.value.path});
+    try writer.print("Lines: {d}-{d} of {d} total\n\n", .{ parsed.value.start_line, parsed.value.end_line, total_lines });
 
     // Write numbered lines for requested range
     // Lines are 1-indexed, so convert to 0-indexed for array access
@@ -158,20 +156,34 @@ fn execute(allocator: std.mem.Allocator, arguments: []const u8, _: *AppContext) 
         try writer.print("{d}: {s}\n", .{ idx + 1, line });
     }
 
-    // Write footer notes
-    try writer.writeAll("\nNotes: Lines are 1-indexed. ");
-    if (requested_lines < total_lines) {
-        try writer.print("Showing {d} of {d} total lines. ", .{ requested_lines, total_lines });
+    // Write footer with remaining lines info
+    const lines_before = parsed.value.start_line - 1;
+    const lines_after = total_lines - parsed.value.end_line;
+
+    if (lines_before > 0 or lines_after > 0) {
+        try writer.writeAll("\n");
+        if (lines_before > 0 and lines_after > 0) {
+            try writer.print("--- {d} lines before (1-{d}) | {d} lines after ({d}-{d}) ---\n", .{
+                lines_before,
+                parsed.value.start_line - 1,
+                lines_after,
+                parsed.value.end_line + 1,
+                total_lines,
+            });
+        } else if (lines_before > 0) {
+            try writer.print("--- {d} lines before (1-{d}) ---\n", .{ lines_before, parsed.value.start_line - 1 });
+        } else {
+            try writer.print("--- {d} lines remaining ({d}-{d}) ---\n", .{ lines_after, parsed.value.end_line + 1, total_lines });
+        }
     }
-    try writer.writeAll("Use read_file to index full file for GraphRAG.\n");
+
     try writer.writeAll("```");
 
     const formatted = try formatted_output.toOwnedSlice(allocator);
     defer allocator.free(formatted);
 
-    // NOTE: Intentionally NOT doing the following:
-    // - NOT queuing for GraphRAG indexing (fast, exploration-focused)
-    // - NOT marking file as "read" for edit_file (require full context for edits)
+    // Mark file as read (enables editing this file)
+    try context.state.markFileAsRead(parsed.value.path);
 
     return ToolResult.ok(allocator, formatted, start_time, null);
 }

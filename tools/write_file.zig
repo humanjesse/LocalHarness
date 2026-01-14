@@ -27,6 +27,10 @@ pub fn getDefinition(allocator: std.mem.Allocator) !ToolDefinition {
                     \\    "content": {
                     \\      "type": "string",
                     \\      "description": "The complete content to write to the file"
+                    \\    },
+                    \\    "create_new": {
+                    \\      "type": "boolean",
+                    \\      "description": "Set to true when creating a new file that doesn't exist yet"
                     \\    }
                     \\  },
                     \\  "required": ["path", "content"]
@@ -45,18 +49,34 @@ pub fn getDefinition(allocator: std.mem.Allocator) !ToolDefinition {
     };
 }
 
-fn execute(allocator: std.mem.Allocator, arguments: []const u8, _: *AppContext) !ToolResult {
+fn execute(allocator: std.mem.Allocator, arguments: []const u8, context: *AppContext) !ToolResult {
     const start_time = std.time.milliTimestamp();
 
     // Parse arguments
     const Args = struct {
         path: []const u8,
         content: []const u8,
+        create_new: bool = false,
     };
     const parsed = std.json.parseFromSlice(Args, allocator, arguments, .{}) catch {
         return ToolResult.err(allocator, .parse_error, "Invalid JSON arguments", start_time);
     };
     defer parsed.deinit();
+
+    // Check if file exists
+    const file_exists = if (std.fs.cwd().access(parsed.value.path, .{})) |_| true else |_| false;
+
+    if (file_exists) {
+        // Overwriting existing file - must have read it first
+        if (!context.state.wasFileRead(parsed.value.path)) {
+            return ToolResult.err(allocator, .permission_denied, "File must be read with read_lines before overwriting", start_time);
+        }
+    } else {
+        // Creating new file - must explicitly request creation
+        if (!parsed.value.create_new) {
+            return ToolResult.err(allocator, .validation_failed, "File does not exist. Set create_new=true to create it.", start_time);
+        }
+    }
 
     // Create parent directory if it doesn't exist
     if (std.fs.path.dirname(parsed.value.path)) |dir_path| {

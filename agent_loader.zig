@@ -4,7 +4,6 @@ const app_module = @import("app");
 const agents_module = app_module.agents_module; // Get agents from app which has it as a module
 const agent_writer = @import("agent_writer");
 const agent_executor = @import("agent_executor");
-const file_curator = @import("file_curator");
 
 const AgentDefinition = agents_module.AgentDefinition;
 const AgentRegistry = agents_module.AgentRegistry;
@@ -97,12 +96,9 @@ pub const AgentLoader = struct {
 
     /// Register built-in native Zig agents
     fn registerNativeAgents(self: *AgentLoader) !void {
-        // Register file_curator (native agent with complex JSON parsing)
-        const curator_def = try file_curator.getDefinition(self.allocator);
-        try self.registry.register(curator_def);
-
-        // Store definition for cleanup (name and description are allocated)
-        try self.native_agent_definitions.append(self.allocator, curator_def);
+        // Currently no native agents registered
+        // Placeholder for future native agent registrations
+        _ = self;
     }
 
     /// Load and register markdown-defined agents
@@ -284,7 +280,7 @@ fn createAgentReadmeIfNeeded(allocator: std.mem.Allocator, agent_dir: []const u8
                 \\---
                 \\name: my_agent
                 \\description: Brief description of what this agent does
-                \\tools: read_file, grep_search, write_file
+                \\tools: read_lines, grep_search, write_file
                 \\---
                 \\
                 \\You are an expert at [specific task].
@@ -307,8 +303,7 @@ fn createAgentReadmeIfNeeded(allocator: std.mem.Allocator, agent_dir: []const u8
                 \\### Available Tools
                 \\
                 \\Common tools you can grant to agents:
-                \\- `read_file` - Read file contents
-                \\- `read_lines` - Read specific line ranges
+                \\- `read_lines` - Read file contents (specific line ranges)
                 \\- `write_file` - Create or modify files
                 \\- `grep_search` - Search for patterns in files
                 \\- `file_tree` - Get directory structure
@@ -321,7 +316,7 @@ fn createAgentReadmeIfNeeded(allocator: std.mem.Allocator, agent_dir: []const u8
                 \\---
                 \\name: code_reviewer
                 \\description: Reviews code for bugs, style issues, and best practices
-                \\tools: read_file, grep_search
+                \\tools: read_lines, grep_search
                 \\---
                 \\
                 \\You are an expert code reviewer with deep knowledge of software engineering best practices.
@@ -342,11 +337,6 @@ fn createAgentReadmeIfNeeded(allocator: std.mem.Allocator, agent_dir: []const u8
                 \\
                 \\1. **Via the agent builder**: Type `/agent` in the app to create and manage agents
                 \\2. **By asking the LLM**: Request "use the code_reviewer agent to review app.zig"
-                \\
-                \\## Built-in Agents
-                \\
-                \\Local Harness includes these native agents:
-                \\- **file_curator**: Analyzes files and identifies important sections based on conversation context
                 \\
                 \\## Documentation
                 \\

@@ -26,7 +26,7 @@ pub fn getDefinition(allocator: std.mem.Allocator) !ToolDefinition {
                     \\    },
                     \\    "line_start": {
                     \\      "type": "integer",
-                    \\      "description": "Line number to insert before (1-indexed, as shown in read_file output). Use N+1 to append to end of file."
+                    \\      "description": "Line number to insert before (1-indexed, as shown in read_lines output). Use N+1 to append to end of file."
                     \\    },
                     \\    "line_end": {
                     \\      "type": "integer",
@@ -54,7 +54,6 @@ pub fn getDefinition(allocator: std.mem.Allocator) !ToolDefinition {
 }
 
 fn execute(allocator: std.mem.Allocator, arguments: []const u8, context: *AppContext) !ToolResult {
-    _ = context;
     const start_time = std.time.milliTimestamp();
 
     // Parse arguments
@@ -68,6 +67,11 @@ fn execute(allocator: std.mem.Allocator, arguments: []const u8, context: *AppCon
         return ToolResult.err(allocator, .parse_error, "Invalid JSON arguments", start_time);
     };
     defer parsed.deinit();
+
+    // Check if file was read first
+    if (!context.state.wasFileRead(parsed.value.path)) {
+        return ToolResult.err(allocator, .permission_denied, "File must be read with read_lines before editing", start_time);
+    }
 
     // Validate line numbers
     if (parsed.value.line_start == 0) {

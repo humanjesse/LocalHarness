@@ -274,23 +274,11 @@ pub fn build(b: *std.Build) void {
     agent_executor_module.addImport("context", context_module);
     // Will add app after app_module is created
 
-    const file_curator_module = b.createModule(.{
-        .root_source_file = b.path("agents_hardcoded/file_curator.zig"),
-    });
-    file_curator_module.addImport("agent_executor", agent_executor_module);
-    file_curator_module.addImport("llm_helper", llm_helper_module);
-    file_curator_module.addImport("ollama", ollama_module);
-    // Will add app after app_module is created
-
-    // Now add file_curator to tools_module
-    tools_module.addImport("file_curator", file_curator_module);
-
     const agent_loader_module = b.createModule(.{
         .root_source_file = b.path("agent_loader.zig"),
     });
     agent_loader_module.addImport("agent_writer", agent_writer_module);
     agent_loader_module.addImport("agent_executor", agent_executor_module);
-    agent_loader_module.addImport("file_curator", file_curator_module);
     agent_loader_module.addImport("tools", tools_module);
     agent_loader_module.addImport("ollama", ollama_module);
     // Will add app after app_module is created
@@ -376,7 +364,6 @@ pub fn build(b: *std.Build) void {
     agents_module.addImport("app", app_module);
     agents_module.addImport("types", types_module);
     agent_executor_module.addImport("app", app_module);
-    file_curator_module.addImport("app", app_module);
     agent_loader_module.addImport("app", app_module);
     message_renderer_module.addImport("app", app_module);
 
